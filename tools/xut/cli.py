@@ -176,7 +176,13 @@ def lint_cmd(branch_mode: bool, base: str) -> None:
     from xut.paths import repo_root
 
     root = repo_root()
-    issues, warnings = lint(root, branch_mode, base=base)
+    try:
+        issues, warnings = lint(root, branch_mode, base=base)
+    except RuntimeError as e:
+        # lint()/current_branch()/_changed_files() raise a plain RuntimeError (they
+        # don't depend on click); turn it into the same clean, no-traceback error
+        # every other user-facing failure in this CLI gets.
+        raise click.ClickException(str(e)) from e
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
     for issue in sorted(issues, key=lambda i: (i.path, i.rule)):

@@ -21,9 +21,10 @@ from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
 #: ruling: also `tools/hooks/*` regardless of extension).
 _SPDX_EXTENSIONS = {".py", ".v", ".sv", ".yaml", ".yml", ".sh", ".tcl", ".toml"}
 #: Never checked even when they'd otherwise match: markdown has no comment syntax, and
-#: neither does JSON (controller ruling).
+#: neither does JSON (controller ruling). `catalog/EXTRACTION_REPORT.md` — excluded by
+#: name in the brief — is already covered by the `.md` exclusion here, so it needs no
+#: separate exact-path entry.
 _SPDX_EXCLUDE_EXTENSIONS = {".md", ".json"}
-_SPDX_EXCLUDE_EXACT = {"catalog/EXTRACTION_REPORT.md"}
 _SPDX_MARKER = "SPDX-License-Identifier: Apache-2.0"
 
 #: The 4 files `xut status generate` writes (spec §11); AGENTS.md §5 forbids committing
@@ -48,7 +49,7 @@ class LintIssue:
 
 
 def _spdx_checked(path: str) -> bool:
-    if path.startswith("third_party/") or path in _SPDX_EXCLUDE_EXACT:
+    if path.startswith("third_party/"):
         return False
     suffix = Path(path).suffix
     if suffix in _SPDX_EXCLUDE_EXTENSIONS:
@@ -256,21 +257,39 @@ def _tracked_files(root: Path) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line]
 
 
+def _ref_exists(root: Path, ref: str) -> bool:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", ref], cwd=root, capture_output=True
+    )
+    return proc.returncode == 0
+
+
 def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], str | None]:
     """Files this branch has touched relative to `<base>...HEAD` (controller ruling:
     `--branch` mode; `--base` lets CI diff against `origin/<PR base branch>` instead of
     `origin/main`). Falls back to the bare ref (stripping a leading `origin/`) with a
-    warning if `base` isn't present locally (e.g. a fresh clone with no fetch yet)."""
+    warning if `base` isn't present locally (e.g. a fresh clone with no fetch yet).
+    Raises `RuntimeError` (never a raw `CalledProcessError`) if neither resolves.
+
+    `--no-renames` is load-bearing for `check_branch_paths`: git's default rename
+    detection would otherwise fold a delete+add pair into one `R###` entry and
+    `--name-only` would print only the destination path, hiding the deleted source from
+    ownership checking — letting a branch move a file it doesn't own into a path it does
+    own undetected (review finding). With `--no-renames`, a rename always shows up as
+    both its source (deleted) and destination (added) path, so both get checked.
+    """
     warning = None
-    verify = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", base], cwd=root, capture_output=True
-    )
-    if verify.returncode != 0:
+    if not _ref_exists(root, base):
         fallback = base.removeprefix("origin/")
+        if fallback == base or not _ref_exists(root, fallback):
+            raise RuntimeError(
+                f"_changed_files(): base ref {base!r} not found"
+                + ("" if fallback == base else f", and fallback {fallback!r} not found either")
+            )
         warning = f"{base} not found locally; diffing against {fallback} instead"
         base = fallback
     proc = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        ["git", "diff", "--no-renames", "--name-only", f"{base}...HEAD"],
         cwd=root,
         capture_output=True,
         text=True,

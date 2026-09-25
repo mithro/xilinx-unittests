@@ -436,6 +436,104 @@ def test_changed_files_falls_back_when_base_ref_missing(tmp_path):
     assert warning == "origin/custombase not found locally; diffing against custombase instead"
 
 
+def test_changed_files_raises_clean_error_when_base_and_fallback_missing(tmp_path):
+    """`_changed_files` must never leak a raw `CalledProcessError` traceback when
+    neither the given base nor its fallback resolve — a clean `RuntimeError` naming
+    both refs, for the CLI to turn into a no-traceback `click.ClickException`."""
+    from xut.lint import _changed_files
+
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    (tmp_path / "a.txt").write_text("1\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: initial"], tmp_path)
+
+    with pytest.raises(RuntimeError, match="not found either"):
+        _changed_files(tmp_path, base="origin/nosuchbranch")
+
+
+def test_changed_files_raises_clean_error_when_base_has_no_origin_prefix_either(tmp_path):
+    """A `base` with no `origin/` prefix has no fallback to try at all; still a clean
+    error, not a `CalledProcessError`."""
+    from xut.lint import _changed_files
+
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    (tmp_path / "a.txt").write_text("1\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: initial"], tmp_path)
+
+    with pytest.raises(RuntimeError, match="nosuchbranch"):
+        _changed_files(tmp_path, base="nosuchbranch")
+
+
+# --- rename-detection ownership bypass (review finding) -------------------------
+
+
+def test_no_renames_flags_deleted_source_of_a_moved_infra_file(tmp_path):
+    """Regression: git's default rename detection folds a delete+add pair into one
+    `R###` diff entry, and `--name-only` (without `--no-renames`) prints only the
+    destination path — hiding the deleted, unowned source from `check_branch_paths`.
+    A unit branch could then move a file it doesn't own into a path it does own,
+    undetected. `_changed_files` must pass `--no-renames` so both sides show up."""
+    from xut.lint import _changed_files
+
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    infra_file = tmp_path / "tools" / "xut" / "cli.py"
+    infra_file.parent.mkdir(parents=True)
+    # Enough content that git's similarity heuristic would treat this as a rename
+    # (not an unrelated delete+add) if rename detection were left on.
+    infra_file.write_text("# SPDX-License-Identifier: Apache-2.0\n" + "line\n" * 50)
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: add cli.py"], tmp_path)
+
+    _git(["checkout", "-q", "-b", "unit/7series/flops"], tmp_path)
+    owned_dir = tmp_path / "tests" / "7series" / "register" / "FDRE"
+    owned_dir.mkdir(parents=True)
+    _git(["mv", "tools/xut/cli.py", "tests/7series/register/FDRE/cli.py"], tmp_path)
+    _git(["commit", "-q", "-m", "flops: move cli.py in (should never be allowed)"], tmp_path)
+
+    changed, _ = _changed_files(tmp_path, base="main")
+    assert "tools/xut/cli.py" in changed, (
+        f"deleted source missing from diff (rename detection hid it): {changed!r}"
+    )
+    assert "tests/7series/register/FDRE/cli.py" in changed
+
+    issues = check_branch_paths("unit/7series/flops", changed, UNITS)
+    flagged = {i.path for i in issues}
+    assert "tools/xut/cli.py" in flagged, "moved-out infra file must error on its source path"
+    assert "tests/7series/register/FDRE/cli.py" not in flagged  # destination is owned: fine
+
+
+def test_unit_branch_deleting_another_units_file_is_error(tmp_path):
+    from xut.lint import _changed_files
+
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    luts_status = tmp_path / "status" / "7series" / "LUT6.yaml"
+    luts_status.parent.mkdir(parents=True)
+    luts_status.write_text("primitive: LUT6\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: add LUT6 status stub"], tmp_path)
+
+    _git(["checkout", "-q", "-b", "unit/7series/flops"], tmp_path)
+    _git(["rm", "-q", "status/7series/LUT6.yaml"], tmp_path)
+    _git(["commit", "-q", "-m", "flops: delete LUT6 status (should never be allowed)"], tmp_path)
+
+    changed, _ = _changed_files(tmp_path, base="main")
+    assert changed == ["status/7series/LUT6.yaml"]
+
+    issues = check_branch_paths("unit/7series/flops", changed, UNITS)
+    assert len(issues) == 1
+    assert issues[0].path == "status/7series/LUT6.yaml"
+    assert issues[0].severity == "error"
+
+
 def test_lint_passes_base_through_to_changed_files(monkeypatch):
     from xut import lint as lint_mod
     from xut.paths import repo_root
@@ -484,3 +582,23 @@ def test_lint_cli_exit_code_nonzero_on_error(tmp_path, monkeypatch):
     result = CliRunner().invoke(main, ["lint"])
     assert result.exit_code == 1, result.output
     assert "error spdx bad.py" in result.output
+
+
+def test_lint_cli_unresolvable_base_is_a_clean_error_not_a_traceback(tmp_path, monkeypatch):
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "xilinx-unittests"\n')
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "work-units.yaml").write_text("family: 7series\nunits: {}\n")
+    (tmp_path / "a.txt").write_text("1\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: initial"], tmp_path)
+
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
+    monkeypatch.setenv("XUT_BRANCH", "infra/bootstrap")
+    result = CliRunner().invoke(main, ["lint", "--branch", "--base", "origin/nosuchbranch"])
+    assert result.exit_code == 1, result.output
+    assert "Traceback" not in result.output
+    assert "Error:" in result.output
+    assert "not found" in result.output
