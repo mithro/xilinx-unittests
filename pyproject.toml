@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+[project]
+name = "xilinx-unittests"
+version = "0.1.0"
+description = "Cross-checked test suite for Xilinx FPGA primitives"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+  "click>=8.1",
+  "PyYAML>=6.0",
+  "jsonschema>=4.21",
+  "pyslang>=11,<12",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+xut = "xut.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tools/xut"]
+
+[tool.pytest.ini_options]
+testpaths = ["tools/tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
