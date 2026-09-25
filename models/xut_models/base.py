@@ -4,7 +4,8 @@
 A model is written clean-room from the libraries guide. Every output it
 reports carries provenance: ``doc:<page>`` when the guide states the behaviour,
 ``inferred:<reason>`` when it had to be inferred. A bit the guide leaves
-undefined is reported as ``-`` (don't care).
+undefined is reported as ``-`` (don't care). Provenance is one tag for the whole
+output, or a tuple of per-bit tags (LSB = 0) when bits have different sources.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
-_PROV = re.compile(r"^(doc:\d+|inferred:[^#|=]+)$")  # '#', '|', '=' would break .xtr lines
+# Whitespace, '#', '|', '=' would break .xtr lines; ',' separates per-bit tags there.
+_PROV = re.compile(r"^(doc:\d+|inferred:[^\s#|=,]+)$")
 _LIT = re.compile(r"^\s*\d*\s*'\s*[sS]?([bBoOdDhH])\s*([0-9a-fA-F_]+)\s*$")
 
 
@@ -26,13 +28,25 @@ class ModelUnsupported(Exception):
 @dataclass(frozen=True)
 class Out:
     bits: str  # MSB-first "0" / "1" / "-"
-    prov: str  # "doc:<page>" | "inferred:<reason>"
+    # "doc:<page>" | "inferred:<reason>" for every bit, or one such tag per bit, LSB = 0
+    prov: str | tuple[str, ...]
 
     def __post_init__(self) -> None:
         if not self.bits or set(self.bits) - set("01-"):
             raise ValueError(f"model output bits must be 0/1/-: {self.bits!r}")
-        if not _PROV.match(self.prov):
-            raise ValueError(f"provenance must be doc:<page> or inferred:<reason>: {self.prov!r}")
+        if isinstance(self.prov, tuple):
+            if len(self.prov) != len(self.bits):
+                raise ValueError(
+                    f"per-bit provenance has {len(self.prov)} tags for {len(self.bits)} bits"
+                )
+            tags = self.prov
+        elif isinstance(self.prov, str):
+            tags = (self.prov,)
+        else:
+            raise ValueError(f"provenance must be a str or a tuple of str: {self.prov!r}")
+        for tag in tags:
+            if not isinstance(tag, str) or not _PROV.match(tag):
+                raise ValueError(f"provenance must be doc:<page> or inferred:<reason>: {tag!r}")
 
 
 def bit_attr(v: str | int) -> int:
@@ -69,7 +83,9 @@ class Model(ABC):
         """State at time 0: glbl GSR is asserted until ROC_WIDTH."""
 
     @abstractmethod
-    def set_input(self, port: str, value: int) -> None: ...
+    def set_input(self, port: str, value: int) -> None:
+        """A changed input. Ports changed at one time step arrive together (one call
+        each, map order) before any edge or sample, so this must not depend on order."""
 
     @abstractmethod
     def clock_edge(self, port: str, rising: bool) -> None: ...

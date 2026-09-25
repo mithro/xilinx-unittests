@@ -10,6 +10,7 @@ are expanded with the one shared definition (``xvec.free_clock_edges``).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import groupby
 
 from xut.errors import XutError
 from xut.formats.xtr import Trace
@@ -55,6 +56,24 @@ def _port_value(m: DutMap, bits: list[str], port: str) -> int:
     if set(s) - {"0", "1"}:
         raise ModelUnsupported(f"{port}={s}: x/z stimulus is covered by sv tests, not the model")
     return int(s, 2)
+
+
+def _prov_token(o: Out) -> str:
+    """The .xtr provenance token of one output: its tag, or -- when the bits differ --
+    the per-bit tags comma-joined LSB first (``bit_prov`` reads it back)."""
+    if isinstance(o.prov, str):
+        return o.prov
+    return o.prov[0] if len(set(o.prov)) == 1 else ",".join(o.prov)
+
+
+def bit_prov(token: str, bit: int) -> str:
+    """Provenance of ``bit`` (LSB = 0) from an .xtr token written by ``replay``."""
+    tags = token.split(",")
+    if len(tags) == 1:
+        return tags[0]
+    if not 0 <= bit < len(tags):
+        raise IndexError(f"bit {bit} out of range for per-bit provenance {token!r}")
+    return tags[bit]
 
 
 def _check_outputs(model_cls: type[Model], outs: dict[str, Out], label: str) -> None:
@@ -130,32 +149,44 @@ def replay(model_cls: type[Model], vec: Vec, m: DutMap) -> tuple[Trace, Reach]:
     for p in m.in_ports():
         model.set_input(p, 0)
     released = False
-    for e in expand_free_clocks(vec):
-        if not released and e.t >= ROC_WIDTH_PS:
+    # Co-timed events (Ruling S6, pinned by tests): the only unmarked events that may share
+    # a time are `set`s on disjoint bits -- one atomic input change -- because validate's
+    # lonely rule makes every edge, glbl and async/gate set alone at its time, and a sample
+    # never shares its time with a change. So each time step applies ALL its set bits
+    # first and only then calls set_input, once per changed port (map order): the model
+    # never sees an intermediate state, and the file order of the sets cannot matter.
+    for t, group in groupby(expand_free_clocks(vec), key=lambda e: e.t):
+        events = list(group)
+        if not released and t >= ROC_WIDTH_PS:
             model.glbl("GSR", 0)
             released = True
-        if e.op == "set":
+        sets = [e for e in events if e.op == "set"]
+        if sets:
             before = {p: _port_bits(m, bits, p) for p in m.in_ports()}
-            for i, ch in enumerate(reversed(e.value)):
-                bits[e.lsb + i] = ch
+            for e in sets:
+                for i, ch in enumerate(reversed(e.value)):
+                    bits[e.lsb + i] = ch
             for p in m.in_ports():
                 if _port_bits(m, bits, p) != before[p]:
                     v = _port_value(m, bits, p)
                     model.set_input(p, v)
                     seen.setdefault(p, set()).add(v)
-        elif e.op == "edge":
-            port = m.clock_port(e.target)
-            model.clock_edge(port, e.value == "r")
-            reach.ports.add(port)
-        elif e.op == "glbl":
-            model.glbl(e.target, int(e.value))
-        elif e.op == "sample":
-            outs = model.outputs()
-            _check_outputs(model_cls, outs, e.target)
-            trace.add(
-                e.target, {p: o.bits for p, o in outs.items()}, {p: o.prov for p, o in outs.items()}
-            )
-            reach.ports |= set(outs)
+        for e in events:
+            if e.op == "edge":
+                port = m.clock_port(e.target)
+                model.clock_edge(port, e.value == "r")
+                reach.ports.add(port)
+            elif e.op == "glbl":
+                model.glbl(e.target, int(e.value))
+            elif e.op == "sample":
+                outs = model.outputs()
+                _check_outputs(model_cls, outs, e.target)
+                trace.add(
+                    e.target,
+                    {p: o.bits for p, o in outs.items()},
+                    {p: _prov_token(o) for p, o in outs.items()},
+                )
+                reach.ports |= set(outs)
     reach.ports |= {p for p, vals in seen.items() if len(vals) > 1 or vals != {0}}
     reach.claims = set(model.claims_hit)
     return trace, reach
