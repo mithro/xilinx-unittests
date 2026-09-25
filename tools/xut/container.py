@@ -3,9 +3,12 @@
 
 `containers/sim/Dockerfile` builds the one simulator image (`SIM_IMAGE`). Every simulator
 command goes through an `Executor`: `DockerExecutor` runs it in that image with
-`--network=none`, as the invoking uid:gid, with the repository at `/work` and model
-sources read-only under `/models/`; `NativeExecutor` runs it on the host `PATH` (CI's
-`sim` job sets `XUT_NATIVE=1` when it already runs inside the image).
+`--network=none` and `--pull=never` (a missing image is an error naming
+`xut container build`, never a registry pull), as the invoking uid:gid, with the
+repository at `/work` and model sources read-only under `/models/`. `NativeExecutor`
+runs it on the host `PATH`; `executor_for` selects it when `XUT_NATIVE=1`, for an
+environment that already provides the pinned tools. CI's `sim` job does not set it: it
+builds the image and runs pytest on the host through `DockerExecutor`.
 """
 
 import os
@@ -16,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, TextIO
 
+from xut.errors import XutError
 from xut.paths import repo_root
 
 #: Bump whenever containers/sim/ changes.
@@ -27,6 +31,10 @@ _KILL_TIMEOUT_S = 30
 
 class RunTimeout(RuntimeError):
     """A simulator command exceeded its `timeout_s`."""
+
+
+class ContainerError(XutError, RuntimeError):
+    """The simulator image is missing or a tool in it did not run."""
 
 
 @dataclass(frozen=True)
@@ -60,7 +68,7 @@ def _append(log: Path) -> TextIO:
 
 
 class NativeExecutor:
-    """Tools on PATH (used inside CI's xut-sim job, where XUT_NATIVE=1)."""
+    """Tools on the host PATH (selected by `executor_for` when XUT_NATIVE=1)."""
 
     def guest(self, path: Path) -> str:
         return str(path)
@@ -122,6 +130,7 @@ class DockerExecutor:
             "--name",
             name,
             "--network=none",
+            "--pull=never",
             "-u",
             f"{os.getuid()}:{os.getgid()}",
             "-e",
@@ -153,12 +162,18 @@ class DockerExecutor:
                 p = subprocess.run(full, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s)
             except subprocess.TimeoutExpired as e:
                 # Killing the `docker run` client does not stop the container; kill it.
-                subprocess.run(
-                    ["docker", "kill", name],
-                    stdout=f,
-                    stderr=subprocess.STDOUT,
-                    timeout=_KILL_TIMEOUT_S,
-                )
+                try:
+                    subprocess.run(
+                        ["docker", "kill", name],
+                        stdout=f,
+                        stderr=subprocess.STDOUT,
+                        timeout=_KILL_TIMEOUT_S,
+                    )
+                except subprocess.TimeoutExpired as k:
+                    raise RunTimeout(
+                        f"timeout after {timeout_s}s: {argv[0]}; docker kill {name} also "
+                        f"timed out after {_KILL_TIMEOUT_S}s (the container may still run)"
+                    ) from k
                 raise RunTimeout(f"timeout after {timeout_s}s: {argv[0]}") from e
         return p.returncode
 
@@ -201,31 +216,49 @@ def image_digest(image: str = SIM_IMAGE) -> str | None:
 _VERSIONS: dict[str, dict[str, str]] = {}
 _VERSIONS_LOCK = threading.Lock()
 
+#: (key, argv, banner prefix or None). `iverilog -V` exits non-zero without a source
+#: file, so its exit code is not checked; its banner is.
+_TOOLS = (
+    ("iverilog", ["iverilog", "-V"], "Icarus Verilog version "),
+    ("verilator", ["verilator", "--version"], None),
+    ("cocotb", ["cocotb-config", "--version"], None),
+)
+
 
 def sim_tool_versions(ex: Executor, workdir: Path) -> dict[str, str]:
     """First line of each tool's version output (recorded in result.json).
 
     Computed once per process and image, under a lock, with a private log file: runner
-    jobs are threads (xut run --jobs N), so a shared log file would race (review #9)."""
+    jobs are threads (xut run --jobs N), so a shared log file would race (review #9).
+    A missing image, a non-zero exit or a missing banner raises `ContainerError`
+    (review A3): an error message is never recorded, or cached, as a version."""
     key_img = getattr(ex, "image", "native")
     with _VERSIONS_LOCK:
         if key_img in _VERSIONS:
             return dict(_VERSIONS[key_img])
+        if isinstance(ex, DockerExecutor) and image_digest(ex.image) is None:
+            raise ContainerError(
+                f"{ex.image} is not built (or docker is unavailable): "
+                "run `uv run xut container build`"
+            )
         workdir.mkdir(parents=True, exist_ok=True)
         out: dict[str, str] = {}
-        for key, argv in (
-            ("iverilog", ["iverilog", "-V"]),
-            ("verilator", ["verilator", "--version"]),
-            ("cocotb", ["cocotb-config", "--version"]),
-        ):
+        for key, argv, banner in _TOOLS:
             log = workdir / f".versions-{uuid.uuid4().hex}.log"
             try:
-                # `iverilog -V` exits non-zero without a source file; only the banner matters.
-                ex.run(argv, cwd=workdir, log=log, timeout_s=60)
+                rc = ex.run(argv, cwd=workdir, log=log, timeout_s=60)
                 # Line 0 is the executor's own "$ <argv>" header.
-                lines = [ln for ln in log.read_text().splitlines()[1:] if ln.strip()]
+                lines = [ln.strip() for ln in log.read_text().splitlines()[1:] if ln.strip()]
             finally:
                 log.unlink(missing_ok=True)
-            out[key] = lines[0].strip() if lines else "unknown"
+            first = lines[0] if lines else ""
+            bad = not first.startswith(banner) if banner else rc != 0 or not first
+            if bad:
+                raise ContainerError(
+                    f"{key}: `{' '.join(argv)}` failed in {key_img} (exit {rc}): "
+                    f"{' | '.join(lines[:3]) or '(no output)'}; if the image is missing, "
+                    "run `uv run xut container build`"
+                )
+            out[key] = first
         _VERSIONS[key_img] = out
         return dict(out)
