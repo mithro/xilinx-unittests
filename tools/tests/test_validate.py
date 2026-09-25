@@ -288,7 +288,7 @@ def test_data_change_near_free_clock_edge_is_sim_only(fdce_map):
     r = validate(loads(FREE + "t=125500 set in[2]=1\nt=127000 sample S0\n"), fdce_map)
     assert r.errors == []
     assert r.hw_reasons == [
-        "t=125500: set in[2:2] is 500 ps from free-running clk0 edge f at t=125000 "
+        "t=125500: set in[2] is 500 ps from free-running clk0 edge f at t=125000 "
         "(< async_sep_ps=1000; spec §5.1, Ruling S8)"
     ]
 
@@ -372,3 +372,45 @@ def test_in_memory_bad_clock_does_not_hang(fdce_map):
     base = loads(HDR)
     v = Vec(base.header, [Clock("clk0", 0, 0, 0, 50, "free")], [Event(130000, "sample", "S0")])
     assert any("period" in e for e in validate(v, fdce_map).errors)
+
+
+# --- A4: mark() raises a XutError; vec check never prints a bare "hw no" for invalid files
+
+
+def test_mark_refusal_is_a_xut_error(fdce_map):
+    from xut.errors import XutError
+    from xut.validate import ValidationError
+
+    v = _v("t=121000 edge clk0 f\n")
+    with pytest.raises(ValidationError, match="invalid stimulus") as ei:
+        mark(v, validate(v, fdce_map))
+    assert isinstance(ei.value, XutError) and isinstance(ei.value, ValueError)
+
+
+def test_cli_vec_check_invalid_file_has_no_hw_verdict(tmp_path, fdce_map):
+    mp = _write_map(tmp_path, fdce_map)
+    bad = tmp_path / "bad.xvec"
+    bad.write_text(HDR + "t=121000 edge clk0 f\n")
+    r = CliRunner().invoke(main, ["vec", "check", str(bad), "--map", str(mp)])
+    assert r.exit_code == 1
+    lines = r.output.splitlines()
+    assert lines[0].startswith("error: t=121000:")
+    assert "hw_renderable: n/a (invalid)" in lines
+    assert "hw_renderable: no" not in r.output
+
+
+# --- A5: the header's cfg and attr.* must match the wrapper map
+
+
+def test_cfg_and_attrs_are_compared_with_the_map():
+    m = build_map(
+        spec_from_catalog(load_entry("7series", "FDCE", repo_root()), "c", {"INIT": "1'b1"})
+    )
+    good = loads(HDR.replace("seed=0", "seed=0 attr.INIT=1'b1"))
+    assert validate(good, m).errors == []
+    errors = validate(loads(HDR.replace("cfg=c", "cfg=d")), m).errors
+    assert any("cfg=d" in e for e in errors)
+    errors = validate(loads(HDR.replace("seed=0", "seed=0 attr.INIT=1'b0")), m).errors
+    assert any("attr.INIT" in e for e in errors)
+    errors = validate(loads(HDR.replace("seed=0", "seed=0 attr.IS_C_INVERTED=1'b1")), m).errors
+    assert any("attr.IS_C_INVERTED" in e for e in errors)
