@@ -83,3 +83,43 @@ def test_reject_check_writes_header_only_trace(tmp_path):
     assert r.status == "pass" and r.stimulus_sha256 and r.trace_sha256
     t = xtr.load(cd / "trace.xtr")
     assert t.samples == {} and t.header == {**hdr, "expect": "reject"}
+
+
+# --- ruling S13a: evidence never comes from INFO lines or from file paths ---------------
+
+ILLEGAL_DIR = "/work/build/rtl/x/unisim-2025.2/7series.FDRE.L0.illegal_init/cfg-init_x"
+
+
+@pytest.mark.parametrize(
+    "compile_text",
+    [
+        # xsim style: an INFO line whose path holds "illegal" and the attribute name
+        f'INFO: [VRFC 10-2263] Analyzing SystemVerilog file "{ILLEGAL_DIR}/INIT/dut.v"\n'
+        f"ERROR: [VRFC 10-4982] syntax error near 'endmodule' [{ILLEGAL_DIR}/tb.sv:3]\n",
+        # iverilog style: the only name and diagnostic word are in the path
+        f"{ILLEGAL_DIR}/INIT/xut_dut.v:3: syntax error\n",
+        # a quoted path in an error line
+        f'ERROR: cannot parse "{ILLEGAL_DIR}/INIT.v" near line 3\n',
+        "NOTE: INIT is illegal here (a note is never evidence)\n",
+    ],
+)
+def test_path_or_info_words_are_not_evidence(compile_text):
+    r = _r(SimOutcome(False, compile_text, None, ""))
+    assert r.status == "error", r.reason
+
+
+def test_runtime_path_words_are_not_evidence():
+    run = (
+        "Error: tb says no\n"
+        f"Time: 1 ns  Process: /tb/Initial  File: {ILLEGAL_DIR}/INIT/invalid.sv Line: 3\n"
+    )
+    assert _r(SimOutcome(True, "", 0, run)).status == "error"
+
+
+def test_evidence_beside_a_path_still_counts():
+    """Stripping paths keeps the rest of the line: a real diagnostic naming INIT passes."""
+    text = f"{ILLEGAL_DIR}/dut.v:3: error: parameter INIT value 1'bx not allowed\n"
+    r = _r(SimOutcome(False, text, None, ""))
+    assert r.status == "pass", r.reason
+    run = f"Error: [Unisim FDRE-1] The attribute INIT is illegal. File: {ILLEGAL_DIR}/x.v\n"
+    assert _r(SimOutcome(True, "", 0, run)).status == "pass"
