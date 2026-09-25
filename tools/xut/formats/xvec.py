@@ -6,7 +6,9 @@ Grammar (``#`` starts a comment everywhere except the header line)::
     file      := header NL { line NL }
     header    := "# xut-vec 2" { SP key "=" token }
                  required: prim cfg nin nout nclk settle_ps seed
-                 optional: async_sep_ps expect attr.<NAME>
+                 optional: async_sep_ps expect illegal attr.<NAME>
+                 (illegal=<NAME>[,<NAME>...]: the attributes an expect=reject
+                 configuration makes illegal; xut.validate requires it there)
     line      := [ directive ] [ "#" comment ]
     directive := "clock" SP clk SP "period=" INT SP "phase=" INT SP "duty=" INT
                      SP "mode=" ( "stepped" | "free" )
@@ -71,7 +73,7 @@ MAGIC = "xut-vec"
 VERSION = 2
 REQUIRED = ("prim", "cfg", "nin", "nout", "nclk", "settle_ps", "seed")
 INT_KEYS = ("nin", "nout", "nclk", "settle_ps", "seed", "async_sep_ps")
-HEADER_ORDER = REQUIRED + ("async_sep_ps", "expect")
+HEADER_ORDER = REQUIRED + ("async_sep_ps", "expect", "illegal")
 
 _HEADER = re.compile(r"^#\s*xut-vec\s+(\d+)\b(.*)$")
 _KV = re.compile(r'([A-Za-z_][\w.]*)=("(?:[^"\\]|\\.)*"|\S+)')
@@ -156,6 +158,12 @@ class Vec:
     @property
     def expect(self) -> str | None:
         return self.header.get("expect")
+
+    @property
+    def illegal(self) -> list[str]:
+        """The attributes an ``expect=reject`` configuration declares illegal (header
+        ``illegal=<NAME>[,<NAME>...]``; ruling S13b)."""
+        return [n for n in self.header.get("illegal", "").split(",") if n]
 
     @property
     def attrs(self) -> dict[str, str]:

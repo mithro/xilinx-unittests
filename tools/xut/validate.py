@@ -53,6 +53,10 @@ Explicitly deferred, not supported yet:
   now, so a cycle-exact DRDY expectation is NOT refused here yet; the DRP
   transaction layer that §5.5 requires builds on the map's class record.
 
+An ``expect=reject`` stimulus must name the attribute(s) it makes illegal (header
+``illegal=``, each one an ``attr.<NAME>`` it sets; ruling S13b): the reject rule accepts
+only an error naming one of them as evidence.
+
 Zero evidence is never a pass (ruling S15): a stimulus that is not ``expect=reject``
 must have at least one ``sample``, else it is an error (its expected trace would be
 empty, and every runner would "pass" it while checking nothing).
@@ -233,6 +237,22 @@ def _nearest(ts: list[int], t: int) -> tuple[int, int] | None:
     return min(near) if near else None
 
 
+def _check_reject(vec: Vec, r: Report) -> None:
+    """Ruling S13b: an ``expect=reject`` configuration names the attribute(s) it makes
+    illegal (header ``illegal=``), each one it sets; nothing else carries ``illegal``."""
+    if vec.expect == "reject":
+        if not vec.illegal:
+            r.errors.append(
+                "reject config must name its illegal attribute: header illegal=<NAME>[,...] "
+                "(GenContext.dut(..., expect='reject', illegal=[...]))"
+            )
+        for n in vec.illegal:
+            if n not in vec.attrs:
+                r.errors.append(f"illegal={n} is not an attribute this configuration sets")
+    elif "illegal" in vec.header:
+        r.errors.append("header illegal= is only meaningful with expect=reject")
+
+
 def _check_gsr_release(timed: list[Event], sep: int, r: Report) -> None:
     """glbl releases its start-up GSR at ROC_WIDTH with no event in the file: an
     implicit async change. Any event (free-clock edges and samples included) within
@@ -279,6 +299,7 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
     )  # stable: file order within a time
     edges = [e.t for e in timed if e.op == "edge"]
     _check_gsr_release(timed, sep, r)
+    _check_reject(vec, r)
     if vec.expect != "reject" and not any(e.op == "sample" for e in vec.events):
         r.errors.append(
             "no samples: a stimulus must sample the outputs at least once (ruling S15: "

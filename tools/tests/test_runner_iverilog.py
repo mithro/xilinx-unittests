@@ -671,3 +671,30 @@ def test_sv_testbench_receives_the_recorded_seed(ctx):
         assert xtr.load(d / "cfg-default/trace.xtr").header["seed"] == str(want)
         assert xtr.load(d / "trace.xtr").header["seed"] == str(want)
         assert _result(d)["seeds"]["stimulus"] == want
+
+
+# --- ruling S13b: reject evidence is an error naming the illegal attribute ---------------
+
+
+@pytest.mark.container
+@pytest.mark.parametrize(
+    ("line", "why"),
+    [
+        ('$display("Warning: INIT value is invalid, using default");', "without an error/fatal"),
+        ('$display("XUT_ERROR bad op; Attribute Syntax Error: INIT");', "testbench error"),
+        ('$display("Attribute Syntax Error: IS_C_INVERTED=%b", INIT);', "naming INIT"),
+    ],
+)
+def test_reject_false_pass_paths_are_errors(work, toy, line, why):
+    """PR B gate (b) #3: each of these used to pass the INIT reject test."""
+    ctx = RunContext(work, "rtl", make_model_source(work / "ms"))
+    m = work / "ms/unisims/TOYFF.v"
+    m.write_text(m.read_text().replace('$display("Attribute Syntax Error: INIT=%b", INIT);', line))
+    case = _case("7series.TOYFF.L0.reject")
+    _python(ctx, case)
+    res = IverilogRunner().run(case, ctx)
+    assert why in (res.configs[0].reason or ""), res.configs[0].reason
+    assert res.status == "error", (
+        res.reason,
+        (workdir(ctx, "iverilog", case.id) / "run.log").read_text(),
+    )

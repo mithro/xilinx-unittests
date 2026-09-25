@@ -23,7 +23,7 @@ times the builder emits are ever closer than that.
 from __future__ import annotations
 
 import random
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -58,6 +58,7 @@ class VecBuilder:
         gap_ps: int = DEFAULT_GAP_PS,
         async_sep_ps: int = DEFAULT_ASYNC_SEP_PS,
         expect: str | None = None,
+        illegal: Sequence[str] = (),
     ) -> None:
         for name, v in (("gap_ps", gap_ps), ("async_sep_ps", async_sep_ps)):
             if v < MIN_SEP_PS:
@@ -76,6 +77,7 @@ class VecBuilder:
             )
         self.m, self.seed, self.settle, self.period = m, seed, settle_ps, period_ps
         self.gap, self.sep, self.expect = gap_ps, async_sep_ps, expect
+        self.illegal = list(illegal)
         self.t = settle_ps
         self._events: list[Event] = []
         self._vals: dict[str, int | str] = {p: 0 for p in m.in_ports()}
@@ -292,6 +294,8 @@ class VecBuilder:
         }
         if self.expect:
             header["expect"] = self.expect
+        if self.illegal:
+            header["illegal"] = ",".join(self.illegal)
         header.update({f"attr.{k}": v for k, v in m.attrs.items()})
         clocks = [Clock(f"clk{b.bit}", b.bit, self.period, 0, 50, "stepped") for b in m.of("clk")]
         self._after(self._last_change + self.gap)
@@ -317,9 +321,12 @@ class GenContext:
         *,
         allow_illegal: bool = False,
         expect: str | None = None,
+        illegal: Sequence[str] = (),
         **attrs: object,
     ) -> VecBuilder:
-        """A builder for configuration ``cfg`` of this primitive with ``attrs`` set."""
+        """A builder for configuration ``cfg`` of this primitive with ``attrs`` set. An
+        ``expect="reject"`` configuration names the attribute(s) it makes illegal in
+        ``illegal`` (ruling S13b): a rejection passes only on an error naming one."""
         from xut.catalog.model import load_entry
 
         if cfg in self.specs:
@@ -328,4 +335,4 @@ class GenContext:
             load_entry(self.family, self.prim, self.root), cfg, attrs, allow_illegal=allow_illegal
         )
         self.specs[cfg] = spec
-        return VecBuilder(build_map(spec), seed=self.seed, expect=expect)
+        return VecBuilder(build_map(spec), seed=self.seed, expect=expect, illegal=illegal)

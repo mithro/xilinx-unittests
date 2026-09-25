@@ -220,7 +220,7 @@ class IverilogRunner(Runner):
             rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
         out = SimOutcome(compiled_ok, ctext, rc, rtext)
         if vec.expect == "reject":
-            return reject_check(cd, out, vec.attrs, case.prim, header)
+            return reject_check(cd, out, vec.illegal, header)
         if (r := classify_run(cfg, out)) is not None:
             return r
         return vector_check(cd, m, comp.labels, exp, header, self.x_observable)
