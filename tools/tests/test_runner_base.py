@@ -466,18 +466,13 @@ def test_run_tests_unknown_runner_is_error(ctx):
 
 
 @pytest.mark.container
-def test_sim_tool_versions_from_16_threads(monkeypatch):
+def test_sim_tool_versions_from_16_threads(monkeypatch, tmp_path):
     from xut import container
-    from xut.paths import repo_root
 
     monkeypatch.setattr(container, "_VERSIONS", {})
-    work = repo_root() / "build" / "test-versions"
+    ex = container.DockerExecutor(root=tmp_path)
     with ThreadPoolExecutor(16) as pool:
-        got = list(
-            pool.map(
-                lambda _: container.sim_tool_versions(container.DockerExecutor(), work), range(16)
-            )
-        )
+        got = list(pool.map(lambda _: container.sim_tool_versions(ex, tmp_path), range(16)))
     assert all(g == got[0] for g in got)
     assert set(got[0]) == {"iverilog", "verilator", "cocotb"}
     assert all(v and v != "unknown" for v in got[0].values())
