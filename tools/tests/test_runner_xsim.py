@@ -712,3 +712,28 @@ def test_sv_checkpoints_without_checks_is_error(ctx, work):
     tb.write_text(text)
     res = XsimRunner().run(case, ctx)
     assert res.status == "error" and "0 XUT_CHECK(s) executed" in res.configs[0].reason
+
+
+# --- PR B gate (a) N1: sv seed provenance ------------------------------------------------
+
+
+@pytest.mark.vivado
+def test_sv_testbench_receives_the_recorded_seed(ctx):
+    """The seed in the configuration trace header, the test trace header and
+    result.json seeds.stimulus is the one the testbench saw (XUT_SEED define)."""
+    import dataclasses
+
+    from xut.runners.base import seed_for
+
+    case = _case("7series.TOYFF.L1.sv_basic")
+    for c, want in (
+        (ctx, seed_for(case, ctx)),
+        (dataclasses.replace(ctx, seed=4000000000), 4000000000),
+    ):
+        res = XsimRunner().run(case, c)
+        d = workdir(c, "xsim", case.id)
+        assert res.status == "pass", (res.reason, (d / "run.log").read_text())
+        assert f"XUT_SEED {want}" in (d / "run.log").read_text()
+        assert xtr.load(d / "cfg-default/trace.xtr").header["seed"] == str(want)
+        assert xtr.load(d / "trace.xtr").header["seed"] == str(want)
+        assert _result(d)["seeds"]["stimulus"] == want

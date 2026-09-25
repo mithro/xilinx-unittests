@@ -36,6 +36,10 @@
 `endif
 integer xut_fd = 0;  // 0: trace.body not opened yet
 integer xut_errors = 0;
+`ifndef XUT_SEED
+`define XUT_SEED 64'd0  // the runner always defines it (sv_seed_define); sv_check verifies
+`endif
+reg [63:0] xut_seed = `XUT_SEED;  // the run's seed, as recorded in trace.xtr / result.json
 integer xut_checks = 0;  // XUT_CHECK/XUT_CHECKN executed: a pass needs >= 1 (ruling S15)
 `ifdef XUT_GLBL_INSTANCE
 // Fallback for Verilator (Task 15, Step 1): glbl as an instance of the testbench, found
@@ -51,6 +55,7 @@ endtask
 task automatic xut_finish;
   begin
     if (xut_fd != 0) $fclose(xut_fd);
+    $display("XUT_SEED %0d", xut_seed);
     $display("XUT_CHECKS %0d", xut_checks);
     if (xut_errors == 0) $display("XUT_PASS");
     else $display("XUT_FAIL %0d check(s) failed", xut_errors);

@@ -51,7 +51,7 @@ def _sv(tmp_path: Path, body: str, log: str):
 
 
 def test_sv_pass_needs_checks_and_samples(tmp_path):
-    assert _sv(tmp_path, "a  Q=1\n", "XUT_CHECKS 2\nXUT_PASS\n").status == "pass"
+    assert _sv(tmp_path, "a  Q=1\n", "XUT_SEED 0\nXUT_CHECKS 2\nXUT_PASS\n").status == "pass"
 
 
 def test_sv_testbench_that_only_calls_xut_finish_is_error(tmp_path):
@@ -79,3 +79,24 @@ def test_sv_without_a_check_count_is_error(tmp_path):
 def test_sv_failure_still_wins(tmp_path):
     r = _sv(tmp_path, "", "XUT_FAIL gsr: got 0 expected 1 at 5\nXUT_CHECKS 1\n")
     assert r.status == "fail"
+
+
+# --- PR B gate (a) N1: the seed an sv testbench receives is the one recorded -------------
+
+
+def test_sv_seed_seen_by_the_testbench_must_match_the_header(tmp_path):
+    ok = "XUT_SEED 0\nXUT_CHECKS 1\nXUT_PASS\n"
+    assert _sv(tmp_path, "a  Q=1\n", ok).status == "pass"
+    r = _sv(tmp_path, "a  Q=1\n", ok.replace("XUT_SEED 0", "XUT_SEED 7"))
+    assert r.status == "error" and "seed" in r.reason
+
+
+def test_sv_seed_define():
+    import pytest
+
+    from xut.runners.sim import ParamError, sv_seed_define
+
+    assert sv_seed_define(0) == "64'd0" and sv_seed_define(2**64 - 1) == f"64'd{2**64 - 1}"
+    for bad in (-1, 2**64):
+        with pytest.raises(ParamError, match="seed"):
+            sv_seed_define(bad)
