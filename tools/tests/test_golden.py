@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from xut.catalog.unisim import HdlModule, HdlPort
+from xut.catalog.unisim import HdlModule, HdlParam, HdlPort
 from xut.formats.xvec import loads
 from xut.golden import replay
 from xut.wrap import build_map, spec_from_hdl
@@ -44,10 +44,10 @@ MAP = build_map(
             "TOYFF",
             Path("x"),
             [HdlPort("Q", "output", 1), HdlPort("C", "input", 1), HdlPort("D", "input", 1)],
-            [],
+            [HdlParam("INIT", "bits", 1, 0)],
         ),
         "c",
-        {},
+        {"INIT": 1},  # validate() checks the header's attr.* against the map
     )
 )
 VEC = """\
@@ -127,7 +127,7 @@ def test_gsr_released_before_first_event():
 
 def test_free_clock_edges_are_expanded():
     text = """\
-# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0
+# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0 attr.INIT=1'b1
 clock clk0 period=10000 phase=0 duty=50 mode=free
 t=102000 set in[0]=1
 t=112000 sample S0
@@ -167,7 +167,7 @@ def test_hw_unrenderable_but_valid_stimulus_replays():
 
     # D changes 500 ps before a free-clock edge: legal for simulation, hw_renderable no.
     text = """\
-# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0
+# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0 attr.INIT=1'b1
 clock clk0 period=10000 phase=0 duty=50 mode=free
 t=109500 set in[0]=1
 t=112000 sample S0
@@ -414,7 +414,7 @@ def test_cotimed_sets_via_builder():
     from xut.stimgen import VecBuilder
 
     vb = VecBuilder(MAP_CE, seed=0)
-    vb.sample("S0")
+    vb.sample()  # S0; labels are unique, so let the builder number them
     vb.set(D=1, CE=1)
     vb.cycle()
     vec = vb.build()
