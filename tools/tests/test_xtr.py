@@ -217,3 +217,13 @@ def test_diff_names_a_portless_sample_present():
     a.add("S0", {})
     (m,) = diff(a, b)
     assert (m.expected, m.actual, m.kind) == ("present", "missing", "missing-sample")
+
+
+def test_compare_and_diff_word_sample_presence_alike():
+    exp = loads(EXP)
+    a = _act()
+    del a.samples["S0"]
+    a.add("S9", {"Q": "0"})
+    got = {m.kind: (m.expected, m.actual) for m in compare(exp, a)}
+    assert got["missing-sample"] == ("present", "missing")
+    assert got["extra-sample"] == ("missing", "present")
