@@ -50,6 +50,74 @@ def test_render_progress_marks_pass_and_fail_and_not_run():
         assert cell.strip() == "–" * 5
 
 
+def test_render_progress_legend_lists_all_seven_marks():
+    out = render_progress([], _unit(primitives=()))
+    legend = next(line for line in out.splitlines() if line.startswith("Marks:"))
+    for symbol, label in [
+        ("✓", "pass"),
+        ("✗", "fail"),
+        ("!", "error"),
+        ("s", "skip"),
+        ("–", "not-run"),
+        ("∅", "unsupported"),
+        ("·", "n/a"),
+    ]:
+        assert f"`{symbol}` {label}" in legend
+
+
+def test_render_progress_skip_mark_is_distinct_from_not_run():
+    """A deliberate `skip` (skipped with a reason) and a `not-run` cell (never
+    attempted) mean different things and must render distinct marks (controller
+    ruling on Task 7 concern 1)."""
+    fdre = _status("FDRE", results={"L2/xsim/rtl": "skip"})
+    fdse = _status("FDSE")  # no results at all -> not-run
+    out = render_progress([fdre, fdse], _unit())
+
+    fdre_row = next(line for line in out.splitlines() if line.startswith("| FDRE "))
+    fdse_row = next(line for line in out.splitlines() if line.startswith("| FDSE "))
+    l2_cell_fdre = fdre_row.split("|")[6]
+    l2_cell_fdse = fdse_row.split("|")[6]
+
+    assert "s" in l2_cell_fdre
+    assert l2_cell_fdse.strip() == "–" * 5
+    assert "s" not in l2_cell_fdse
+
+
+def test_render_progress_precedence_order():
+    """fail > error > pass > skip > not-run > unsupported > n/a (controller ruling
+    on Task 7 concern 1) when several flows of one runner disagree."""
+    prim = _status(
+        "FDRE",
+        results={
+            # python: pass vs skip -> pass wins.
+            "L0/python/a": "pass",
+            "L0/python/b": "skip",
+            # xsim: skip vs not-run -> skip wins.
+            "L1/xsim/a": "skip",
+            "L1/xsim/b": "not-run",
+            # iverilog: not-run vs unsupported -> not-run wins.
+            "L2/iverilog/a": "not-run",
+            "L2/iverilog/b": "unsupported",
+            # verilator: unsupported vs n/a -> unsupported wins.
+            "L3/verilator/a": "unsupported",
+            "L3/verilator/b": "n/a",
+            # hw: error vs pass -> error wins (fail > error > pass, unaffected).
+            "L0/hw/a": "error",
+            "L0/hw/b": "pass",
+        },
+    )
+    out = render_progress([prim], _unit(primitives=("FDRE",)))
+    row = next(line for line in out.splitlines() if line.startswith("| FDRE "))
+    # Columns: '' Primitive Unit Model L0 L1 L2 L3 Coverage Uncovered Findings ''
+    l0, l1, l2, l3 = (row.split("|")[i] for i in (4, 5, 6, 7))
+    python_mark, _xsim, _iverilog, _verilator, hw_mark = l0.strip()
+    assert python_mark == "✓"  # pass beats skip
+    assert hw_mark == "!"  # error beats pass
+    assert l1.strip()[1] == "s"  # xsim: skip beats not-run
+    assert l2.strip()[2] == "–"  # iverilog: not-run beats unsupported
+    assert l3.strip()[3] == "∅"  # verilator: unsupported beats n/a
+
+
 def test_render_progress_coverage_percentage():
     fdre = _status("FDRE", covered=["port:C", "port:D"], uncovered=[f"port:{i}" for i in range(6)])
     out = render_progress([fdre], _unit(primitives=("FDRE",)))
