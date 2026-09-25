@@ -31,7 +31,7 @@
     },
     "findings": {
       "type": "array",
-      "description": "Open findings, referenced by finding file stem (findings/<PRIM>-<slug>.md without the directory or .md suffix), e.g. \"FDRE-reset-glitch\" for findings/FDRE-reset-glitch.md.",
+      "description": "OPEN findings only, referenced by finding file stem (findings/<PRIM>-<slug>.md without the directory or .md suffix), e.g. \"FDRE-reset-glitch\" for findings/FDRE-reset-glitch.md. Closing a finding removes its stem from this list; the findings/<stem>.md file itself is never deleted, only its status updates to closed.",
       "items": {"type": "string"}
     },
     "coverage": {

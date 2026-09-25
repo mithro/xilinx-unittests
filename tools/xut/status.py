@@ -117,17 +117,28 @@ def current_branch() -> str:
 
     A thin, separately-mockable wrapper so ``xut status generate`` can be tested
     without depending on the actual checked-out branch.
+
+    Raises ``RuntimeError`` with a short, readable message (never a raw
+    ``subprocess.CalledProcessError``) if git fails, e.g. outside a checkout —
+    the same defensive style ``cli._generated_header`` uses for the same command,
+    except here the failure can't be silently defaulted away: the branch decides
+    whether ``xut status generate`` is allowed to run at all. The CLI turns this
+    into a clean, non-traceback ``click.ClickException``.
     """
     from xut.paths import repo_root
 
-    result = subprocess.run(
+    proc = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         cwd=repo_root(),
         capture_output=True,
         text=True,
-        check=True,
     )
-    return result.stdout.strip()
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "current_branch(): `git rev-parse --abbrev-ref HEAD` failed: "
+            + (proc.stderr.strip() or f"exit code {proc.returncode}")
+        )
+    return proc.stdout.strip()
 
 
 def _runner_mark(results: dict, level: str, runner: str) -> str:
@@ -164,17 +175,47 @@ def _has_pass(status: dict, level: str) -> bool:
     return any(v == "pass" for k, v in status["results"].items() if k.startswith(prefix))
 
 
+def _unit_of_map(units: dict) -> dict[str, str]:
+    """primitive -> owning work-unit name, from `xut.workunits.load_units`'s result.
+
+    Shared by `render_progress` and `render_todo` so the two never disagree on
+    which unit owns a primitive.
+    """
+    return {p: name for name, u in units.items() for p in u.primitives}
+
+
+def _primitive_table_row(status: dict, unit: str) -> str:
+    prim = status["primitive"]
+    cells = " | ".join(_level_cell(status["results"], level) for level in LEVELS)
+    return (
+        f"| {prim} | {unit} | {status['model_library']} | {cells} | "
+        f"{_coverage_pct(status['coverage'])} | {len(status['coverage']['uncovered'])} | "
+        f"{len(status['findings'])} |"
+    )
+
+
+_PRIMITIVE_TABLE_HEADER = (
+    "| Primitive | Unit | Model | L0 | L1 | L2 | L3 | Coverage | Uncovered | Findings |"
+)
+_PRIMITIVE_TABLE_RULE = "|---|---|---|---|---|---|---|---|---|---|"
+
+
 def render_progress(statuses: list[dict], units: dict) -> str:
-    """Render PROGRESS.md: a per-group summary table, then a per-primitive table
-    (spec §11; Task 7 brief). `units` is `xut.workunits.load_units`'s result."""
-    unit_of = {p: name for name, u in units.items() for p in u.primitives}
+    """Render PROGRESS.md: a per-group summary table, then one per-primitive table
+    per UG953 group (spec §11; Task 7 brief, review round 1). `units` is
+    `xut.workunits.load_units`'s result."""
+    unit_of = _unit_of_map(units)
     group_of = {p: u.group_dirs[0] for u in units.values() for p in u.primitives}
 
     by_group: dict[str, list[dict]] = {}
     for s in statuses:
+        # A status whose primitive isn't in `units` (stale/renamed entry, or a
+        # unit map the caller hasn't updated yet) has no known UG953 group:
+        # bucket it under "?" rather than raising, so one bad status entry
+        # doesn't take down the whole report.
         by_group.setdefault(group_of.get(s["primitive"], "?"), []).append(s)
 
-    lines = ["# Progress", "", _LEGEND, ""]
+    lines = ["# Progress", "", _LEGEND, "", "## Summary", ""]
     lines.append("| Group | Primitives | L0 pass | L1 pass | L2 pass | L3 pass |")
     lines.append("|---|---|---|---|---|---|")
     for group in sorted(by_group):
@@ -183,19 +224,21 @@ def render_progress(statuses: list[dict], units: dict) -> str:
         lines.append(f"| {group} | {len(entries)} | " + " | ".join(counts) + " |")
     lines.append("")
 
-    lines.append(
-        "| Primitive | Unit | Model | L0 | L1 | L2 | L3 | Coverage | Uncovered | Findings |"
-    )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
-    for s in sorted(statuses, key=lambda s: s["primitive"]):
-        prim = s["primitive"]
-        cells = " | ".join(_level_cell(s["results"], level) for level in LEVELS)
-        lines.append(
-            f"| {prim} | {unit_of.get(prim, s['work_unit'])} | {s['model_library']} | "
-            f"{cells} | {_coverage_pct(s['coverage'])} | {len(s['coverage']['uncovered'])} | "
-            f"{len(s['findings'])} |"
+    lines.append("## Primitives")
+    lines.append("")
+    for group in sorted(by_group):
+        lines.append(f"### {group}")
+        lines.append("")
+        lines.append(_PRIMITIVE_TABLE_HEADER)
+        lines.append(_PRIMITIVE_TABLE_RULE)
+        rows = sorted(
+            by_group[group],
+            key=lambda s: (unit_of.get(s["primitive"], s["work_unit"]), s["primitive"]),
         )
-    return "\n".join(lines) + "\n"
+        for s in rows:
+            lines.append(_primitive_table_row(s, unit_of.get(s["primitive"], s["work_unit"])))
+        lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
 
 
 def render_todo(statuses: list[dict], entries: dict) -> str:
@@ -203,7 +246,7 @@ def render_todo(statuses: list[dict], entries: dict) -> str:
     cells (with the primitive's `notes` as the reason, if any) and open findings.
     `entries` is `xut.workunits.load_units`'s result. Primitives with nothing
     outstanding are omitted, as are units with no outstanding primitive."""
-    unit_of = {p: name for name, u in entries.items() for p in u.primitives}
+    unit_of = _unit_of_map(entries)
     by_unit: dict[str, list[dict]] = {}
     for s in statuses:
         by_unit.setdefault(unit_of.get(s["primitive"], s["work_unit"]), []).append(s)
