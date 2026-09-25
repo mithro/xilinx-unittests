@@ -16,8 +16,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils
       # --locked: fail if uv.lock is out of date with pyproject.toml instead of re-resolving.
       - run: uv sync --locked --extra dev
-      - run: uv run ruff check tools
-      - run: uv run ruff format --check tools
+      - run: uv run ruff check tools models
+      - run: uv run ruff format --check tools models
       - run: uv run pytest -v
       - run: uv run xut lint
       - name: xut lint --branch (branch-path ownership)
