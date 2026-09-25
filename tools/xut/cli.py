@@ -316,3 +316,40 @@ def wrap_cmd(
     )
     m = write_dut(spec, out, cocotb_top=cocotb_top)
     click.echo(f"{out}: nclk={m.nclk} nin={m.nin} nout={m.nout}")
+
+
+@main.group("vec")
+def vec_grp() -> None:
+    """Stimulus (.xvec) utilities."""
+
+
+@vec_grp.command("check")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--map",
+    "map_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="the wrapper's xut_dut.map.json",
+)
+def vec_check_cmd(path: Path, map_path: Path) -> None:
+    """Validate an .xvec against a wrapper map (spec §5.1 class rules).
+
+    Prints every error and whether the file is hardware-renderable; exits 1 on errors.
+    """
+    from xut.formats.xvec import XvecError, load
+    from xut.validate import validate
+    from xut.wrap import DutMap
+
+    try:
+        vec = load(path)
+    except XvecError as e:
+        raise click.ClickException(f"{path}: {e}") from e
+    r = validate(vec, DutMap.load(map_path))
+    for e in r.errors:
+        click.echo(f"error: {e}")
+    click.echo(f"hw_renderable: {'yes' if r.hw_renderable else 'no'}")
+    for h in r.hw_reasons:
+        click.echo(f"  reason: {h}")
+    if r.errors:
+        raise SystemExit(1)
