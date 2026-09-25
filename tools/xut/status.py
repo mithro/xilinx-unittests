@@ -15,6 +15,7 @@ import yaml
 
 from xut import schemas
 from xut.catalog.model import CatalogEntry, is_enumerated
+from xut.errors import GitError
 
 #: Valid values for a `results` entry (spec §11).
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
@@ -118,7 +119,7 @@ def current_branch() -> str:
     A thin, separately-mockable wrapper so ``xut status generate`` can be tested
     without depending on the actual checked-out branch.
 
-    Raises ``RuntimeError`` with a short, readable message (never a raw
+    Raises ``GitError`` (a RuntimeError) with a short, readable message (never a raw
     ``subprocess.CalledProcessError``) if git fails, e.g. outside a checkout —
     the same defensive style ``cli._generated_header`` uses for the same command,
     except here the failure can't be silently defaulted away: the branch decides
@@ -138,7 +139,7 @@ def current_branch() -> str:
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(
+        raise GitError(
             "current_branch(): `git rev-parse --abbrev-ref HEAD` failed: "
             + (proc.stderr.strip() or f"exit code {proc.returncode}")
         )

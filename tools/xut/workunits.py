@@ -14,6 +14,8 @@ from pathlib import Path
 
 import yaml
 
+from xut.errors import ConfigError
+
 #: A generated catalog file's basename (before `.yaml`) is exactly a
 #: primitive name: uppercase letters, digits and `_` only, never a `.`.
 #: `<PRIM>.overrides.yaml` is a work unit's, never infra's, but a naive
@@ -56,7 +58,7 @@ class WorkUnit:
 def load_units(root: Path) -> dict[str, WorkUnit]:
     """Load `docs/work-units.yaml` from `root` into a name -> WorkUnit map.
 
-    Raises ValueError naming any primitive listed in more than one unit.
+    Raises `ConfigError` (a ValueError) naming any primitive listed in more than one unit.
     """
     data = yaml.safe_load((root / "docs/work-units.yaml").read_text())
     family = data["family"]
@@ -66,7 +68,7 @@ def load_units(root: Path) -> dict[str, WorkUnit]:
         primitives = tuple(spec["primitives"])
         for prim in primitives:
             if prim in seen:
-                raise ValueError(f"primitive {prim} listed in both {seen[prim]!r} and {name!r}")
+                raise ConfigError(f"primitive {prim} listed in both {seen[prim]!r} and {name!r}")
             seen[prim] = name
         units[name] = WorkUnit(
             name=name,

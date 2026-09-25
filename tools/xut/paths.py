@@ -3,6 +3,8 @@
 
 from pathlib import Path
 
+from xut.errors import NotInRepoError
+
 _MARKER = 'name = "xilinx-unittests"'
 
 
@@ -13,7 +15,7 @@ def repo_root(start: Path | None = None) -> Path:
         pp = d / "pyproject.toml"
         if pp.is_file() and _MARKER in pp.read_text():
             return d
-    raise FileNotFoundError(f"not inside xilinx-unittests (searched up from {here})")
+    raise NotInRepoError(f"not inside xilinx-unittests (searched up from {here})")
 
 
 def cache_dir() -> Path:

@@ -14,6 +14,7 @@ from pathlib import Path
 import jsonschema
 import yaml
 
+from xut.errors import GitError
 from xut.schemas import validate as validate_schema
 from xut.status import load_status
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
@@ -284,7 +285,7 @@ def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], st
     `--branch` mode; `--base` lets CI diff against `origin/<PR base branch>` instead of
     `origin/main`). Falls back to the bare ref (stripping a leading `origin/`) with a
     warning if `base` isn't present locally (e.g. a fresh clone with no fetch yet).
-    Raises `RuntimeError` (never a raw `CalledProcessError`) if neither resolves.
+    Raises `GitError` (a RuntimeError; never a raw `CalledProcessError`) if neither resolves.
 
     `--no-renames` is load-bearing for `check_branch_paths`: git's default rename
     detection would otherwise fold a delete+add pair into one `R###` entry and
@@ -297,7 +298,7 @@ def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], st
     if not _ref_exists(root, base):
         fallback = base.removeprefix("origin/")
         if fallback == base or not _ref_exists(root, fallback):
-            raise RuntimeError(
+            raise GitError(
                 f"_changed_files(): base ref {base!r} not found"
                 + ("" if fallback == base else f", and fallback {fallback!r} not found either")
             )
