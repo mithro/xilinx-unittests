@@ -226,8 +226,20 @@ def test_bit_attr(v, want):
     assert bit_attr(v) == want
 
 
-def test_out_accepts_dont_care_and_inferred():
-    assert Out("1-0", "inferred:clock-edge-during-GSR").bits == "1-0"
+def test_out_accepts_dont_care_only_with_doc_provenance():
+    """Ruling S14 (spec §5.3): a bit may be masked only where the documentation declares
+    it undefined. Where the docs are silent the model gives a definite inferred value."""
+    from xut_models.base import ModelContractError
+
+    assert Out("1-0", "doc:12").bits == "1-0"
+    assert Out("1", "inferred:clock-edge-during-GSR").bits == "1"
+    with pytest.raises(ModelContractError, match="don't-care"):
+        Out("1-0", "inferred:clock-edge-during-GSR")
+    # per-bit (LSB = 0): bit 0 is '-' with doc:3; bit 1 is '-' with an inferred tag
+    assert Out("1-", ("doc:3", "inferred:y")).bits == "1-"
+    with pytest.raises(ModelContractError, match="bit 1"):
+        Out("-1", ("doc:3", "inferred:y"))
+    assert issubclass(ModelContractError, ValueError)
     with pytest.raises(ValueError):
         Out("", "doc:1")
     with pytest.raises(ValueError):
@@ -467,14 +479,14 @@ def test_per_bit_provenance_written_to_trace():
         OUTPUTS = {"Q": 1, "W": 3}
 
         def outputs(self):
-            # W[2] undefined (-), W[1:0] documented; Q documented
-            w = Out("-" + "0" + str(self.q), ("doc:7", "doc:8", "inferred:doc_silent"))
+            # W[2] undefined by the docs (-), W[1] documented, W[0] inferred; Q documented
+            w = Out("-" + "0" + str(self.q), ("inferred:doc_silent", "doc:8", "doc:7"))
             return {"Q": Out(str(self.q), "doc:1"), "W": w}
 
     trace, _ = replay(Mixed, loads(VEC), MAP)
     token = trace.prov["S2"]["W"]
     assert trace.samples["S2"]["W"] == "-01"
-    assert [bit_prov(token, i) for i in range(3)] == ["doc:7", "doc:8", "inferred:doc_silent"]
+    assert [bit_prov(token, i) for i in range(3)] == ["inferred:doc_silent", "doc:8", "doc:7"]
     assert bit_prov(trace.prov["S2"]["Q"], 0) == "doc:1"
     assert xtr_loads(dumps(trace)).prov == trace.prov  # round-trips through .xtr
 
@@ -499,3 +511,29 @@ def test_per_bit_provenance_validated():
         Out("0", "inferred:a,b")  # ',' separates per-bit tags in .xtr
     with pytest.raises(ValueError):
         Out("0", "inferred:has space")
+
+
+# --- ruling S14: an inferred don't-care is refused at replay ------------------------------
+
+
+def test_replay_refuses_an_inferred_dont_care():
+    """PR B gate (b) #4: a model returning Out("-", "inferred:...") masked every output
+    and gave a vacuous pass; now replay errors."""
+    from xut_models.base import ModelContractError
+
+    class Masking(ToyDff):
+        def outputs(self):
+            return {"Q": Out("-", "inferred:whatever")}
+
+    with pytest.raises(ModelContractError, match="don't-care"):
+        replay(Masking, loads(VEC), MAP)
+
+
+def test_replay_model_contract_errors_are_named():
+    from xut_models.base import ModelContractError
+
+    class Wrong(ToyDff):
+        OUTPUTS = {"Q": 2}
+
+    with pytest.raises(ModelContractError):
+        replay(Wrong, loads(VEC), MAP)

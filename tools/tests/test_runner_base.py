@@ -685,3 +685,18 @@ def test_python_reject_config_without_illegal_attribute_is_error(ctx, toy, tmp_p
     )
     res = PythonRunner().run(case, ctx)
     assert res.status == "error" and "must name its illegal attribute" in res.reason
+
+
+def test_python_inferred_dont_care_is_error(ctx, toy, monkeypatch):
+    """Ruling S14: a golden model masking outputs with an inferred '-' is a model bug
+    reported as error, never a vacuous pass."""
+    from xut_models.base import Out
+
+    class Masking(ToyDff):
+        def outputs(self):
+            return {"Q": Out("-", "inferred:whatever")}
+
+    monkeypatch.setattr("xut_models.registry.get", lambda family, prim: Masking)
+    res = PythonRunner().run(_case(), ctx)
+    assert res.status == "error" and all(c.status == "error" for c in res.configs)
+    assert "golden model bug" in res.configs[0].reason and "don't-care" in res.configs[0].reason
