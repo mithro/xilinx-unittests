@@ -15,6 +15,7 @@ from xut.cli import main
 from xut.container import SIM_IMAGE, image_digest
 from xut.errors import XutError
 from xut.paths import repo_root
+from xut.workunits import load_family
 from xut.wrap import (
     Bit,
     DutMap,
@@ -205,6 +206,7 @@ def test_inout_split_and_obs():
     ]
     assert [(b.port, b.role) for b in m.of("out")] == [("IO", "obs"), ("IO", "obs"), ("O", "")]
     assert m.in_ports() == ["I"] and m.out_ports() == ["IO", "O"]
+    assert spec.family == load_family(repo_root())  # never hard-coded
     text = render_wrapper(spec, m)
     assert "assign IO__io[0] = in_vec[0] ? in_vec[2] : 1'bz;" in text
     assert "assign IO__io[1] = in_vec[1] ? in_vec[3] : 1'bz;" in text
