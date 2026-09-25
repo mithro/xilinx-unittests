@@ -58,7 +58,7 @@ branch may touch is determined by its **type** (spec §13.2); this is what
 | `unit/<family>/<unit>` | `owned_paths(unit)` — tests, `<PRIM>.overrides.yaml`, its models (including `_common/<unit>.py`), status files, findings — plus its own log files |
 | `integ/<name>` | `tests/7series/integration/<name>/**`, plus its own log files |
 | `docs/<topic>` | `docs/superpowers/**` (specs and plans only), plus its own log files |
-| `infra/<topic>` | anything **except** paths owned by a work unit — this includes the generated `catalog/<family>/<PRIM>.yaml` files, status-directory stubs, and `docs/work-units.yaml`, `docs/review/**` and `docs/templates/**` |
+| `infra/<topic>` | anything **except** paths owned by a work unit — this includes the generated `catalog/<family>/<PRIM>.yaml` files, `docs/work-units.yaml`, `docs/review/**` and `docs/templates/**`. One exception: infra may **add** a new `status/<family>/<PRIM>.yaml` stub, but never modify or delete an existing status file (that is the owning unit's) |
 
 Every branch, of every type, may also add its own progress-log entries:
 `log/<YYYY-MM-DDTHHMM>-<own-branch-slug>-<slug>.md`, where `<own-branch-slug>`
