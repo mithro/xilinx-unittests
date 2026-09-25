@@ -266,3 +266,53 @@ def doctor_cmd() -> None:
     runners = available_runners(checks)
     click.echo("")
     click.echo(f"available runners: {', '.join(runners) if runners else '(none)'}")
+
+
+@main.command("wrap")
+@click.argument("prim")
+@click.option("--cfg", default="default", show_default=True, help="configuration name")
+@click.option("--attr", "attrs", multiple=True, help="NAME=VALUE (Verilog literal), repeatable")
+@click.option("--out", type=click.Path(file_okay=False, path_type=Path), required=True)
+@click.option("--cocotb-top", is_flag=True, help="also write xut_cocotb_top.v")
+@click.option("--allow-illegal", is_flag=True, help="permit values outside the allowed list (L0)")
+@click.option(
+    "--raw-clock-out",
+    is_flag=True,
+    help="sample clock_out ports directly (equivalence/portability smoke runs only, spec §5.4)",
+)
+def wrap_cmd(
+    prim: str,
+    cfg: str,
+    attrs: tuple[str, ...],
+    out: Path,
+    cocotb_top: bool,
+    allow_illegal: bool,
+    raw_clock_out: bool,
+) -> None:
+    """Generate xut_dut.v, xut_dut.map.json and xut_cfg.vh for one configuration (spec §5.2)."""
+    from xut.catalog.model import load_entry
+    from xut.paths import repo_root
+    from xut.workunits import load_family
+    from xut.wrap import WrapError, spec_from_catalog, write_dut
+
+    pairs: dict[str, str] = {}
+    for a in attrs:
+        name, sep, value = a.partition("=")
+        if not sep or not name:
+            raise WrapError(f"--attr {a!r} is not NAME=VALUE")
+        if name in pairs:
+            raise WrapError(f"--attr {name} given twice")
+        pairs[name] = value
+    root = repo_root()
+    family = load_family(root)
+    if not (root / "catalog" / family / f"{prim}.yaml").is_file():
+        raise WrapError(f"no catalog entry for {prim} (catalog/{family}/{prim}.yaml)")
+    spec = spec_from_catalog(
+        load_entry(family, prim, root),
+        cfg,
+        pairs,
+        allow_illegal=allow_illegal,
+        raw_clock_out=raw_clock_out,
+    )
+    m = write_dut(spec, out, cocotb_top=cocotb_top)
+    click.echo(f"{out}: nclk={m.nclk} nin={m.nin} nout={m.nout}")
