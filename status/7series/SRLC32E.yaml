@@ -18,5 +18,6 @@ coverage:
   - port:CLK
   - port:D
   - attr:INIT
-  - attr:IS_CLK_INVERTED
+  - attr:IS_CLK_INVERTED=1'b0
+  - attr:IS_CLK_INVERTED=1'b1
 notes: ''

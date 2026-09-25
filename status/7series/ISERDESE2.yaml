@@ -54,10 +54,14 @@ coverage:
   - attr:DYN_CLKDIV_INV_EN=TRUE
   - attr:DYN_CLK_INV_EN=FALSE
   - attr:DYN_CLK_INV_EN=TRUE
-  - attr:INIT_Q1
-  - attr:INIT_Q2
-  - attr:INIT_Q3
-  - attr:INIT_Q4
+  - attr:INIT_Q1=1'b0
+  - attr:INIT_Q1=1'b1
+  - attr:INIT_Q2=1'b0
+  - attr:INIT_Q2=1'b1
+  - attr:INIT_Q3=1'b0
+  - attr:INIT_Q3=1'b1
+  - attr:INIT_Q4=1'b0
+  - attr:INIT_Q4=1'b1
   - attr:INTERFACE_TYPE=MEMORY
   - attr:INTERFACE_TYPE=MEMORY_DDR3
   - attr:INTERFACE_TYPE=MEMORY_QDR
@@ -80,8 +84,12 @@ coverage:
   - attr:OFB_USED=TRUE
   - attr:SERDES_MODE=MASTER
   - attr:SERDES_MODE=SLAVE
-  - attr:SRVAL_Q1
-  - attr:SRVAL_Q2
-  - attr:SRVAL_Q3
-  - attr:SRVAL_Q4
+  - attr:SRVAL_Q1=1'b0
+  - attr:SRVAL_Q1=1'b1
+  - attr:SRVAL_Q2=1'b0
+  - attr:SRVAL_Q2=1'b1
+  - attr:SRVAL_Q3=1'b0
+  - attr:SRVAL_Q3=1'b1
+  - attr:SRVAL_Q4=1'b0
+  - attr:SRVAL_Q4=1'b1
 notes: ''

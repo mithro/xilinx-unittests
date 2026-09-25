@@ -29,5 +29,6 @@ coverage:
   - attr:INIT_B
   - attr:INIT_C
   - attr:INIT_D
-  - attr:IS_WCLK_INVERTED
+  - attr:IS_WCLK_INVERTED=1'b0
+  - attr:IS_WCLK_INVERTED=1'b1
 notes: ''

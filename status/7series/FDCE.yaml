@@ -18,7 +18,10 @@ coverage:
   - port:D
   - attr:INIT=1'b0
   - attr:INIT=1'b1
-  - attr:IS_CLR_INVERTED
-  - attr:IS_C_INVERTED
-  - attr:IS_D_INVERTED
+  - attr:IS_CLR_INVERTED=1'b0
+  - attr:IS_CLR_INVERTED=1'b1
+  - attr:IS_C_INVERTED=1'b0
+  - attr:IS_C_INVERTED=1'b1
+  - attr:IS_D_INVERTED=1'b0
+  - attr:IS_D_INVERTED=1'b1
 notes: ''

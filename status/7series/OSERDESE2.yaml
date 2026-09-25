@@ -52,8 +52,10 @@ coverage:
   - attr:DATA_WIDTH=8
   - attr:DATA_WIDTH=10
   - attr:DATA_WIDTH=14
-  - attr:INIT_OQ
-  - attr:INIT_TQ
+  - attr:INIT_OQ=1'b0
+  - attr:INIT_OQ=1'b1
+  - attr:INIT_TQ=1'b0
+  - attr:INIT_TQ=1'b1
   - attr:IS_CLKDIV_INVERTED
   - attr:IS_CLK_INVERTED
   - attr:IS_D1_INVERTED
@@ -70,8 +72,10 @@ coverage:
   - attr:IS_T4_INVERTED
   - attr:SERDES_MODE=MASTER
   - attr:SERDES_MODE=SLAVE
-  - attr:SRVAL_OQ
-  - attr:SRVAL_TQ
+  - attr:SRVAL_OQ=1'b0
+  - attr:SRVAL_OQ=1'b1
+  - attr:SRVAL_TQ=1'b0
+  - attr:SRVAL_TQ=1'b1
   - attr:TBYTE_CTL=FALSE
   - attr:TBYTE_CTL=TRUE
   - attr:TBYTE_SRC=FALSE

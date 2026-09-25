@@ -24,14 +24,22 @@ coverage:
   - attr:CE_TYPE_CE1
   - attr:INIT_OUT=0
   - attr:INIT_OUT=1
-  - attr:IS_CE0_INVERTED
-  - attr:IS_CE1_INVERTED
-  - attr:IS_I0_INVERTED
-  - attr:IS_I1_INVERTED
-  - attr:IS_IGNORE0_INVERTED
-  - attr:IS_IGNORE1_INVERTED
-  - attr:IS_S0_INVERTED
-  - attr:IS_S1_INVERTED
+  - attr:IS_CE0_INVERTED=1'b0
+  - attr:IS_CE0_INVERTED=1'b1
+  - attr:IS_CE1_INVERTED=1'b0
+  - attr:IS_CE1_INVERTED=1'b1
+  - attr:IS_I0_INVERTED=1'b0
+  - attr:IS_I0_INVERTED=1'b1
+  - attr:IS_I1_INVERTED=1'b0
+  - attr:IS_I1_INVERTED=1'b1
+  - attr:IS_IGNORE0_INVERTED=1'b0
+  - attr:IS_IGNORE0_INVERTED=1'b1
+  - attr:IS_IGNORE1_INVERTED=1'b0
+  - attr:IS_IGNORE1_INVERTED=1'b1
+  - attr:IS_S0_INVERTED=1'b0
+  - attr:IS_S0_INVERTED=1'b1
+  - attr:IS_S1_INVERTED=1'b0
+  - attr:IS_S1_INVERTED=1'b1
   - attr:PRESELECT_I0=FALSE
   - attr:PRESELECT_I0=TRUE
   - attr:PRESELECT_I1=FALSE

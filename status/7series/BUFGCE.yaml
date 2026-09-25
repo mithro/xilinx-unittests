@@ -17,8 +17,10 @@ coverage:
   - attr:CE_TYPE=SYNC
   - attr:CE_TYPE=ASYNC
   - attr:CE_TYPE=HARDSYNC
-  - attr:IS_CE_INVERTED
-  - attr:IS_I_INVERTED
+  - attr:IS_CE_INVERTED=1'b0
+  - attr:IS_CE_INVERTED=1'b1
+  - attr:IS_I_INVERTED=1'b0
+  - attr:IS_I_INVERTED=1'b1
   - attr:SIM_DEVICE
   - attr:STARTUP_SYNC
 notes: ''

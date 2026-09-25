@@ -18,6 +18,8 @@ coverage:
   - port:PRE
   - attr:INIT=1'b1
   - attr:INIT=1'b0
-  - attr:IS_G_INVERTED
-  - attr:IS_PRE_INVERTED
+  - attr:IS_G_INVERTED=1'b0
+  - attr:IS_G_INVERTED=1'b1
+  - attr:IS_PRE_INVERTED=1'b0
+  - attr:IS_PRE_INVERTED=1'b1
 notes: ''
