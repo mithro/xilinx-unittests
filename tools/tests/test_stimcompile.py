@@ -7,7 +7,7 @@ import pytest
 
 from xut.container import SIM_IMAGE, DockerExecutor, image_digest
 from xut.errors import XutError
-from xut.formats.xvec import free_clock_edges, loads
+from xut.formats.xvec import dumps, free_clock_edges, loads
 from xut.paths import repo_root
 from xut.stimcompile import OPS, TB, compile_vec, raw_to_trace, write_stim
 from xut.wrap import Bit, DutMap
@@ -25,8 +25,8 @@ M = DutMap(
     [
         Bit("clk", 0, "C", 0, "clock"),
         Bit("in", 0, "D", 0, "data"),
-        Bit("in", 1, "CLR", 0, "async"),
-        Bit("in", 2, "U", 0, "data"),
+        Bit("in", 1, "U", 0, "data"),
+        Bit("in", 2, "CLR", 0, "async"),
         Bit("out", 0, "Q", 0, "data"),
     ],
 )
@@ -34,10 +34,10 @@ VEC = loads("""\
 # xut-vec 2  prim=TOY cfg=c nin=3 nout=1 nclk=1 settle_ps=120000 seed=0
 clock clk0 period=10000 phase=0 duty=50 mode=stepped
 t=120000 sample S0
-t=121000 set in[2:0]=0b0x1
+t=121000 set in[1:0]=0bx1
 t=122000 edge clk0 r
 t=123000 sample S1
-t=125000 set in[1]=1
+t=125000 set in[2]=1
 t=127000 sample S2
 t=128000 end
 """)
@@ -54,8 +54,8 @@ def test_words():
     assert w[0] == (4 << 120) | (0 << 96) | (0 << 64) | 120000  # SAMPLE 0
     assert w[1] == (1 << 120) | (0 << 96) | (1 << 64) | 121000  # in[0]=1
     assert w[2] == (1 << 120) | (1 << 96) | (2 << 64) | 121000  # in[1]=x
-    assert w[3] == (1 << 120) | (2 << 96) | (0 << 64) | 121000  # in[2]=0
-    assert w[4] == (2 << 120) | (0 << 96) | (1 << 64) | 122000  # EDGE r
+    assert w[3] == (2 << 120) | (0 << 96) | (1 << 64) | 122000  # EDGE r
+    assert w[5] == (1 << 120) | (2 << 96) | (1 << 64) | 125000  # in[2]=1 (async CLR)
     assert w[-1] >> 120 == 15
 
 
@@ -93,7 +93,7 @@ def test_raw_to_trace():
 FREE = """\
 # xut-vec 2  prim=TOY cfg=c nin=3 nout=1 nclk=1 settle_ps=120000 seed=0
 clock clk0 period=10000 phase=@PHASE@ duty=30 mode=free
-t=120000 sample S0
+t=121500 sample S0
 t=130500 end
 """
 
@@ -111,21 +111,53 @@ def test_words_are_time_ordered_and_stable():
     v = loads("""\
 # xut-vec 2  prim=TOY cfg=c nin=3 nout=1 nclk=1 settle_ps=120000 seed=0
 clock clk0 period=10000 phase=0 duty=50 mode=stepped
-t=0 set in[2]=1
+t=0 set in[1]=1
 t=0 set in[0]=1
-t=120000 set in[2]=0
+t=120000 set in[1]=0
 t=120000 set in[0]=0
 t=121000 sample A
 """)
     ops = [_decode(w) for w in compile_vec(v, M).words]
     assert ops == [
-        (1, 2, 1, 0),
+        (1, 1, 1, 0),
         (1, 0, 1, 0),
-        (1, 2, 0, 120000),
+        (1, 1, 0, 120000),
         (1, 0, 0, 120000),
         (4, 0, 0, 121000),
         (15, 0, 0, 122000),
     ]  # END appended 1 ns after
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        # an async bit and data bits in one line (spec §5.1): the brief's original line
+        ("t=121000  set in[1:0]=0bx1", "t=121000  set in[2:0]=0b0x1", "async/gate bit"),
+        # a sample 500 ps after a change
+        ("t=127000  sample S2", "t=125500  sample S2", "ps after the last change"),
+    ],
+)
+def test_compile_refuses_an_invalid_stimulus(tmp_path, old, new, match):
+    """Ruling S11: like golden replay, the compiler refuses any stimulus with a
+    validation error and lists the errors; nothing is written."""
+    text = dumps(VEC)
+    assert old in text
+    v = loads(text.replace(old, new))
+    with pytest.raises(XutError, match="refusing to compile") as e:
+        write_stim(v, M, tmp_path)
+    assert match in str(e.value)
+    assert not (tmp_path / "stim.memh").exists()
+
+
+def test_compile_accepts_hw_unrenderable_stimuli():
+    """hw_renderable=no is fine (x/z data, simultaneous groups): simulation only."""
+    v = loads(
+        dumps(VEC).replace(
+            "t=122000  edge clk0 r",
+            "t=122000 simultaneous edge clk0 r\nt=122000 simultaneous set in[0]=0",
+        )
+    )
+    assert len(compile_vec(v, M).labels) == 3
 
 
 def test_write_stim(tmp_path):

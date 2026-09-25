@@ -20,10 +20,11 @@ use. Words are sorted by time, stably, so file order is kept within a time step.
 The testbench prints ``S <n> <out_vec %b>`` per sample to ``raw.txt`` and ``XUT_DONE``
 on END; ``raw_to_trace`` turns ``raw.txt`` back into an ``.xtr`` trace.
 
-``compile_vec`` checks structure (``xvec.check_structure``) and that the stimulus fits
-the wrapper, not the class rules: ``xut.validate`` is the caller's job (the python
-runner validates every generated stimulus), and a ``simultaneous`` group, which golden
-replay refuses, is still replayed here (simulation-only checks).
+``compile_vec`` checks structure (``xvec.check_structure``), that the stimulus fits the
+wrapper, and runs ``xut.validate.validate``: a stimulus with any validation error is
+refused (ruling S11, as golden replay does under S9). ``hw_renderable=no`` is fine, and
+a ``simultaneous`` group, which golden replay refuses, is still compiled here
+(simulation-only checks).
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from pathlib import Path
 from xut.errors import XutError
 from xut.formats.xtr import Trace
 from xut.formats.xvec import Vec, XvecError, check_structure, free_runs
+from xut.validate import validate
 from xut.wrap import DutMap
 
 TB = Path(__file__).resolve().parent / "hdl" / "xut_vector_tb.sv"
@@ -87,6 +89,17 @@ def _check_fits(vec: Vec, m: DutMap) -> None:
     if (vec.prim, vec.cfg) != (m.prim, m.cfg):
         raise StimCompileError(
             f"stimulus {vec.prim}/{vec.cfg} is not for the wrapper {m.prim}/{m.cfg}"
+        )
+    for c in vec.clocks:
+        if c.mode == "free":
+            _clock_words(vec, c.name, 0)  # refuses a free clock with an empty phase
+    # Ruling S11 (like golden replay, S9): no path may compile an invalid stimulus.
+    # hw_reasons (hw_renderable=no, simultaneous groups, x/z) are fine: this is simulation.
+    report = validate(vec, m)
+    if report.errors:
+        raise StimCompileError(
+            f"{vec.prim}/{vec.cfg}: stimulus is invalid, refusing to compile:\n  "
+            + "\n  ".join(report.errors)
         )
 
 
