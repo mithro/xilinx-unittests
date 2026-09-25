@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Enforce "<area>: subject" commit subjects (spec §13.3).
+subject=$(head -n1 "$1")
+if [[ "$subject" =~ ^(Merge|Revert|fixup!|squash!) ]]; then exit 0; fi
+if [[ ! "$subject" =~ ^[a-z0-9_./-]+:\ .+ ]]; then
+  echo "commit-msg: subject must look like '<area>: <summary>' (got: $subject)" >&2
+  exit 1
+fi
