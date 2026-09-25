@@ -484,7 +484,7 @@ def test_coverage_gap_for_output_the_golden_model_does_not_model(repo):
     _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(both))
     rep = xc.check(repo, _case(repo))
     assert rep.coverage_gaps == [
-        "ms1 rtl: QB observed by iverilog, not modelled by the golden model"
+        "ms1 rtl: QB observed by iverilog in cfg c, not modelled by the golden model"
     ]
     assert rep.exit_code == 0
 
@@ -549,9 +549,10 @@ def test_write_finding_stub(tmp_path, monkeypatch):
 
 def test_write_finding_never_overwrites(tmp_path):
     p = xc.write_finding(tmp_path, "FDRE", F)
-    p.write_text("analysed\n")
+    p.write_text(p.read_text() + "analysed\n")
+    before = p.read_text()
     assert xc.write_finding(tmp_path, "FDRE", F) is None
-    assert p.read_text() == "analysed\n"
+    assert p.read_text() == before
 
 
 def test_write_finding_known_divergence_writes_nothing(tmp_path):
@@ -696,9 +697,12 @@ def test_cli_run_then_crosscheck_on_the_toyff_fixture(work, toy, monkeypatch, ca
 
     doc = yaml.safe_load((d / "test.yaml").read_text())
     doc["tests"][0]["expected_divergence"] = [
-        {"finding": "findings/TOYFF-doc-vs-model-L1-capture.md", "cls": "doc-vs-model",
-         "runners": ["iverilog"]}
-    ]  # fmt: skip
+        {
+            "finding": "findings/TOYFF-doc-vs-model-L1-capture.md",
+            "cls": "doc-vs-model",
+            "runners": ["iverilog"],
+        }
+    ]
     (d / "test.yaml").write_text(yaml.safe_dump(doc))
     before = stub.read_text()
     r = CliRunner().invoke(main, ["crosscheck", TID, "--write-findings"])
@@ -747,3 +751,221 @@ def test_cli_run_python_iverilog_xsim_then_crosscheck(work, toy, monkeypatch, ca
     for tid in (TID, "7series.TOYFF.L1.sv_basic"):
         cap = json.loads((work / f"build/crosscheck/{tid}.json").read_text())
         assert cap["verdict"] == "agree" and cap["findings"] == [], cap
+
+
+# --- fix round 1 --------------------------------------------------------------------------
+
+
+def _probe_c_d_views():
+    return views(V("python", EXP(Q0, "inferred:s")), V("iverilog", T(Q1)), V("xsim", T(Q1)))
+
+
+def test_s17_entry_with_another_finding_id_is_an_issue_not_a_match():
+    """Probe C: class and runners match, but the entry names another test's finding."""
+    other = {**ED, "finding": "findings/TOYFF-doc-gap-L1-other_test.md"}
+    issues: list[str] = []
+    (f,) = classify(TID, _probe_c_d_views(), (other,), issues)
+    assert f.cls == "doc-gap" and not f.expected
+    assert len(issues) == 1 and "TOYFF-doc-gap-L1-other_test" in issues[0]
+    assert "TOYFF-doc-gap-L1-capture" in issues[0] and "not matched" in issues[0]
+
+
+def test_s17_model_source_and_flow_scope():
+    """Probe D: an entry scoped to another model source (or flow) does not match."""
+    for scope in ({"model_sources": ["ms2"]}, {"flows": ["vivado"]}):
+        (f,) = classify(TID, _probe_c_d_views(), ({**ED, **scope},))
+        assert f.cls == "doc-gap", scope
+    for scope in ({"model_sources": ["ms1", "ms2"]}, {"flows": ["rtl"]}):
+        (f,) = classify(TID, _probe_c_d_views(), ({**ED, **scope},))
+        assert f.cls == "known-divergence", scope
+
+
+def test_s17_runners_are_required_no_wildcard():
+    e = {k: v for k, v in ED.items() if k != "runners"}
+    (f,) = classify(TID, _probe_c_d_views(), (e,))
+    assert f.cls == "doc-gap"
+
+
+def test_doc_finding_lists_only_observing_runners():
+    """Expected x: the 2-state verilator cannot observe it; only iverilog disagrees."""
+    exp = EXP({"c/S1": {"Q": "x"}})
+    vs = views(
+        V("python", exp),
+        V("iverilog", T({"c/S1": {"Q": "1"}})),
+        V("verilator", T({"c/S1": {"Q": "1"}})),
+    )
+    (f,) = classify(TID, vs)
+    assert (f.cls, f.runners) == ("doc-vs-model", ("iverilog",))
+
+
+def test_pass_without_trace_is_an_error_view(repo):
+    for style in ("vector", "sv"):
+        tid = f"{TID}_{style}"
+        d = _result(
+            repo,
+            "rtl",
+            "iverilog",
+            "ms1",
+            tid,
+            style=style,
+            configs=[{"cfg": "c", "status": "pass", "reason": None}],
+        )
+        assert not (d / "trace.xtr").exists()
+        v = xc.gather(repo, tid)["ms1"][("rtl", "iverilog")]
+        assert v.status == "error" and "wrote no trace.xtr" in v.result["reason"], style
+
+
+def test_check_pass_without_trace_is_an_issue(repo):
+    _test_yaml(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, configs=[{"cfg": "c", "status": "pass"}])
+    rep = xc.check(repo, _case(repo))
+    assert rep.exit_code == 2 and rep.verdict == "incomplete"
+    assert "wrote no trace.xtr" in rep.issues[0]
+
+
+def test_gather_trace_without_result_is_an_error_view(repo):
+    d = repo / "build/rtl/iverilog/ms1" / TID
+    d.mkdir(parents=True)
+    xtr.dump(T(Q0), d / "trace.xtr")
+    v = xc.gather(repo, TID)["ms1"][("rtl", "iverilog")]
+    assert v.status == "error" and "without result.json" in v.result["reason"]
+
+
+def test_probe_b_golden_config_absent_or_skipped_is_visible(repo):
+    """The golden model ran a and b. iverilog's result omits b entirely (an issue);
+    xsim skipped b by config_exclusions (a coverage note). Never agreement."""
+    _test_yaml(repo)
+    both = {"a/S1": {"Q": "0"}, "b/S1": {"Q": "1"}}
+    only_a = {"a/S1": {"Q": "0"}}
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(both))
+    _result(
+        repo,
+        "rtl",
+        "iverilog",
+        "ms1",
+        TID,
+        trace=T(only_a),
+        configs=[{"cfg": "a", "status": "pass"}],
+    )
+    _result(
+        repo,
+        "rtl",
+        "xsim",
+        "ms1",
+        TID,
+        trace=T(only_a),
+        configs=[
+            {"cfg": "a", "status": "pass"},
+            {"cfg": "b", "status": "skip", "reason": "excluded: hw only"},
+        ],
+    )
+    rep = xc.check(repo, _case(repo))
+    assert rep.findings == []
+    assert rep.issues == [
+        "ms1 rtl/iverilog: cfg b, run by the golden model, is absent from its result"
+    ]
+    assert rep.coverage_gaps == ["ms1 rtl/xsim: cfg b skipped: excluded: hw only"]
+    assert rep.exit_code == 2
+    data = rep.to_dict()
+    assert data["coverage_gaps"] == rep.coverage_gaps and data["issues"] == rep.issues
+
+
+def test_x_dependence_does_not_explain_a_fail(repo):
+    _test_yaml(repo, runners={"python": "yes", "verilator": "yes"})
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(
+        repo,
+        "rtl",
+        "verilator",
+        "ms1",
+        TID,
+        trace=T(Q0),
+        status="fail",
+        reason="r",
+        x_dependence=True,
+        seeds={"stimulus": 1, "x": [1, 2]},
+    )
+    rep = xc.check(repo, _case(repo))
+    assert classes(rep.findings) == ["x-dependence"]
+    assert "fail not explained" in " ".join(rep.issues)
+
+
+def test_not_run_placeholders_for_every_declared_flow(repo):
+    _test_yaml(repo, runners={"python": "yes", "iverilog": "yes", "hw": "yes"})
+    doc_p = repo / "tests/7series/register/TOYFF/test.yaml"
+    doc = yaml.safe_load(doc_p.read_text())
+    doc["tests"][0]["flows"] = ["rtl", "vivado"]
+    doc_p.write_text(yaml.safe_dump(doc))
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    rep = xc.check(repo, _case(repo))
+    got = {k: v.status for k, v in rep.views["ms1"].items()}
+    assert got == {
+        ("rtl", "python"): "pass",
+        ("rtl", "iverilog"): "not-run",
+        ("vivado", "iverilog"): "not-run",
+        ("vivado", "hw"): "not-run",
+    }
+
+
+def test_coverage_gap_per_flow_and_config(repo):
+    _test_yaml(repo)
+    exp = EXP({"a/S1": {"Q": "0"}, "b/S1": {"Q": "0"}})
+    _result(repo, "rtl", "python", "ms1", TID, trace=exp)
+    _result(
+        repo,
+        "rtl",
+        "iverilog",
+        "ms1",
+        TID,
+        trace=T({"a/S1": {"Q": "0"}, "b/S1": {"Q": "0", "QB": "1"}}),
+    )
+    _result(
+        repo,
+        "vivado",
+        "iverilog",
+        "ms1",
+        TID,
+        trace=T({"a/S1": {"Q": "0", "QB": "1"}, "b/S1": {"Q": "0"}}),
+    )
+    rep = xc.check(repo, _case(repo))
+    assert rep.coverage_gaps == [
+        "ms1 rtl: QB observed by iverilog in cfg b, not modelled by the golden model",
+        "ms1 vivado: QB observed by iverilog in cfg a, not modelled by the golden model",
+    ]
+
+
+def test_record_finding_on_a_second_model_source_appends_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(xc, "_head", lambda root: "abc1234")
+    monkeypatch.setattr(xc, "_today", lambda: "2026-09-26")
+    gh = Finding(F.cls, F.test_id, "rtl", "unisim-gh-2020.1", F.runners, F.points)
+    assert gh.slug == F.slug
+    assert xc.record_finding(tmp_path, "FDRE", F)[0] == "wrote"
+    p = xc.finding_path(tmp_path, "FDRE", F)
+    first = p.read_text()
+    assert xc.record_finding(tmp_path, "FDRE", gh) == ("recorded", p)
+    assert p.read_text() == first + "- Also seen: rtl / unisim-gh-2020.1 (2026-09-26 at abc1234)\n"
+    after = p.read_text()
+    assert xc.record_finding(tmp_path, "FDRE", gh) == ("exists", p)
+    assert xc.record_finding(tmp_path, "FDRE", F) == ("exists", p)
+    assert xc.write_finding(tmp_path, "FDRE", gh) is None and p.read_text() == after
+
+
+def test_cli_write_findings_recorded_for_a_second_model_source(repo):
+    _diverging(repo)
+    _result(repo, "rtl", "python", "ms2", TID, trace=EXP(Q0, "inferred:silent"))
+    _result(repo, "rtl", "iverilog", "ms2", TID, trace=T(Q1), status="fail", reason="m")
+    _result(repo, "rtl", "xsim", "ms2", TID, trace=T(Q1), status="fail", reason="m")
+    r = _xc("TOYFF", "--write-findings")
+    rel = "findings/TOYFF-doc-gap-L1-capture.md"
+    assert f"wrote {rel}" in r.output and f"recorded: {rel}" in r.output
+    r = _xc("TOYFF", "--write-findings")
+    assert r.output.count(f"exists: {rel}") == 2
+
+
+def test_cli_all_uncompared_exits_2(repo):
+    _test_yaml(repo)
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    r = _xc("TOYFF")
+    assert r.exit_code == 2, r.output
+    assert "uncompared" in r.output
