@@ -365,3 +365,93 @@ def test_ci_builds_the_current_sim_image():
     assert w["context"] == "containers/sim"
     assert w["load"] is True
     assert w["cache-from"] == "type=gha" and w["cache-to"] == "type=gha,mode=max"
+
+
+# --- A3/A4: failures are errors, never versions; no network pulls; kill timeouts
+
+
+def test_docker_never_pulls(tmp_path):
+    argv = DockerExecutor(root=tmp_path).argv(["true"], tmp_path, "n", None)
+    assert "--pull=never" in argv and argv.index("--pull=never") < argv.index(SIM_IMAGE)
+
+
+class _FakeEx:
+    """An executor whose tools answer from ``answers`` = {tool: (rc, banner)}."""
+
+    image = "fake:1"
+
+    def __init__(self, answers):
+        self.answers, self.runs = answers, 0
+
+    def guest(self, path):
+        return str(path)
+
+    def run(self, argv, cwd, log, timeout_s, env=None):
+        self.runs += 1
+        rc, banner = self.answers.get(argv[0], (0, f"{argv[0]} 1.0"))
+        with log.open("a") as f:
+            f.write(f"$ {' '.join(argv)}\n{banner}\n")
+        return rc
+
+
+def test_sim_tool_versions_nonzero_exit_is_an_error_and_not_cached(tmp_path, monkeypatch):
+    from xut.container import ContainerError
+    from xut.errors import XutError
+
+    monkeypatch.setattr(container, "_VERSIONS", {})
+    bad = _FakeEx(
+        {
+            "iverilog": (1, "Icarus Verilog version 12.0 (stable) ()"),
+            "verilator": (125, "Unable to find image 'fake:1' locally"),
+        }
+    )
+    with pytest.raises(ContainerError, match="verilator.*exit 125.*Unable to find image") as ei:
+        container.sim_tool_versions(bad, tmp_path)
+    assert isinstance(ei.value, XutError)
+    assert container._VERSIONS == {}  # a failure is never cached as a version
+    good = _FakeEx({"iverilog": (1, "Icarus Verilog version 12.0 (stable) ()")})
+    assert container.sim_tool_versions(good, tmp_path)["verilator"] == "verilator 1.0"
+
+
+def test_sim_tool_versions_iverilog_needs_its_banner(tmp_path, monkeypatch):
+    from xut.container import ContainerError
+
+    monkeypatch.setattr(container, "_VERSIONS", {})
+    ex = _FakeEx({"iverilog": (125, "docker: Error response from daemon")})
+    with pytest.raises(ContainerError, match="iverilog"):
+        container.sim_tool_versions(ex, tmp_path)
+
+
+def test_sim_tool_versions_missing_image_names_container_build(tmp_path, monkeypatch):
+    from xut.container import ContainerError
+
+    monkeypatch.setattr(container, "_VERSIONS", {})
+    monkeypatch.setattr(container, "image_digest", lambda image=SIM_IMAGE: None)
+    ex = DockerExecutor(image="xut-sim:no-such-tag", root=tmp_path)
+    with pytest.raises(ContainerError, match="xut container build"):
+        container.sim_tool_versions(ex, tmp_path)
+
+
+def test_cli_container_versions_failure_exits_nonzero(monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+    from xut.container import ContainerError
+
+    def boom(ex, workdir):
+        raise ContainerError("xut-sim:1 is not built: run `uv run xut container build`")
+
+    monkeypatch.setattr(container, "sim_tool_versions", boom)
+    result = CliRunner().invoke(main, ["container", "versions"])
+    assert result.exit_code == 1 and "xut container build" in result.output
+
+
+def test_docker_kill_timeout_still_raises_run_timeout(tmp_path, monkeypatch):
+    def fake_run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    ex = DockerExecutor(root=tmp_path)
+    with pytest.raises(RunTimeout, match="docker kill") as ei:
+        ex.run(["sleep", "99"], cwd=tmp_path, log=tmp_path / "l.log", timeout_s=5)
+    assert isinstance(ei.value.__cause__, subprocess.TimeoutExpired)
