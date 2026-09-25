@@ -71,6 +71,7 @@ from xut.runners.sim import (
     cocotb_check,
     cocotb_command,
     sv_check,
+    sv_seed_define,
     tool_versions,
     vector_check,
 )
@@ -238,6 +239,8 @@ class IverilogRunner(Runner):
         stem = source.stem
         attrs = cfg_attrs(case, cfg)
         params = [f"-P{stem}.{k}={param_value(k, v)}" for k, v in attrs.items()]
+        seed = seed_for(case, ctx)
+        header["seed"] = str(seed)
         incs: list[str] = []
         for p in (HDL, *case.shared_dirs, source.parent):
             incs += ["-I", ex.guest(p)]
@@ -252,6 +255,7 @@ class IverilogRunner(Runner):
             *params,
             *self._libs(ex, ctx, self.lib_first(case, cfg, ctx)),
             *self._defs(ctx),
+            f"-DXUT_SEED={sv_seed_define(seed)}",
             ex.guest(source),
             ex.guest(ctx.model_source.glbl),
         ]
@@ -263,7 +267,6 @@ class IverilogRunner(Runner):
             r := classify_run(cfg, SimOutcome(True, ctext, rc, rtext), need_done=False)
         ) is not None:
             return r
-        header["seed"] = "0"
         return sv_check(cd, rtext, header)
 
     def _run_cocotb(
