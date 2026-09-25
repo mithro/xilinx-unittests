@@ -76,7 +76,8 @@ TOOLS = HDL.parent.parent
 MODELS = TOOLS.parent / "models"
 #: The in-container cocotb launcher (shared with the verilator runner).
 COCOTB_RUN = HDL / "cocotb_run.py"
-#: ``cocotb_run.py``'s exit code for a failed HDL build (its ``BUILD_FAILED``).
+#: ``cocotb_run.py``'s exit code for a failed HDL build: keep equal to
+#: ``tools/xut/hdl/cocotb_run.py`` ``BUILD_FAILED`` (pinned by test_runner_cocotb).
 COCOTB_BUILD_FAILED = 3
 #: Trace header keys a cocotb test's trace.xtr must carry with the runner's values.
 _COCOTB_HEADER_KEYS = ("runner", "flow", "model", "seed", "prim", "cfg")
@@ -234,10 +235,16 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
       unreadable one, no test case in it, or every one skipped: ``error``;
     - its ``random_seed`` is not ``seed``: ``error``;
     - a ``trace.xtr`` whose header does not name this run: ``error``;
-    - the first failing test: ``fail`` with its message when it is an
-      ``AssertionError`` (a check the test made); any other exception, including
-      cocotb's ``SimFailure`` (the simulator stopped early), is a crash: ``error``.
-      Either keeps the trace's sha256: the trace is the evidence of what ran;
+    - any failing test whose exception is not an ``AssertionError`` -- including
+      cocotb's ``SimFailure`` (the simulator stopped early) -- is a crash: ``error``,
+      even when an earlier test failed an assertion (a failed check never hides a
+      crash); otherwise the first ``AssertionError``: ``fail`` with its message. Both
+      keep the trace's sha256: the trace is the evidence of what ran;
+    - no failure, but no ``trace.xtr`` or one with no sample: ``error`` ("cocotb test
+      recorded no samples"): a pass must leave evidence of what was checked. This
+      cannot prove the test ASSERTED anything -- a test that samples but never compares
+      passes; zero assertions are not detectable in general (the trace makes the run
+      cross-checkable against other simulators, which is the backstop);
     - no failure but a non-zero launcher exit: ``error``; otherwise ``pass``.
     """
     cfg = cd.name[4:]
@@ -263,11 +270,13 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
         return ConfigResult(cfg, "error", "no cocotb test ran (none found, or all skipped)")
     trace = cd / "trace.xtr"
     sha = None
+    n_samples = 0
     if trace.is_file():
         try:
-            got = xtr.load(trace).header
+            t = xtr.load(trace)
         except xtr.XtrError as e:
             return ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
+        got, n_samples = t.header, len(t.samples)
         bad = {k: got.get(k) for k in _COCOTB_HEADER_KEYS if got.get(k) != header.get(k)}
         if bad:
             return ConfigResult(
@@ -277,18 +286,24 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
                 f"{ {k: header.get(k) for k in bad} } (use XutDut's default header)",
             )
         sha = sha256_file(trace)
+    failures = []
     for c in cases:
         f = c.find("failure")
         if f is None:
             f = c.find("error")
-        if f is None:
-            continue
-        name = f"{c.get('classname')}.{c.get('name')}"
-        etype = f.get("error_type") or f.get("type") or "unknown"
-        msg = f.get("error_msg") or f.get("message") or ""
-        if etype == "AssertionError":
-            return ConfigResult(cfg, "fail", f"{name}: {msg}".strip(), None, sha)
+        if f is not None:
+            name = f"{c.get('classname')}.{c.get('name')}"
+            etype = f.get("error_type") or f.get("type") or "unknown"
+            failures.append((name, etype, f.get("error_msg") or f.get("message") or ""))
+    crash = next((x for x in failures if x[1] != "AssertionError"), None)
+    if crash is not None:
+        name, etype, msg = crash
         return ConfigResult(cfg, "error", f"{name}: {etype}: {msg}".strip(), None, sha)
+    if failures:
+        name, _, msg = failures[0]
+        return ConfigResult(cfg, "fail", f"{name}: {msg}".strip(), None, sha)
+    if n_samples == 0:
+        return ConfigResult(cfg, "error", "cocotb test recorded no samples", None, sha)
     if rc != 0:
         return ConfigResult(cfg, "error", f"cocotb launcher exited with rc {rc}")
     return ConfigResult(cfg, "pass", None, None, sha)
