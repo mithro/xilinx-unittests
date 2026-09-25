@@ -21,7 +21,7 @@ ports:
 - name: DRCK
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Gated TCK output.
 - name: RESET
   direction: output
@@ -46,7 +46,7 @@ ports:
 - name: TCK
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Test Clock output.
 - name: TDI
   direction: output

@@ -16,7 +16,7 @@ ports:
 - name: CFGCLK
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Configuration Clock.
 - name: DATA
   direction: output

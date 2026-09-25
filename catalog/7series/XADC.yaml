@@ -81,7 +81,7 @@ ports:
 - name: CONVSTCLK
   direction: input
   width: 1
-  cls: data
+  cls: clock
   doc_function: Convert start clock input.
 - name: DADDR
   direction: input
@@ -116,22 +116,22 @@ ports:
 - name: VAUXN
   direction: input
   width: 16
-  cls: data
+  cls: pad
   doc_function: N-side auxiliary analog input
 - name: VAUXP
   direction: input
   width: 16
-  cls: data
+  cls: pad
   doc_function: P-side auxiliary analog input
 - name: VN
   direction: input
   width: 1
-  cls: data
+  cls: pad
   doc_function: N-side analog input
 - name: VP
   direction: input
   width: 1
-  cls: data
+  cls: pad
   doc_function: P-side analog input
 attributes:
 - name: INIT_40

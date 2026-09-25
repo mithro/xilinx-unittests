@@ -16,12 +16,12 @@ ports:
 - name: O
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Refer to Transceiver User Guide.
 - name: ODIV2
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Refer to Transceiver User Guide.
 - name: CEB
   direction: input

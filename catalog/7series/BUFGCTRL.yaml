@@ -84,56 +84,64 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_CE1_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_I0_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_I1_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_IGNORE0_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_IGNORE1_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_S0_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_S1_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: PRESELECT_I0
   kind: string

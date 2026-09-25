@@ -96,7 +96,7 @@ ports:
 - name: C
   direction: input
   width: 48
-  cls: clock
+  cls: data
   doc_function: Data input to the second-stage adder/subtracter, pattern
 - name: CARRYCASCIN
   direction: input

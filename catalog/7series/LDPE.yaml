@@ -31,7 +31,7 @@ ports:
 - name: GE
   direction: input
   width: 1
-  cls: data
+  cls: gate
   doc_function: Active-High latch gate enable.
 - name: PRE
   direction: input
@@ -52,14 +52,16 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_PRE_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 design_entry:
   instantiation: 'Yes'

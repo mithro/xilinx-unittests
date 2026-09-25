@@ -156,7 +156,7 @@ ports:
 - name: PSCLK
   direction: input
   width: 1
-  cls: data
+  cls: clock
   doc_function: Phase shift clock.
 - name: PSEN
   direction: input

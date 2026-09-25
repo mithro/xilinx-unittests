@@ -10,7 +10,8 @@ difference between the documentation and the model.
 - Width or direction mismatches: 0
 - Tables absent from UG953: 23
 - UG953 cells needing review: 17
-- Port class notes: 6
+- Values not applicable to 7-series: 4
+- Port class notes: 13
 - Missing UG953 section or model: 0
 
 ## Names only in one source (142)
@@ -208,14 +209,28 @@ None.
 - IOBUFDS_DIFF_OUT_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IOBUFDS_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 
-## Port class notes (6)
+## Values not applicable to 7-series (4)
+
+- BUFGCE: attribute CE_TYPE allowed value HARDSYNC not applicable to 7-series (UltraScale/Versal only); do not sample it
+- BUFGCE: attribute SIM_DEVICE default ULTRASCALE not applicable to 7-series (UltraScale/Versal only); do not sample it
+- BUFGCE_1: attribute SIM_DEVICE default ULTRASCALE not applicable to 7-series (UltraScale/Versal only); do not sample it
+- BUFGCTRL: attribute SIM_DEVICE default ULTRASCALE not applicable to 7-series (UltraScale/Versal only); do not sample it
+
+## Port class notes (13)
 
 - IDDR: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
 - IDDR: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
 - IDDR_2CLK: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
 - IDDR_2CLK: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- ISERDESE2: port DYNCLKDIVSEL class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
+- ISERDESE2: port DYNCLKSEL class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
+- MMCME2_ADV: port CLKFBSTOPPED class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
+- MMCME2_ADV: port CLKINSTOPPED class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
+- MMCME2_ADV: port CLKINSEL class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
 - ODDR: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
 - ODDR: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- PLLE2_ADV: port CLKINSEL class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
+- STARTUPE2: port USRCCLKTS class data despite CLK in its name (select/enable/status, not a clock); override if it is a clock
 
 ## Missing UG953 section or model (0)
 

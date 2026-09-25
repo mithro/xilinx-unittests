@@ -52,21 +52,24 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_D_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_R_INVERTED
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 design_entry:
   instantiation: 'Yes'
