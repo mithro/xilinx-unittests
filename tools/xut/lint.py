@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fnmatch
 import subprocess
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,15 +100,30 @@ def _not_owned(changed_files: list[str], allowed: list[str], branch: str) -> lis
     ]
 
 
-def _infra_allowed_paths(changed_files: list[str], units: dict[str, WorkUnit]) -> list[LintIssue]:
-    """infra/<topic> may touch anything except another work unit's owned paths — except
-    status stubs, which stay allowed on infra even though they're also in a unit's
-    `owned_paths` (controller ruling 13)."""
-    status_allow = {f"status/{u.family}/*.yaml" for u in units.values()}
+def _infra_allowed_paths(
+    changed_files: list[str], units: dict[str, WorkUnit], added: AbstractSet[str]
+) -> list[LintIssue]:
+    """infra/<topic> may touch anything except a work unit's owned paths (Ruling 12),
+    with one exception: it may ADD a new `status/<family>/<PRIM>.yaml` stub even though
+    that path is unit-owned (Ruling 24). Modifying or deleting an existing status file
+    is the owning unit's job, so it is an error on infra — `added` is the set of paths
+    the branch added (`_added_files`), anything else in `changed_files` is a
+    modification or deletion."""
+    status_patterns = {f"status/{u.family}/*.yaml" for u in units.values()}
     unit_patterns = [(p, u.name) for u in units.values() for p in owned_paths(u)]
     issues = []
     for f in changed_files:
-        if any(fnmatch.fnmatch(f, p) for p in status_allow):
+        if any(fnmatch.fnmatch(f, p) for p in status_patterns):
+            if f not in added:
+                issues.append(
+                    LintIssue(
+                        f,
+                        "branch-paths",
+                        "infra may only add status stubs, not modify or delete them "
+                        "(the owning work unit does that)",
+                        "error",
+                    )
+                )
             continue
         owner = next((name for p, name in unit_patterns if fnmatch.fnmatch(f, p)), None)
         if owner is not None:
@@ -118,11 +134,16 @@ def _infra_allowed_paths(changed_files: list[str], units: dict[str, WorkUnit]) -
 
 
 def check_branch_paths(
-    branch: str, changed_files: list[str], units: dict[str, WorkUnit]
+    branch: str,
+    changed_files: list[str],
+    units: dict[str, WorkUnit],
+    added: AbstractSet[str] = frozenset(),
 ) -> list[LintIssue]:
     """Every file `branch` touches is within what its branch type owns (AGENTS.md §3,
-    controller Rulings 12 and 13). `main` is exempt — nothing but `xut status generate` commits
-    there, and every branch-scoping rule below assumes a branch cut from `main`."""
+    controller Rulings 12, 13 and 24). `added` is the subset of `changed_files` the
+    branch newly added; only the infra rule needs it. `main` is exempt — nothing but
+    `xut status generate` commits there, and every branch-scoping rule below assumes a
+    branch cut from `main`."""
     if branch == "main":
         return []
 
@@ -150,7 +171,7 @@ def check_branch_paths(
         return _not_owned(changed_files, allowed, branch)
 
     if branch.startswith("infra/"):
-        return _infra_allowed_paths(changed_files, units)
+        return _infra_allowed_paths(changed_files, units, added)
 
     return _branch_error(
         branch, changed_files, "unknown branch prefix (expected unit/, integ/, docs/, infra/)"
@@ -281,6 +302,32 @@ def _ref_exists(root: Path, ref: str) -> bool:
     return proc.returncode == 0
 
 
+def _resolve_base(root: Path, base: str) -> tuple[str, str | None]:
+    """`base` if it resolves, else the bare ref with a leading `origin/` stripped (with a
+    warning), e.g. in a fresh clone with no fetch yet. Raises `GitError` (a RuntimeError;
+    never a raw `CalledProcessError`) if neither resolves."""
+    if _ref_exists(root, base):
+        return base, None
+    fallback = base.removeprefix("origin/")
+    if fallback == base or not _ref_exists(root, fallback):
+        raise GitError(
+            f"_changed_files(): base ref {base!r} not found"
+            + ("" if fallback == base else f", and fallback {fallback!r} not found either")
+        )
+    return fallback, f"{base} not found locally; diffing against {fallback} instead"
+
+
+def _diff_names(root: Path, base: str, *extra: str) -> list[str]:
+    proc = subprocess.run(
+        ["git", "diff", "--no-renames", "--name-only", *extra, f"{base}...HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in proc.stdout.splitlines() if line]
+
+
 def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], str | None]:
     """Files this branch has touched relative to `<base>...HEAD` (controller ruling:
     `--branch` mode; `--base` lets CI diff against `origin/<PR base branch>` instead of
@@ -295,24 +342,16 @@ def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], st
     own undetected (review finding). With `--no-renames`, a rename always shows up as
     both its source (deleted) and destination (added) path, so both get checked.
     """
-    warning = None
-    if not _ref_exists(root, base):
-        fallback = base.removeprefix("origin/")
-        if fallback == base or not _ref_exists(root, fallback):
-            raise GitError(
-                f"_changed_files(): base ref {base!r} not found"
-                + ("" if fallback == base else f", and fallback {fallback!r} not found either")
-            )
-        warning = f"{base} not found locally; diffing against {fallback} instead"
-        base = fallback
-    proc = subprocess.run(
-        ["git", "diff", "--no-renames", "--name-only", f"{base}...HEAD"],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in proc.stdout.splitlines() if line], warning
+    base, warning = _resolve_base(root, base)
+    return _diff_names(root, base), warning
+
+
+def _added_files(root: Path, base: str) -> set[str]:
+    """Files this branch ADDED relative to `<base>...HEAD` (`--diff-filter=A`, with the
+    same base fallback as `_changed_files`). `--no-renames` again: a renamed file counts
+    as its destination added and its source deleted, never as a silent "rename"."""
+    base, _ = _resolve_base(root, base)
+    return set(_diff_names(root, base, "--diff-filter=A"))
 
 
 def lint(
@@ -347,7 +386,8 @@ def lint(
         changed, warning = _changed_files(root, base)
         if warning:
             warnings.append(warning)
-        issues += check_branch_paths(branch, changed, units)
+        added = _added_files(root, base) if branch.startswith("infra/") else set()
+        issues += check_branch_paths(branch, changed, units, added)
         issues += check_generated_not_committed(changed, branch)
 
     return issues, warnings

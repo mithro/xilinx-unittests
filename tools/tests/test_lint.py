@@ -178,11 +178,63 @@ def test_infra_branch_rejects_unit_owned_test_path():
     assert issues[0].severity == "error"
 
 
-def test_infra_branch_allows_status_stub_despite_unit_ownership():
-    """status/<family>/*.yaml is in a unit's owned_paths too, but infra branches
-    explicitly may still touch it (controller ruling 13)."""
+def test_infra_branch_may_add_status_stub_despite_unit_ownership():
+    """status/<family>/*.yaml is in a unit's owned_paths, but an infra branch may still
+    ADD a stub (Ruling 24)."""
+    f = "status/7series/FDRE.yaml"
+    assert check_branch_paths("infra/bootstrap", [f], UNITS, added={f}) == []
+
+
+def test_infra_branch_modifying_status_file_is_error():
+    """Ruling 24: once a stub exists it is the unit's; infra may not modify it."""
     issues = check_branch_paths("infra/bootstrap", ["status/7series/FDRE.yaml"], UNITS)
-    assert issues == []
+    assert len(issues) == 1
+    assert issues[0].severity == "error"
+    assert issues[0].rule == "branch-paths"
+    assert "only add" in issues[0].message
+
+
+def test_added_files_lists_only_additions(tmp_path):
+    """`_added_files` is `--diff-filter=A --no-renames`: a modified or deleted status
+    file is not "added"; a new one is, and so is the destination of a rename."""
+    from xut.lint import _added_files
+
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    st = tmp_path / "status" / "7series"
+    st.mkdir(parents=True)
+    for name in ("FDRE", "FDSE", "LUT6"):
+        (st / f"{name}.yaml").write_text(f"primitive: {name}\n" + "x: 1\n" * 30)
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: stubs"], tmp_path)
+    _git(["checkout", "-q", "-b", "infra/x"], tmp_path)
+    (st / "FDRE.yaml").write_text("primitive: FDRE\nchanged: true\n")
+    _git(["rm", "-q", "status/7series/FDSE.yaml"], tmp_path)
+    _git(["mv", "status/7series/LUT6.yaml", "status/7series/LUT5.yaml"], tmp_path)
+    (st / "FDCE.yaml").write_text("primitive: FDCE\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: touch stubs"], tmp_path)
+
+    assert _added_files(tmp_path, "main") == {
+        "status/7series/FDCE.yaml",
+        "status/7series/LUT5.yaml",
+    }
+
+
+def test_lint_branch_mode_infra_modifying_status_is_error(monkeypatch):
+    from xut import lint as lint_mod
+    from xut.paths import repo_root
+
+    changed = ["status/7series/FDRE.yaml", "status/7series/FDCE.yaml"]
+    monkeypatch.setattr(
+        lint_mod, "_changed_files", lambda root, base="origin/main": (changed, None)
+    )
+    monkeypatch.setattr(lint_mod, "_added_files", lambda root, base: {"status/7series/FDCE.yaml"})
+    monkeypatch.setattr("xut.status.current_branch", lambda: "infra/x")
+    issues, _ = lint_mod.lint(repo_root(), True, base="main")
+    flagged = [i.path for i in issues if i.rule == "branch-paths"]
+    assert flagged == ["status/7series/FDRE.yaml"]
 
 
 def test_infra_branch_allows_catalog_generated_and_templates():
@@ -629,6 +681,7 @@ def test_lint_passes_base_through_to_changed_files(monkeypatch):
         return [], None
 
     monkeypatch.setattr(lint_mod, "_changed_files", fake_changed_files)
+    monkeypatch.setattr(lint_mod, "_added_files", lambda root, base: set())
     monkeypatch.setattr("xut.status.current_branch", lambda: "infra/bootstrap")
     lint_mod.lint(repo_root(), True, base="origin/develop")
     assert captured["base"] == "origin/develop"
