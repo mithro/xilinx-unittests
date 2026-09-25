@@ -55,7 +55,8 @@ def shared(monkeypatch):
 
 
 @pytest.fixture
-def toy(monkeypatch):
+def toy_catalog(monkeypatch):
+    """TOYFF's catalog entry only (a cocotb test needs no golden-model registry)."""
     monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: TOY_ENTRY)
 
 
@@ -453,7 +454,7 @@ def test_fixture_declares_the_cocotb_test():
     assert (TOY_SHARED / "toy_golden.py").is_file()
 
 
-def test_python_and_xsim_skip_cocotb(tmp_path, toy):
+def test_python_and_xsim_skip_cocotb(tmp_path, toy_catalog):
     ctx = RunContext(tmp_path, "rtl", make_model_source(tmp_path / "ms"))
     res = PythonRunner().run(_case(), ctx)
     assert (res.status, res.reason) == ("skip", "declared unsupported: cocotb test")
@@ -474,7 +475,7 @@ def _one_cfg(case: TestCase) -> TestCase:
 
 
 @pytest.mark.container
-def test_cocotb_toyff_passes(ctx, toy, shared):
+def test_cocotb_toyff_passes(ctx, toy_catalog, shared):
     case = _case()
     res = IverilogRunner().run(case, ctx)
     d = workdir(ctx, "iverilog", case.id)
@@ -505,7 +506,7 @@ def test_cocotb_toyff_passes(ctx, toy, shared):
 
 
 @pytest.mark.container
-def test_cocotb_seed_reproduces_the_session(tmp_path, toy, shared):
+def test_cocotb_seed_reproduces_the_session(tmp_path, toy_catalog, shared):
     """The same --seed reproduces the trace exactly; another seed drives other D values."""
     ms = make_model_source(tmp_path / "ms")
     case = _one_cfg(_case())
@@ -523,7 +524,7 @@ def test_cocotb_seed_reproduces_the_session(tmp_path, toy, shared):
 
 
 @pytest.mark.container
-def test_cocotb_model_mismatch_fails(ctx, toy, shared):
+def test_cocotb_model_mismatch_fails(ctx, toy_catalog, shared):
     """A UNISIM model that disagrees with the golden model: fail, with the assertion."""
     m = ctx.model_source.unisims / "TOYFF.v"
     m.write_text(m.read_text().replace("else q <= D;", "else q <= ~D;"))
@@ -535,7 +536,7 @@ def test_cocotb_model_mismatch_fails(ctx, toy, shared):
 
 
 @pytest.mark.container
-def test_cocotb_attributes_reach_the_dut(ctx, toy, shared):
+def test_cocotb_attributes_reach_the_dut(ctx, toy_catalog, shared):
     """A model that ignores INIT fails init1 only: the configuration's attributes reach
     both the wrapper (xut_dut.v) and XutDut.attrs (the golden model)."""
     m = ctx.model_source.unisims / "TOYFF.v"
@@ -547,7 +548,7 @@ def test_cocotb_attributes_reach_the_dut(ctx, toy, shared):
 
 
 @pytest.mark.container
-def test_cocotb_simulator_stopping_early_is_error(ctx, toy, shared):
+def test_cocotb_simulator_stopping_early_is_error(ctx, toy_catalog, shared):
     m = ctx.model_source.unisims / "TOYFF.v"
     m.write_text(m.read_text().replace("  reg q;\n", "  reg q;\n  initial #125000 $finish;\n"))
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
@@ -556,7 +557,7 @@ def test_cocotb_simulator_stopping_early_is_error(ctx, toy, shared):
 
 
 @pytest.mark.container
-def test_cocotb_import_failure_is_error(ctx, toy):
+def test_cocotb_import_failure_is_error(ctx, toy_catalog):
     """Without its shared directory the test module cannot import ToyDff: error."""
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
     d = workdir(ctx, "iverilog", _case().id)
@@ -566,7 +567,7 @@ def test_cocotb_import_failure_is_error(ctx, toy):
 
 
 @pytest.mark.container
-def test_cocotb_compile_failure_is_error(ctx, toy, shared):
+def test_cocotb_compile_failure_is_error(ctx, toy_catalog, shared):
     (ctx.model_source.unisims / "TOYFF.v").write_text("module TOYFF(; endmodule\n")
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
     assert (res.status, res.configs[0].reason) == ("error", "compile failed")
@@ -575,7 +576,9 @@ def test_cocotb_compile_failure_is_error(ctx, toy, shared):
 
 
 @pytest.mark.container
-def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(tmp_path, toy, shared, monkeypatch):
+def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(
+    tmp_path, toy_catalog, shared, monkeypatch
+):
     """`xut run --runner python --runner iverilog --style cocotb --seed 7` on a copy of
     the fixture tree (TOYFF and its _shared/toy) rooted at tmp_path."""
     import shutil
