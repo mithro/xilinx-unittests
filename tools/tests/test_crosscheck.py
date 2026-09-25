@@ -135,6 +135,13 @@ def test_doc_gap():
     assert (f.cls, f.points) == ("doc-gap", ("c/S1 Q[0]: expected 0, got 1 (inferred:silent)",))
 
 
+def test_doc_points_are_in_simulated_time_order():
+    exp = EXP({"c/start": {"Q": "0"}, "c/S2": {"Q": "0"}, "c/S10": {"Q": "0"}})
+    got = T({"c/start": {"Q": "1"}, "c/S2": {"Q": "1"}, "c/S10": {"Q": "1"}})
+    (f,) = classify(TID, views(V("python", exp), V("iverilog", got)))
+    assert [p.split(" ")[0] for p in f.points] == ["c/start", "c/S2", "c/S10"]
+
+
 def test_one_simulator_is_every_available_simulator():
     (f,) = classify(TID, views(V("python", EXP(Q0)), V("iverilog", T(Q1))))
     assert (f.cls, f.runners) == ("doc-vs-model", ("iverilog",))
@@ -627,3 +634,116 @@ def test_cli_unmatched_selector_is_clean_error(repo):
     _test_yaml(repo)
     r = _xc("NOSUCH")
     assert r.exit_code == 1 and "NOSUCH" in r.output and "Traceback" not in r.output
+
+
+# --- end to end: xut run, then xut crosscheck, on the TOYFF fixture ------------------------
+
+
+def _demo(capsys, title: str, output: str) -> None:
+    with capsys.disabled():
+        print(f"\n[T17 demo: {title}]\n{output}")
+
+
+@pytest.mark.container
+def test_cli_run_then_crosscheck_on_the_toyff_fixture(work, toy, monkeypatch, capsys):
+    """`xut run --runner python --runner iverilog` then `xut crosscheck TOYFF`, against
+    two toy model sources: `toyff-good` (a correct TOYFF.v) and `toyff-bad` (Q
+    inverted). The good source agrees with the golden model; the bad one is a
+    doc-vs-model finding (ToyDff's provenance is doc:1), until an expected_divergence
+    lists it, when it is still reported, as known-divergence, and the exit is 0. The
+    two sources, which disagree with each other everywhere, are never cross-compared."""
+    import dataclasses
+
+    from test_runner_iverilog import _copy_toy, make_model_source
+
+    d = _copy_toy(work)
+    good = make_model_source(work / "good")
+    bad = make_model_source(work / "bad")
+    v = bad.unisims / "TOYFF.v"
+    v.write_text(v.read_text().replace("assign Q = q;", "assign Q = ~q;"))
+    good = dataclasses.replace(good, name="toyff-good")
+    bad = dataclasses.replace(bad, name="toyff-bad")
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
+    run = ["run", "--runner", "python", "--runner", "iverilog", "--style", "vector"]
+    run += ["--style", "sv", "TOYFF"]
+
+    monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": good)
+    r = CliRunner().invoke(main, run)
+    assert r.exit_code == 0, r.output
+    r = CliRunner().invoke(main, ["crosscheck", "TOYFF"])
+    _demo(capsys, "crosscheck after `xut run` on toyff-good", r.output)
+    cap = json.loads((work / f"build/crosscheck/{TID}.json").read_text())
+    assert cap["verdict"] == "agree" and cap["findings"] == []
+    assert cap["model_sources"]["toyff-good"]["rtl/xsim"]["status"] == "not-run"
+    assert r.exit_code == 0, r.output  # the cocotb test is not-run; others agree/uncompared
+
+    monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": bad)
+    r = CliRunner().invoke(main, run)
+    assert r.exit_code == 1, r.output  # iverilog fails against the golden model
+    r = CliRunner().invoke(main, ["crosscheck", TID, "--write-findings"])
+    _demo(capsys, "crosscheck with toyff-bad also run", r.output)
+    assert r.exit_code == 1, r.output
+    cap = json.loads((work / f"build/crosscheck/{TID}.json").read_text())
+    assert set(cap["model_sources"]) == {"toyff-good", "toyff-bad"}
+    (f,) = cap["findings"]  # none from comparing good with bad
+    assert (f["cls"], f["model_source"], f["runners"]) == (
+        "doc-vs-model",
+        "toyff-bad",
+        ["iverilog"],
+    )
+    stub = work / "findings/TOYFF-doc-vs-model-L1-capture.md"
+    assert stub.is_file() and "- Status: open" in stub.read_text()
+
+    doc = yaml.safe_load((d / "test.yaml").read_text())
+    doc["tests"][0]["expected_divergence"] = [
+        {"finding": "findings/TOYFF-doc-vs-model-L1-capture.md", "cls": "doc-vs-model",
+         "runners": ["iverilog"]}
+    ]  # fmt: skip
+    (d / "test.yaml").write_text(yaml.safe_dump(doc))
+    before = stub.read_text()
+    r = CliRunner().invoke(main, ["crosscheck", TID, "--write-findings"])
+    _demo(capsys, "crosscheck after listing the expected divergence", r.output)
+    assert r.exit_code == 0, r.output
+    cap = json.loads((work / f"build/crosscheck/{TID}.json").read_text())
+    (f,) = cap["findings"]
+    assert (f["cls"], f["of"], f["finding"]) == (
+        "known-divergence",
+        "doc-vs-model",
+        "TOYFF-doc-vs-model-L1-capture",
+    )
+    assert f["points"] and cap["verdict"] == "known-divergence"
+    assert stub.read_text() == before and len(list((work / "findings").iterdir())) == 1
+
+
+@pytest.mark.vivado
+@pytest.mark.container
+def test_cli_run_python_iverilog_xsim_then_crosscheck(work, toy, monkeypatch, capsys):
+    """The same with xsim too (the toy source is named unisim-2025.2 so xsim runs; test
+    label only, it holds just TOYFF.v): python, iverilog and xsim all agree."""
+    import dataclasses
+
+    from test_runner_iverilog import _copy_toy, make_model_source
+
+    from xut.runners import RUNNERS
+    from xut.runners.xsim import MODEL_SOURCE, XsimRunner
+
+    _copy_toy(work)
+    ms = dataclasses.replace(make_model_source(work / "ms"), name=MODEL_SOURCE)
+    toyff = ms.unisims / "TOYFF.v"
+
+    class ToyXsim(XsimRunner):
+        def __init__(self) -> None:
+            super().__init__(extra_files=[toyff])
+
+    monkeypatch.setitem(RUNNERS, "xsim", ToyXsim)
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
+    monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": ms)
+    args = ["run", "--runner", "python", "--runner", "iverilog", "--runner", "xsim"]
+    r = CliRunner().invoke(main, [*args, "--style", "vector", "--style", "sv", "TOYFF"])
+    assert r.exit_code == 0, r.output
+    r = CliRunner().invoke(main, ["crosscheck", "TOYFF"])
+    _demo(capsys, "crosscheck after python + iverilog + xsim", r.output)
+    assert r.exit_code == 0, r.output
+    for tid in (TID, "7series.TOYFF.L1.sv_basic"):
+        cap = json.loads((work / f"build/crosscheck/{tid}.json").read_text())
+        assert cap["verdict"] == "agree" and cap["findings"] == [], cap
