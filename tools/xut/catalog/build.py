@@ -71,6 +71,31 @@ def value_issues(name: str, sec: DocSection, model: HdlModule | None = None) -> 
     return out
 
 
+#: Attribute values that only exist on UltraScale/UltraScale+/Versal (e.g. UNISIM's
+#: `SIM_DEVICE = "ULTRASCALE"` default, UG953's Versal-only `CE_TYPE = HARDSYNC`).
+_NON_7SERIES_VALUE = re.compile(r"ULTRASCALE\w*|VERSAL\w*|HARDSYNC")
+
+
+def family_value_issues(name: str, attributes: list[dict]) -> list[str]:
+    """Report lines for attribute defaults or allowed values that are not 7-series
+    settings. The facts stay as extracted; the owning unit must not sample them."""
+    out = []
+    for a in attributes:
+        found = []
+        default = a.get("default")
+        if isinstance(default, str) and _NON_7SERIES_VALUE.fullmatch(default):
+            found.append(f"default {default}")
+        found += [
+            f"allowed value {v}" for v in a.get("allowed") or [] if _NON_7SERIES_VALUE.fullmatch(v)
+        ]
+        if found:
+            out.append(
+                f"{name}: attribute {a['name']} {', '.join(found)} not applicable to 7-series "
+                "(UltraScale/Versal only); do not sample it"
+            )
+    return out
+
+
 def _entry(
     name: str, sec: DocSection | None, model: HdlModule | None, library: str, family: str
 ) -> CatalogEntry:
@@ -220,6 +245,7 @@ def build_all(
             if note:
                 report.append(f"{name}: port {p.name} {note}")
         entry = _entry(name, sec, model, library, family)
+        report.extend(family_value_issues(name, entry.attributes))
         validate(entry.to_dict())
         (out_dir / f"{name}.yaml").write_text(_dump(entry))
     return report
@@ -230,6 +256,7 @@ _CATEGORIES = (
     ("Width or direction mismatches", lambda x: " width unisim=" in x or " direction unisim=" in x),
     ("Tables absent from UG953", lambda x: ": no Port Descriptions" in x or ": no Available" in x),
     ("UG953 cells needing review", lambda x: " need review " in x or " needs review" in x),
+    ("Values not applicable to 7-series", lambda x: " not applicable to 7-series " in x),
     ("Port class notes", lambda x: " class depends on " in x or " class data despite " in x),
     ("Missing UG953 section or model", lambda x: True),
 )
