@@ -10,22 +10,25 @@ stimulus (``write_stim``), then compile and run the generic testbench against UN
              xut_vector_tb.sv dut/xut_dut.v <ms>/glbl.v
     vvp -n sim.vvp
 
-- compile failure: ``error: compile failed``; no ``XUT_DONE``: ``error: simulation
-  ended early``;
-- ``expect=reject``: ``reject_result`` decides instead (shared with xsim, verilator;
-  ``reject_check`` also writes the header-only ``trace.xtr`` a pass needs);
+- compile failure: ``error: compile failed``; ``vvp`` exit code non-zero: ``error``;
+  no ``XUT_DONE``: ``error: simulation ended early``;
+- ``expect=reject``: ``xut.runners.reject.reject_check`` decides instead (shared with
+  xsim and verilator; a rejection passes only on positive evidence, ruling S13);
 - otherwise ``raw.txt`` -> ``trace.xtr`` -> ``compare`` with the python run's
   ``expected.xtr`` (``vector_check``, shared by every simulator runner).
 
 sv configuration: the testbench ``sv/<stem>.sv`` (top module ``<stem>``) includes
 ``hdl/xut_trace.svh``, which writes ``trace.body`` and prints ``XUT_PASS``/``XUT_FAIL``
-(``sv_check``). Each attribute of the configuration becomes ``-P<stem>.<NAME>=<value>``.
+(``sv_check``; a ``$error`` line, ``ERROR:`` from vvp, is a fail too, and a non-zero
+vvp exit code an error). Each attribute of the configuration becomes
+``-P<stem>.<NAME>=<value>``.
 
-A compile counts as failed on a non-zero exit **or** on any ``error:`` line in the
+A compile counts as failed on a non-zero exit **or** on any ``error:``/``sorry:`` line in the
 compiler's output: Icarus 12 reports an invalid ``-P`` value as an error but exits 0 and
 elaborates with the parameter's default (pinned by a container test), which would
 otherwise be a silent pass on the wrong configuration. ``param_value`` refuses such
-values (x/z digits) before they reach the compiler.
+values (x/z digits) before they reach the compiler. Real literals (``1.5``, ``2e3``) are
+accepted: Icarus 12 takes them (probed in the container).
 
 glbl is a second top module (spec §6). ``glbl_instance = True`` selects the
 ``XUT_GLBL_INSTANCE`` strategy instead (glbl instantiated inside the testbench, by
@@ -37,6 +40,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import ClassVar
 
@@ -51,8 +55,8 @@ from xut.runners.base import (
     python_dir,
     sha256_file,
     timeout_for,
-    workdir,
 )
+from xut.runners.reject import SimOutcome, reject_check
 from xut.stimcompile import TB, raw_to_trace, write_stim
 from xut.testspec import TestCase
 from xut.wrap import DutMap
@@ -60,11 +64,12 @@ from xut.wrap import DutMap
 HDL = Path(__file__).resolve().parent.parent / "hdl"
 
 #: A compiler diagnostic that is an error, whatever the exit code.
-_COMPILE_ERROR = re.compile(r"\berror:", re.IGNORECASE)
-#: A -P value Icarus 12 accepts: a (signed) decimal, a based literal of 0/1/hex digits
-#: without x/z, or a plain string.
+_COMPILE_ERROR = re.compile(r"\b(error|sorry):", re.IGNORECASE)
+#: A -P value Icarus 12 accepts: a (signed) decimal, a real, a based literal of 0/1/hex
+#: digits without x/z, or a plain string.
 _PARAM_OK = re.compile(
     r"^(-?[0-9]+"  # decimal
+    r"|-?[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?|-?[0-9]+[eE][+-]?[0-9]+"  # real
     r"|[0-9]*'s?([bB][01_]+|[oO][0-7_]+|[dD][0-9_]+|[hH][0-9a-fA-F_]+)"  # based, no x/z
     r'|"[^"]*")$'  # string
 )
@@ -78,13 +83,14 @@ def param_value(name: str, value: object) -> str:
     """``value`` as an Icarus ``-P`` literal. x/z digits are refused: Icarus 12 reports
     them as an error, exits 0 and keeps the default, so passing one would silently run
     the wrong configuration."""
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ParamError(f"attribute {name}={value!r}: not an integer or Verilog literal")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ParamError(f"attribute {name}={value!r}: not a number or Verilog literal")
     text = str(value)
     if not _PARAM_OK.match(text):
         raise ParamError(
             f"attribute {name}={text}: Icarus -P cannot express this value (x/z digits or "
-            "not a Verilog number/string); an sv test needs a testbench-side default for it"
+            "not a Verilog integer/real/string literal); an sv test needs a testbench-side "
+            "default for it"
         )
     return text
 
@@ -119,33 +125,10 @@ def vector_check(
     )
 
 
-def reject_result(cfg: str, compiled_ok: bool, log_text: str) -> ConfigResult:
-    """Shared by every simulator runner (iverilog, xsim, verilator) for expect=reject: a
-    compile/elaboration failure or a run without XUT_DONE is a rejection (pass); a run
-    that reaches XUT_DONE accepted the illegal value (fail)."""
-    if not compiled_ok:
-        return ConfigResult(cfg, "pass", "rejected at compile/elaboration")
-    if "XUT_DONE" not in log_text:
-        return ConfigResult(cfg, "pass", "rejected at runtime")
-    return ConfigResult(cfg, "fail", "illegal attribute was accepted")
-
-
-def reject_check(
-    cd: Path, compiled_ok: bool, log_text: str, header: dict[str, str]
-) -> ConfigResult:
-    """``reject_result`` for configuration directory ``cd``, plus its evidence: a
-    header-only ``trace.xtr`` (``expect=reject``, like the python run's expected trace)
-    and the stimulus and trace hashes. Shared by every simulator runner."""
-    r = reject_result(cd.name[4:], compiled_ok, log_text)
-    xtr.dump(xtr.Trace({**header, "expect": "reject"}), cd / "trace.xtr")
-    r.stimulus_sha256 = sha256_file(cd / "stim.xvec")
-    r.trace_sha256 = sha256_file(cd / "trace.xtr")
-    return r
-
-
 def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
-    """``trace.xtr`` = ``header`` + the testbench's ``trace.body``; pass iff the log has
-    ``XUT_PASS`` and no ``XUT_FAIL``. A malformed ``trace.body`` is an error."""
+    """``trace.xtr`` = ``header`` + the testbench's ``trace.body``; pass iff the run's
+    output has ``XUT_PASS``, no ``XUT_FAIL`` and no ``ERROR:`` line (``$error``). A
+    malformed ``trace.body`` is an error."""
     cfg = cd.name[4:]
     body = cd / "trace.body"
     try:
@@ -156,9 +139,13 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
         return ConfigResult(cfg, "error", f"malformed trace.body: {e}")
     xtr.dump(t, cd / "trace.xtr")
     sha = sha256_file(cd / "trace.xtr")
-    if "XUT_FAIL" in log_text:
-        first = next(ln for ln in log_text.splitlines() if "XUT_FAIL" in ln)
-        return ConfigResult(cfg, "fail", first.strip(), None, sha)
+    bad = [
+        ln.strip()
+        for ln in log_text.splitlines()
+        if "XUT_FAIL" in ln or ln.lstrip().startswith("ERROR:")
+    ]
+    if bad:
+        return ConfigResult(cfg, "fail", bad[0], None, sha)
     if "XUT_PASS" not in log_text:
         return ConfigResult(cfg, "error", "testbench did not report XUT_PASS/XUT_FAIL")
     return ConfigResult(cfg, "pass", None, None, sha)
@@ -189,7 +176,14 @@ class IverilogRunner(Runner):
         return True, ""
 
     def tools(self, ctx: RunContext) -> dict:
-        return sim_tool_versions(executor_for(ctx.model_source), workdir(ctx, self.name, "_v"))
+        # A private scratch directory (the container needs a cwd under the repository),
+        # removed afterwards so no stray directory is left in build/.
+        d = ctx.root / "build" / f".xut-versions-{uuid.uuid4().hex}"
+        try:
+            return sim_tool_versions(executor_for(ctx.model_source), d)
+        finally:
+            if d.exists():
+                shutil.rmtree(d)
 
     def container(self, ctx: RunContext) -> dict | None:
         if _native():
@@ -212,14 +206,24 @@ class IverilogRunner(Runner):
             return ["-s", top, "-DXUT_GLBL_INSTANCE"]
         return ["-s", top, "-s", "glbl"]
 
-    def _compile(self, ex: Executor, argv: list[str], cd: Path, log: Path, timeout: int) -> bool:
-        """Run the compiler; False on a non-zero exit or any ``error:`` it printed."""
+    @staticmethod
+    def _step(ex: Executor, argv: list[str], cd: Path, log: Path, timeout: int) -> tuple[int, str]:
+        """Run one command, appending to ``log``; its exit code and its own output
+        (without the executor's ``$ argv`` header line)."""
         start = log.stat().st_size if log.is_file() else 0
         rc = ex.run(argv, cwd=cd, log=log, timeout_s=timeout)
         with log.open() as f:
             f.seek(start)
-            out = f.read().splitlines()[1:]  # line 0 is the executor's "$ argv" header
-        return rc == 0 and not any(_COMPILE_ERROR.search(ln) for ln in out)
+            lines = f.read().splitlines()
+        return rc, "\n".join(lines[1:]) + "\n"
+
+    def _compile(
+        self, ex: Executor, argv: list[str], cd: Path, log: Path, timeout: int
+    ) -> tuple[bool, str]:
+        """Run the compiler: (ok, output). Not ok on a non-zero exit or on any
+        ``error:``/``sorry:`` line it printed (Icarus exits 0 on a bad -P value)."""
+        rc, out = self._step(ex, argv, cd, log, timeout)
+        return rc == 0 and not any(_COMPILE_ERROR.search(ln) for ln in out.splitlines()), out
 
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
         ex = executor_for(ctx.model_source)
@@ -270,16 +274,20 @@ class IverilogRunner(Runner):
             "dut/xut_dut.v",
             ex.guest(ctx.model_source.glbl),
         ]
-        compiled_ok = self._compile(ex, argv, cd, log, timeout)
+        compiled_ok, ctext = self._compile(ex, argv, cd, log, timeout)
+        rc: int | None = None
+        rtext = ""
         if compiled_ok:
-            ex.run(["vvp", "-n", "sim.vvp"], cwd=cd, log=log, timeout_s=timeout)
-        text = log.read_text()
+            rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
         header["seed"] = str(vec.seed)
         if vec.expect == "reject":
-            return reject_check(cd, compiled_ok, text, header)
+            out = SimOutcome(compiled_ok, ctext, rc, rtext)
+            return reject_check(cd, out, vec.attrs, case.prim, header)
         if not compiled_ok:
             return ConfigResult(cfg, "error", "compile failed")
-        if "XUT_DONE" not in text:
+        if rc != 0:
+            return ConfigResult(cfg, "error", f"simulator exited with rc {rc}")
+        if "XUT_DONE" not in rtext:
             return ConfigResult(cfg, "error", "simulation ended early (no XUT_DONE)")
         return vector_check(cd, m, comp.labels, xtr.load(exp), header, self.x_observable)
 
@@ -314,11 +322,13 @@ class IverilogRunner(Runner):
             ex.guest(source),
             ex.guest(ctx.model_source.glbl),
         ]
-        if not self._compile(ex, argv, cd, log, timeout):
+        if not self._compile(ex, argv, cd, log, timeout)[0]:
             return ConfigResult(cfg, "error", "compile failed")
-        ex.run(["vvp", "-n", "sim.vvp"], cwd=cd, log=log, timeout_s=timeout)
+        rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
+        if rc != 0:
+            return ConfigResult(cfg, "error", f"simulator exited with rc {rc}")
         header["seed"] = "0"
-        return sv_check(cd, log.read_text(), header)
+        return sv_check(cd, rtext, header)
 
 
 class IverilogVzRunner(IverilogRunner):

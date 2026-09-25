@@ -24,14 +24,13 @@ from xut.formats import xtr
 from xut.modelsrc import ModelSource
 from xut.paths import repo_root
 from xut.runners import RUNNERS
-from xut.runners.base import ConfigResult, RunContext, workdir
+from xut.runners.base import RunContext, workdir
 from xut.runners.iverilog import (
     HDL,
     IverilogRunner,
     IverilogVzRunner,
     ParamError,
     param_value,
-    reject_result,
     sv_check,
 )
 from xut.runners.python import PythonRunner
@@ -132,18 +131,6 @@ def test_registry():
     assert IverilogVzRunner.name == "iverilog-vz" and "iverilog-vz" not in RUNNERS
 
 
-def test_reject_result():
-    assert reject_result("c", False, "") == ConfigResult(
-        "c", "pass", "rejected at compile/elaboration"
-    )
-    assert reject_result("c", True, "Attribute Syntax Error\n") == ConfigResult(
-        "c", "pass", "rejected at runtime"
-    )
-    assert reject_result("c", True, "XUT_DONE t=1\n") == ConfigResult(
-        "c", "fail", "illegal attribute was accepted"
-    )
-
-
 HDR = {"runner": "iverilog", "flow": "rtl", "model": "m", "prim": "TOYFF", "cfg": "c", "seed": "0"}
 
 
@@ -173,13 +160,25 @@ def test_sv_check_malformed_body_is_error(tmp_path):
 
 @pytest.mark.parametrize(
     ("value", "out"),
-    [("1'b1", "1'b1"), ("4'hA", "4'hA"), (1, "1"), ("7", "7"), ("-3", "-3"), ('"ABC"', '"ABC"')],
+    [
+        ("1'b1", "1'b1"),
+        ("4'hA", "4'hA"),
+        (1, "1"),
+        ("7", "7"),
+        ("-3", "-3"),
+        ('"ABC"', '"ABC"'),
+        ("1.5", "1.5"),
+        ("2.0e3", "2.0e3"),
+        ("-0.25", "-0.25"),
+        ("1e-3", "1e-3"),
+        (0.5, "0.5"),
+    ],
 )
 def test_param_value(value, out):
     assert param_value("P", value) == out
 
 
-@pytest.mark.parametrize("value", ["1'bx", "4'b10z1", "8'hxF", "'bx", True, "a b"])
+@pytest.mark.parametrize("value", ["1'bx", "4'b10z1", "8'hxF", "'bx", True, "a b", "1.", ".5"])
 def test_param_value_refuses_what_icarus_cannot_take(value):
     """Icarus 12 -P rejects x/z digits and then compiles with the DEFAULT value and exit
     code 0; the runner never passes such a value (probe: test_icarus_P_*)."""
@@ -351,14 +350,54 @@ def test_reject_end_to_end(work, toy, reject):
     d = workdir(ctx, "iverilog", case.id)
     log = (d / "run.log").read_text()
     if reject:
-        assert (res.status, res.configs[0].reason) == ("pass", "rejected at runtime"), log
-        assert "Attribute Syntax Error" in log
+        assert res.status == "pass", log
+        assert res.configs[0].reason == "rejected at runtime: Attribute Syntax Error: INIT=x"
     else:
-        assert (res.status, res.configs[0].reason) == ("fail", "illegal attribute was accepted")
+        assert res.status == "fail"
+        assert res.configs[0].reason.startswith("expected rejection, got acceptance")
     t = xtr.load(d / "cfg-init_x/trace.xtr")  # the evidence: a header-only trace
     assert t.samples == {} and t.header["expect"] == "reject" and t.header["cfg"] == "init_x"
     c = _result(d)["configs"][0]
     assert c["stimulus_sha256"] and c["trace_sha256"]
+
+
+@pytest.mark.container
+def test_reject_with_missing_model_is_error(work, toy):
+    """Ruling S13: a build that fails for an infrastructure reason (here: no TOYFF.v)
+    is an error, never a rejection."""
+    ctx = RunContext(work, "rtl", make_model_source(work / "ms"))
+    (work / "ms/unisims/TOYFF.v").unlink()
+    case = _case("7series.TOYFF.L0.reject")
+    _python(ctx, case)
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error", res.reason
+    assert "Unknown module type: TOYFF" in res.configs[0].reason
+
+
+@pytest.mark.container
+def test_reject_silent_finish_is_error(work, toy):
+    """A model that stops without saying why is not evidence of a rejection."""
+    ctx = RunContext(work, "rtl", make_model_source(work / "ms"))
+    m = work / "ms/unisims/TOYFF.v"
+    m.write_text(m.read_text().replace('$display("Attribute Syntax Error: INIT=%b", INIT);', ""))
+    case = _case("7series.TOYFF.L0.reject")
+    _python(ctx, case)
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error" and "without XUT_DONE" in res.configs[0].reason
+
+
+@pytest.mark.container
+def test_vector_nonzero_simulator_exit_is_error(work, toy):
+    ctx = RunContext(work, "rtl", make_model_source(work / "ms"))
+    m = work / "ms/unisims/TOYFF.v"
+    m.write_text(
+        m.read_text().replace("  reg q;\n", '  reg q;\n  initial #125000 $fatal(1, "boom");\n')
+    )
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error"
+    assert all(c.reason.startswith("simulator exited with rc") for c in res.configs)
 
 
 @pytest.mark.container
@@ -438,6 +477,44 @@ def test_sv_syntax_error_is_compile_failed(ctx, work):
         "error",
         "compile failed",
     )
+
+
+@pytest.mark.container
+def test_sv_checkpoint_at_time_0(ctx, work):
+    """xut_trace.svh opens trace.body lazily: a checkpoint at time 0 is recorded."""
+    case = _sv_variant(
+        work, "  initial begin\n", '  initial `XUT_POINT1("t0", "Q", q)\n  initial begin\n'
+    )
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "pass", res.reason
+    d = workdir(ctx, "iverilog", case.id)
+    assert xtr.load(d / "trace.xtr").samples["default/t0"] == {"Q": "x"}
+
+
+@pytest.mark.container
+def test_sv_dollar_error_fails(ctx, work):
+    """$error does not change vvp's exit code; its ERROR: line makes the config fail."""
+    case = _sv_variant(work, "    xut_finish;", '    $error("tb says no");\n    xut_finish;')
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "fail"
+    assert (
+        res.configs[0].reason.startswith("ERROR:") and "tb_toyff_basic.sv" in res.configs[0].reason
+    )
+
+
+@pytest.mark.container
+def test_sv_nonzero_simulator_exit_is_error(ctx, work):
+    case = _sv_variant(work, "    xut_finish;", '    $fatal(1, "tb gives up");')
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error" and res.configs[0].reason.startswith("simulator exited with rc")
+
+
+@pytest.mark.container
+def test_tools_leaves_no_stray_directory(ctx):
+    IverilogRunner().run(_case("7series.TOYFF.L1.sv_basic"), ctx)
+    build = ctx.root / "build"
+    assert not list(build.glob(".xut-versions-*"))
+    assert not list(build.glob("**/_v"))
 
 
 @pytest.mark.container
