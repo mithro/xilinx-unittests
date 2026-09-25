@@ -5,8 +5,12 @@
 //
 // Semantics (shared with xut.golden.replay; pinned by tools/tests/test_stimcompile.py):
 // - Every operation of one time step runs in this one process without yielding, so the
-//   DUT wakes only after the whole step is applied. SETs go to a shadow vector and are
-//   committed to in_vec in ONE assignment before any other operation or time advance:
+//   DUT wakes only after the whole step is applied. (The language lets a simulator
+//   interleave processes at any statement; that it does not here holds in practice on
+//   xsim, Icarus and Verilator; test_tb_simultaneous_edge_sees_new_data and the
+//   golden-vs-simulator cross-checks would catch a change.) SETs go to a shadow
+//   vector and are committed to in_vec in ONE assignment before any other operation
+//   or time advance:
 //   co-timed sets on disjoint bits are one atomic input change (ruling S6), and a
 //   `simultaneous` group lands at one time step (a rising edge captures the new data).
 // - Time 0: in_vec is x until every DUT process has started and waits (a barrier on a
