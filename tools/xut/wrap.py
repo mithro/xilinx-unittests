@@ -39,6 +39,7 @@ from xut.catalog.model import CatalogEntry, is_enumerated
 from xut.catalog.portclass import default_class
 from xut.catalog.unisim import HdlModule
 from xut.errors import XutError
+from xut.formats.common import is_cfg
 
 MAP_FORMAT = "xut-map 1"
 HEADER = "// SPDX-License-Identifier: Apache-2.0\n"
@@ -53,8 +54,6 @@ _CLASSES_FOR = {
     "inout": frozenset({"inout"}),
 }
 _ROLES = frozenset({"", "drive_en", "drive_val", "obs"})
-#: A configuration name appears in Verilog comments and in .xvec/.xtr headers.
-_CFG = re.compile(r"^[^\s\"#]+$")
 _INT32 = (-(2**31), 2**31 - 1)
 
 
@@ -363,8 +362,10 @@ def _render_attrs(
 
 
 def _check_cfg(cfg: str) -> None:
-    if not _CFG.match(cfg):
-        raise WrapError(f"configuration name {cfg!r} must be non-empty without spaces, '\"' or '#'")
+    """A configuration name appears in Verilog comments, .xvec headers and as the
+    ``<cfg>/`` prefix of .xtr labels, so it follows ``xut.formats.common.CFG``."""
+    if not is_cfg(cfg):
+        raise WrapError(f"configuration name {cfg!r} is not [A-Za-z0-9_.-]+")
 
 
 def spec_from_catalog(
