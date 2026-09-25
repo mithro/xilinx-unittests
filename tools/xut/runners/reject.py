@@ -18,7 +18,7 @@ look like a rejection):
 
 Evidence (a diagnostic word and a name on one line) is matched only outside INFO/NOTE
 lines and outside file paths (quoted strings holding a "/" and any token containing
-"/"), ruling S13a: a path such as ``.../7series.FDRE.L0.illegal_init/...`` is never
+"/"), ruling S13a: a path such as ``.../<family>.FDRE.L0.illegal_init/...`` is never
 evidence.
 
 The names searched for are the configuration's attribute names (``attr.<NAME>`` of the
@@ -72,7 +72,7 @@ _PATH_TOKEN = re.compile(r"\S*/\S*")
 def _scrubbed(line: str) -> str:
     """``line`` without file paths (quoted or bare: anything containing "/"), or ""
     for an INFO/NOTE line. Evidence is matched on this only (ruling S13a): a test
-    directory such as ``7series.FDRE.L0.illegal_init/`` must never count as a
+    directory such as ``<family>.FDRE.L0.illegal_init/`` must never count as a
     diagnostic naming the attribute."""
     if _INFO.match(line):
         return ""
