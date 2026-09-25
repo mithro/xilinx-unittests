@@ -2,7 +2,6 @@
 """Tests for xut.wrap: the xut_dut wrapper, its map.json and the `xut wrap` CLI (spec §5.2)."""
 
 import json
-import shutil
 from pathlib import Path
 
 import pyslang
@@ -12,7 +11,6 @@ from click.testing import CliRunner
 from xut.catalog.model import load_entry
 from xut.catalog.unisim import HdlModule, HdlParam, HdlPort
 from xut.cli import main
-from xut.container import SIM_IMAGE, image_digest
 from xut.errors import XutError
 from xut.paths import repo_root
 from xut.workunits import load_family
@@ -445,11 +443,6 @@ def test_cli_wrap_raw_clock_out(tmp_path):
 
 # --- UNISIM elaboration in the xut-sim container (Icarus) -----------------------------
 
-needs_image = pytest.mark.skipif(
-    shutil.which("docker") is None or image_digest(SIM_IMAGE) is None,
-    reason=f"{SIM_IMAGE} not built (run: uv run xut container build)",
-)
-
 _TB = """// SPDX-License-Identifier: Apache-2.0
 `timescale 1ps / 1ps
 `include "xut_cfg.vh"
@@ -502,6 +495,13 @@ _ELAB_CASES = [
 ]
 
 
+def _executor(src, work):
+    """A container with only ``work`` (at /work) and the model source (read-only)."""
+    from xut.container import DockerExecutor, Mount
+
+    return DockerExecutor(root=work, mounts=(Mount(src.src.resolve(), f"/models/{src.name}"),))
+
+
 def _model_sources():
     """Every model source on this machine: the wrapper must work with each (spec §6.2)."""
     from xut.modelsrc import model_sources
@@ -513,18 +513,14 @@ def _model_sources():
 
 
 @pytest.mark.container
-@needs_image
 @pytest.mark.parametrize(("prim", "attrs", "stim", "expect"), _ELAB_CASES)
-def test_wrapper_elaborates_and_runs_with_unisim(prim, attrs, stim, expect):
+def test_wrapper_elaborates_and_runs_with_unisim(prim, attrs, stim, expect, tmp_path):
     """Icarus elaborates the wrapper against real UNISIM (glbl as a second top) and the
     attribute values reach the instance (spec §5.2)."""
-    from xut.container import executor_for
-
     i = _ELAB_CASES.index((prim, attrs, stim, expect))
     for src in _model_sources():
-        ex = executor_for(src)
-        work = repo_root() / "build" / "test-wrap-elab" / src.name / f"{prim}-{i}"
-        shutil.rmtree(work, ignore_errors=True)
+        work = tmp_path / src.name
+        ex = _executor(src, work)
         spec = spec_from_catalog(_entry(prim), f"case{i}", attrs, raw_clock_out=True)
         write_dut(spec, work)
         (work / "tb.v").write_text(_TB.replace("@IN@", stim))
@@ -544,15 +540,11 @@ def test_wrapper_elaborates_and_runs_with_unisim(prim, attrs, stim, expect):
 
 
 @pytest.mark.container
-@needs_image
-def test_cocotb_top_resolves_glbl_upward():
+def test_cocotb_top_resolves_glbl_upward(tmp_path):
     """xut_cocotb_top instantiates glbl itself; UNISIM's glbl.GSR must resolve to it."""
-    from xut.container import executor_for
-
     for src in _model_sources():
-        ex = executor_for(src)
-        work = repo_root() / "build" / "test-wrap-elab" / src.name / "cocotb-top"
-        shutil.rmtree(work, ignore_errors=True)
+        work = tmp_path / src.name
+        ex = _executor(src, work)
         write_dut(spec_from_catalog(_fdre(), "init1", {"INIT": "1'b1"}), work, cocotb_top=True)
         lib = [a for d in src.search for a in ("-y", ex.guest(d))]
         log = work / "build.log"

@@ -173,19 +173,12 @@ def test_sim_tool_versions_first_line_and_cached(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-needs_image = pytest.mark.skipif(
-    shutil.which("docker") is None or image_digest(SIM_IMAGE) is None,
-    reason=f"{SIM_IMAGE} not built (run: uv run xut container build)",
-)
-
-
 @pytest.mark.container
-@needs_image
-def test_pinned_versions(tmp_path):
+def test_pinned_versions(tmp_path, monkeypatch):
     from xut.container import sim_tool_versions
 
-    work = repo_root() / "build" / "versions"
-    v = sim_tool_versions(DockerExecutor(root=repo_root()), work)
+    monkeypatch.setattr(container, "_VERSIONS", {})
+    v = sim_tool_versions(DockerExecutor(root=tmp_path), tmp_path)
     assert v["iverilog"].startswith("Icarus Verilog version 12.0")
     assert v["verilator"].startswith("Verilator 5.048")
     assert v["cocotb"] == "2.0.1"
@@ -230,18 +223,15 @@ sys.exit(1 if failed or not total else 0)
 
 
 @pytest.mark.container
-@needs_image
 @pytest.mark.parametrize("sim", ["icarus", "verilator"])
-def test_cocotb_smoke_runs(sim):
+def test_cocotb_smoke_runs(sim, tmp_path):
     """cocotb 2.0.1 must run on both simulators (spec §4.3; Verilator v5.048, spec rev 3.1)."""
-    work = repo_root() / "build" / "cocotb-smoke"
-    work.mkdir(parents=True, exist_ok=True)
+    work = tmp_path
     (work / "smoke_dff.v").write_text(SMOKE_V)
     (work / "cocotb_smoke.py").write_text(SMOKE_TEST)
     (work / "smoke_run.py").write_text(SMOKE_RUN)
     log = work / f"{sim}.log"
-    log.unlink(missing_ok=True)
-    rc = DockerExecutor(root=repo_root()).run(
+    rc = DockerExecutor(root=tmp_path).run(
         ["python3", "smoke_run.py", sim],
         cwd=work,
         log=log,
@@ -253,12 +243,10 @@ def test_cocotb_smoke_runs(sim):
 
 
 @pytest.mark.container
-@needs_image
 def test_verilator_still_rejects_procedural_deassign(tmp_path):
     """Pins why `xut verilatorize` (spec §6.2) exists. If Verilator ever accepts the
     Verilog-1995 procedural assign/deassign, stop and raise it with the owner before Task 12."""
-    work = repo_root() / "build" / "vl-deassign"
-    work.mkdir(parents=True, exist_ok=True)
+    work = tmp_path
     (work / "toy.v").write_text(
         "// SPDX-License-Identifier: Apache-2.0\n"
         "module toy (input c, input d, input clr, output q);\n"
@@ -267,8 +255,7 @@ def test_verilator_still_rejects_procedural_deassign(tmp_path):
         "  always @(posedge c) r <= d;\nendmodule\n"
     )
     log = work / "lint.log"
-    log.unlink(missing_ok=True)
-    rc = DockerExecutor(root=repo_root()).run(
+    rc = DockerExecutor(root=tmp_path).run(
         ["verilator", "--lint-only", "toy.v"], cwd=work, log=log, timeout_s=120
     )
     assert rc != 0 and "deassign" in log.read_text()
