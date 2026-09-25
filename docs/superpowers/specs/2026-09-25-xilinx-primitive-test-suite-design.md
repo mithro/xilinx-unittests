@@ -1,7 +1,9 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 2. Incorporates the technical review and the
-  requirements/process review of revision 1, both 2026-09-25.
+- Status: revision 3 (2026-09-25). Rev 2 incorporated the technical and
+  requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
+  toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
+  to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -23,8 +25,8 @@ the Xilinx/AMD libraries guides. It must:
 3. Provide **small unit tests** as well as **larger functional/integration tests**.
 4. **Cross-check** results between every way a test can be run. The references
    are the documentation, the vendor simulation models and silicon.
-5. Be usable to **validate FPGA toolchains** (Vivado, yosys + nextpnr-xilinx,
-   F4PGA/VPR).
+5. Be usable to **validate FPGA toolchains** (Vivado; yosys + openXC7
+   nextpnr; F4PGA/VPR as a legacy flow).
 6. Carry **detailed documentation per test**: what it exercises, why it is
    useful, what it misses, and what it is related to.
 
@@ -42,7 +44,7 @@ the Xilinx/AMD libraries guides. It must:
 
 - **First target: 7-series**, as documented in UG953 (2026.1; 2025.2 is also
   recorded): 103 primitives, 12 UniMacros and 20 XPMs. All Xilinx hardware on
-  fpgas.online is Artix-7, and prjxray, nextpnr-xilinx and VPR support only
+  fpgas.online is Artix-7, and prjxray, openXC7 nextpnr and VPR support only
   7-series.
 - The framework is family-agnostic. **UltraScale** (UG974, 131 primitives)
   follows later, as a simulation-only family.
@@ -250,11 +252,11 @@ A *flow* turns HDL into something executable. A *runner* executes it.
 | `rtl` | wrapper + UNISIM |
 | `vivado` | post-synth funcsim netlist; post-route funcsim netlist; bitstream → bit2fasm → **fasm2bels** netlist; bitstream on hw |
 | `yosys` | `synth_xilinx` netlist, simulated against UNISIM |
-| `nextpnr-xilinx` (openXC7) | yosys netlist; FASM → fasm2bels netlist; bitstream on hw |
-| `vpr` (F4PGA) | yosys netlist; FASM → fasm2bels netlist; bitstream on hw |
+| `openxc7` (yosys + `openXC7/nextpnr` himbaechel-xilinx + prjxray) | yosys netlist; post-route netlist (§6.1); bitstream on hw |
+| `vpr` (F4PGA, legacy) | yosys netlist; post-route netlist (§6.1); bitstream on hw |
 
-- **fasm2bels** gives all three P&R tools one like-for-like, bitstream-derived
-  netlist.
+- A bitstream-derived netlist (§6.1) gives all P&R tools one like-for-like
+  comparison point.
 - After every flow the cell type and attributes of the DUT are extracted and
   compared with the configuration, which catches silent retargeting.
 - `INIT_FILE` and other file-based attributes are tested explicitly per flow.
@@ -265,8 +267,43 @@ A *flow* turns HDL into something executable. A *runner* executes it.
 | `python` | golden model only; produces expected traces |
 | `xsim` | Vivado 2025.2, sourced in a subshell |
 | `iverilog` | container |
-| `verilator` | container, `--timing`; `glbl` compiled as a second top |
+| `verilator` | container, `--timing`; `glbl` compiled as a second top; UNISIM models pass through `xut verilatorize` first (§6.2) |
 | `hw` | fpgas.online |
+
+### 6.1 Post-route netlists and fasm2bels
+
+`fasm2bels` (FASM → UNISIM Verilog) is the planned like-for-like post-route
+netlist source for every flow, but its last real commit was 2023-03. Step 4
+therefore starts with a spike, and **only** these outcomes are acceptable:
+
+1. fasm2bels works for xc7a35t with current prjxray, possibly with local
+   patches kept in `third_party/` patches; or
+2. each tool's own post-route export is used instead: nextpnr's
+   `--write` JSON converted to Verilog with yosys, VPR's post-route netlist,
+   Vivado funcsim.
+
+Either way, hardware remains the final arbiter.
+
+### 6.2 Verilator and UNISIM (`xut verilatorize`)
+
+Verilator 5 rejects the Verilog-1995 procedural `assign`/`deassign` that UNISIM
+uses for GSR/INIT handling. This is a hard `UNSUPPORTED` error, and it affects
+40 of 249 models, including FDRE, RAMB18E1 and MMCME2_ADV.
+
+`xut verilatorize` handles this with an automated, rule-based source
+transform:
+
+- It rewrites the idiom into an equivalent explicit-priority form.
+- It writes the result to `build/verilatorized/<model-source>/`. Transformed
+  copies are **never committed**.
+- Each rewrite rule has a unit test.
+
+The transform is validated as a cross-check in its own right. Every test that
+runs on the `verilator` runner also runs on `iverilog` against **both** the
+original and the transformed models. Any trace difference between those two
+Icarus runs is a `transform-bug`, and it blocks the Verilator result for that
+test. Community rewrites (`uwsampl/verilator-unisims`,
+`oliverbunting/verilator-unisims`) are used as references, not as dependencies.
 
 **Model identity.** A runner result names its model source:
 `unisim-2025.2` on the host, or `unisim-gh-2020.1` from the submodule in CI.
@@ -372,7 +409,8 @@ classified:
 | `doc-gap` | Same, but on `inferred` behaviour, i.e. the documentation is silent |
 | `sim-divergence` | UNISIM simulators disagree |
 | `x-dependence` | The two Verilator X-seed runs disagree |
-| `flow-mismatch` | A flow's netlist or fasm2bels result ≠ RTL: a toolchain bug |
+| `transform-bug` | Icarus on transformed UNISIM ≠ Icarus on original UNISIM |
+| `flow-mismatch` | A flow's post-synth or post-route netlist ≠ RTL: a toolchain bug |
 | `silicon-mismatch` | Hardware ≠ reference |
 | `nondeterminism` | Repeated hardware runs disagree |
 | `harness-error` | The harness self-test failed |
@@ -436,7 +474,7 @@ tests:
     exercises: [port:R, port:CE, claim:FDRE.C3]
     attr_sampling: {INIT: [0, 1]}
     runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: yes}
-    flows: [rtl, vivado, yosys, nextpnr-xilinx, vpr]
+    flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
     gaps: ["setup/hold timing out of scope"]
 ```
@@ -582,7 +620,9 @@ It reports what is missing, and which runners are available as a result.
      extraction report.
    - The status schema, `xut status`, `xut lint`, and `xut doctor`.
 2. **Core infra and pilot.**
-   - Containers (iverilog, verilator, cocotb).
+   - One simulator container, `FROM debian:trixie-slim@<digest>` with apt
+     `iverilog=12.0-2+b1`, `verilator=5.032-1+b2` and pip `cocotb==2.0.1`.
+   - `xut verilatorize`, with its Icarus equivalence check.
    - The wrapper generator, `.xvec` and `.xtr` formats, and the vector
      testbench.
    - The python, xsim, iverilog and verilator runners, crosscheck, and the
@@ -593,7 +633,10 @@ It reports what is missing, and which runners are available as a result.
      runner.
    - Pilot on `flops` and `luts`.
 4. **Toolchain flows.**
-   - Vivado netlists, yosys, openXC7, F4PGA/VPR, and fasm2bels.
+   - Vivado netlists, yosys, and openXC7 (`openXC7/nextpnr` + prjxray,
+     via Nix or a locally built image).
+   - The fasm2bels spike (§6.1).
+   - F4PGA/VPR (legacy; lowest priority).
    - Confirm that prjxray/nextpnr support the -1L grade (xc7a35ticsg324-1L).
 5. **Fan-out**, group by group: register → clb → blockram → arithmetic →
    clock → io (with the pad harness) → configuration → advanced.
