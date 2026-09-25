@@ -786,3 +786,14 @@ def test_vector_model_error_fails_a_matching_trace(ctx, work, toy):
             "model reported errors: Error: TOYFF odd",
             0,
         )
+
+
+def test_xil_defines_are_refused(tmp_path, monkeypatch):
+    """PR B gate (b) #8: -d reaches only the work library; the precompiled unisims_ver
+    cannot honour an XIL_* define, so the run would misstate its model build."""
+    monkeypatch.setattr("xut.runners.xsim.settings_available", lambda: True)
+    ctx = RunContext(tmp_path, "rtl", VIVADO_MS, defines={"XIL_TIMING": "", "OTHER": "1"})
+    ok, why = XsimRunner().available(ctx)
+    assert not ok and "XIL_TIMING" in why and "precompiled unisims_ver" in why
+    assert "OTHER" not in why
+    assert XsimRunner().available(dataclasses.replace(ctx, defines={"OTHER": "1"})) == (True, "")

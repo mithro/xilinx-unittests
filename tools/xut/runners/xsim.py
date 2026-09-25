@@ -33,6 +33,11 @@ exit codes say.
 parameters would get a wrong value without any diagnostic. ``generic_value`` refuses
 bare words; a string must be written quoted (``"ABC"``).
 
+**Defines.** ``-d`` defines reach only the ``work`` library; the precompiled
+``unisims_ver`` cannot see them. So any ``XIL_*`` define (a UNISIM build switch such as
+``XIL_TIMING``) makes the runner unavailable (``skip``, with the reason), rather than
+recording defines the model was not built with.
+
 **Host quirk.** Vivado's bundled gcc looks for ``crt1.o``/``crti.o`` only where RHEL
 keeps them (``/usr/lib64``); on a multiarch (Debian/Ubuntu) host xelab's link fails
 with "cannot find crt1.o". When ``/usr/lib64/crt1.o`` is missing and
@@ -256,6 +261,13 @@ class XsimRunner(Runner):
         self.extra_files = tuple(Path(f).resolve() for f in extra_files)
 
     def available(self, ctx: RunContext) -> tuple[bool, str]:
+        xil = sorted(k for k in ctx.defines if k.startswith("XIL_"))
+        if xil:
+            return False, (
+                f"xsim cannot honour {', '.join(xil)}: its -d defines reach only the work "
+                "library, and Vivado's precompiled unisims_ver was built without them, so "
+                "the result would misstate the model build"
+            )
         if not settings_available():
             return False, f"Vivado 2025.2 not installed ({VIVADO_SETTINGS} missing)"
         if ctx.model_source.name != MODEL_SOURCE:
