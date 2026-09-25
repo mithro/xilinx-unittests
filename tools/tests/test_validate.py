@@ -617,3 +617,28 @@ def test_an_explicit_event_near_the_gsr_release_is_an_error(fdce_map):
     )
     errors = validate(v, fdce_map).errors
     assert any("t=101000" in e and "GSR release" in e for e in errors), errors
+
+
+# --- ruling S13b: a reject configuration names its illegal attribute(s) ----------------
+
+REJ = HDR.replace("seed=0", "seed=0 expect=reject attr.INIT=1'bx")
+
+
+@pytest.mark.parametrize(
+    ("extra", "msg"),
+    [
+        ("", "must name its illegal attribute"),
+        (" illegal=SRVAL", "illegal=SRVAL is not an attribute"),
+    ],
+)
+def test_reject_needs_a_declared_illegal_attribute(fdce_map, extra, msg):
+    m = dataclasses.replace(fdce_map, attrs={"INIT": "1'bx"})
+    v = loads(REJ.replace("expect=reject", "expect=reject" + extra) + "t=121000 edge clk0 r\n")
+    assert any(msg in e for e in validate(v, m).errors)
+    v = loads(REJ.replace("expect=reject", "expect=reject illegal=INIT") + "t=121000 edge clk0 r\n")
+    assert v.illegal == ["INIT"] and validate(v, m).errors == []
+
+
+def test_illegal_without_reject_is_an_error(fdce_map):
+    v = loads(HDR.replace("seed=0", "seed=0 illegal=INIT") + "t=121000 sample S0\n")
+    assert any("only meaningful with expect=reject" in e for e in validate(v, fdce_map).errors)

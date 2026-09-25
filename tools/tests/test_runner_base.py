@@ -297,7 +297,7 @@ def test_python_reject_config_writes_header_only_expected(ctx, toy, tmp_path):
         tmp_path,
         """
         def gen(ctx):
-            b = ctx.dut("rej", expect="reject", INIT=1)
+            b = ctx.dut("rej", expect="reject", illegal=["INIT"], INIT=1)
             b.cycle("C")
             yield b.build()
         """,
@@ -670,3 +670,18 @@ def test_python_stimulus_without_samples_is_error(ctx, toy, tmp_path):
     res = PythonRunner().run(case, ctx)
     assert res.status == "error" and "no samples" in res.reason, res.reason
     assert not (workdir(ctx, "python", case.id) / "cfg-nosample/expected.xtr").exists()
+
+
+def test_python_reject_config_without_illegal_attribute_is_error(ctx, toy, tmp_path):
+    """Ruling S13b: a reject configuration must say which attribute is illegal."""
+    case = _tmp_toy(
+        tmp_path,
+        """
+        def gen(ctx):
+            b = ctx.dut("rej", expect="reject", allow_illegal=True, INIT="1'bx")
+            b.cycle("C")
+            yield b.build()
+        """,
+    )
+    res = PythonRunner().run(case, ctx)
+    assert res.status == "error" and "must name its illegal attribute" in res.reason

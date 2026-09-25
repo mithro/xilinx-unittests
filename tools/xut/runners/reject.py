@@ -1,37 +1,40 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The one ``expect=reject`` rule, shared by every simulator runner (ruling S13).
+"""The one ``expect=reject`` rule, shared by every simulator runner (rulings S13, S13a,
+S13b).
 
 A reject configuration drives an illegal attribute value; the simulator must refuse it.
-A refusal counts as ``pass`` only on POSITIVE evidence, never merely because the build
-or the run failed (a missing model, a broken include path or a docker error must not
-look like a rejection):
+The configuration declares WHICH attribute(s) are illegal (the stimulus header's
+``illegal=``, from ``GenContext.dut(..., illegal=[...])``); ``xut.validate`` refuses a
+reject stimulus that does not. A refusal counts as ``pass`` only on POSITIVE evidence,
+never merely because the build or the run failed (a missing model, a broken include
+path or a docker error must not look like a rejection):
 
+- no illegal attribute declared -> ``error`` ("reject config must name its illegal
+  attribute");
 - acceptance: the run reached ``XUT_DONE`` -> ``fail`` ("expected rejection, got
   acceptance");
+- any ``XUT_ERROR`` in the run (the testbench itself gave up) -> ``error``;
 - any infrastructure diagnostic (``INFRA``: unknown module, missing include/file,
   docker, permissions, a failed xsim link) -> ``error``;
-- compile/elaboration rejection: the build failed and a diagnostic line names a
-  rejected attribute -> ``pass``;
+- compile/elaboration rejection: the build failed and an evidence line exists ->
+  ``pass``;
 - runtime rejection: the simulator exited cleanly (rc 0, e.g. via ``$finish``) without
-  ``XUT_DONE`` and a diagnostic line names a rejected attribute -> ``pass``;
+  ``XUT_DONE`` and an evidence line exists -> ``pass``;
 - anything else -> ``error``, with the diagnostic lines in the reason.
 
-Evidence (a diagnostic word and a name on one line) is matched only outside INFO/NOTE
-lines and outside file paths (quoted strings holding a "/" and any token containing
-"/"), ruling S13a: a path such as ``.../<family>.FDRE.L0.illegal_init/...`` is never
-evidence.
-
-The names searched for are the configuration's attribute names (``attr.<NAME>`` of the
-stimulus), case-insensitively as whole words; only a configuration without attributes
-falls back to the primitive's name. A *diagnostic* line is one that says error,
-illegal, invalid, not allowed, out of range or violation (UNISIM's "Attribute Syntax
-Error", "DRC Error", ...).
+An *evidence* line has error or fatal severity -- the first severity word on it is
+``error``, ``fatal`` or ``sorry`` (``Error:``, ``ERROR:``, ``Fatal:``, ``%Error``,
+``Attribute Syntax Error``, ``file:3: error: ...``); a WARNING/NOTE/INFO line is never
+evidence (a warning is the model *accepting* the value) -- and names one of the
+declared illegal attributes, case-insensitively as a whole word. Both are matched only
+outside file paths (quoted strings holding a "/" and any token containing "/"), ruling
+S13a: a path such as ``.../<family>.FDRE.L0.illegal_init/...`` is never evidence.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,12 +87,23 @@ def _lines(text: str, pattern: re.Pattern[str]) -> list[str]:
     return [ln.strip() for ln in text.splitlines() if pattern.search(_scrubbed(ln))]
 
 
+#: The first severity word of a line decides its severity.
+_SEVERITY = re.compile(r"\b(error|fatal|sorry|warning|note|info)\b", re.IGNORECASE)
+
+
+def _is_error(scrubbed: str) -> bool:
+    """``scrubbed`` has error/fatal severity: its FIRST severity word is error, fatal or
+    sorry (so ``file:3: warning: ... invalid`` and ``WARNING: ... error`` are not)."""
+    m = _SEVERITY.search(scrubbed)
+    return m is not None and m.group(1).lower() in ("error", "fatal", "sorry")
+
+
 def _evidence(text: str, named: re.Pattern[str]) -> list[str]:
-    """Diagnostic lines that name a rejected attribute, outside paths and INFO lines."""
+    """Error/fatal lines that name an illegal attribute, outside paths and INFO lines."""
     return [
         ln.strip()
         for ln in text.splitlines()
-        if DIAGNOSTIC.search(_scrubbed(ln)) and named.search(_scrubbed(ln))
+        if _is_error(_scrubbed(ln)) and named.search(_scrubbed(ln))
     ]
 
 
@@ -99,9 +113,17 @@ def _show(lines: list[str]) -> str:
     return " | ".join(shown) + more if shown else "(no diagnostic)"
 
 
-def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) -> ConfigResult:
-    """The ``expect=reject`` verdict for one configuration (see the module docstring)."""
-    names = sorted(set(attrs)) or [prim]
+def reject_result(cfg: str, out: SimOutcome, illegal: Sequence[str]) -> ConfigResult:
+    """The ``expect=reject`` verdict for one configuration (see the module docstring);
+    ``illegal`` are the attribute names the configuration declares illegal."""
+    names = sorted(set(illegal))
+    if not names:
+        return ConfigResult(
+            cfg,
+            "error",
+            "reject config must name its illegal attribute (stimulus header illegal=; "
+            "GenContext.dut(..., illegal=[...]))",
+        )
     named = re.compile(r"\b(" + "|".join(re.escape(n) for n in names) + r")\b", re.IGNORECASE)
     what = "/".join(names)
     both = out.compile_text + "\n" + out.run_text
@@ -109,6 +131,9 @@ def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) ->
         return ConfigResult(
             cfg, "fail", f"expected rejection, got acceptance: the run reached XUT_DONE ({what})"
         )
+    tb_errors = [ln.strip() for ln in out.run_text.splitlines() if "XUT_ERROR" in ln]
+    if tb_errors:
+        return ConfigResult(cfg, "error", f"testbench error, not a rejection: {_show(tb_errors)}")
     # INFRA is matched on whole lines, paths included: erring towards error is safe.
     infra = [ln.strip() for ln in both.splitlines() if INFRA.search(ln)]
     if infra:
@@ -124,7 +149,7 @@ def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) ->
         return ConfigResult(
             cfg,
             "error",
-            f"compile failed without a diagnostic naming {what}: "
+            f"compile failed without an error/fatal diagnostic naming {what}: "
             f"{_show(_lines(out.compile_text, DIAGNOSTIC))}",
         )
     if out.run_rc != 0:
@@ -140,18 +165,19 @@ def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) ->
     return ConfigResult(
         cfg,
         "error",
-        f"run ended without XUT_DONE and without a diagnostic naming {what}: "
+        f"run ended without XUT_DONE and without an error/fatal diagnostic naming {what}: "
         f"{_show(_lines(out.run_text, DIAGNOSTIC))}",
     )
 
 
 def reject_check(
-    cd: Path, out: SimOutcome, attrs: Iterable[str], prim: str, header: dict[str, str]
+    cd: Path, out: SimOutcome, illegal: Sequence[str], header: dict[str, str]
 ) -> ConfigResult:
     """``reject_result`` for configuration directory ``cd`` plus its evidence: a
     header-only ``trace.xtr`` (``expect=reject``, like the python run's expected trace)
-    and the stimulus and trace hashes (a pass must leave a trace, Task 8)."""
-    r = reject_result(cd.name[4:], out, attrs, prim)
+    and the stimulus and trace hashes (a pass must leave a trace, Task 8). The
+    configuration is ``header["cfg"]``."""
+    r = reject_result(header["cfg"], out, illegal)
     xtr.dump(xtr.Trace({**header, "expect": "reject"}), cd / "trace.xtr")
     r.stimulus_sha256 = sha256_file(cd / "stim.xvec")
     r.trace_sha256 = sha256_file(cd / "trace.xtr")

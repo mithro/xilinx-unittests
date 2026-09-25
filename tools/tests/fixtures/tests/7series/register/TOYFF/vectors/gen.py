@@ -20,6 +20,6 @@ def l1_capture(ctx: GenContext) -> Iterator[Vec]:
 
 def l0_reject(ctx: GenContext) -> Iterator[Vec]:
     """INIT=1'bx is outside TOYFF's legal values: the simulation must reject it."""
-    b = ctx.dut("init_x", allow_illegal=True, expect="reject", INIT="1'bx")
+    b = ctx.dut("init_x", allow_illegal=True, expect="reject", illegal=["INIT"], INIT="1'bx")
     b.cycle("C")
     yield b.build()
