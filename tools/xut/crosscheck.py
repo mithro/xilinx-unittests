@@ -237,7 +237,11 @@ def _golden_vs_sims(
         for m in compare(e, a, x_observable=X_OBSERVABLE.get(r, True)):
             per_point[(m.label, m.port, m.bit, m.kind)][r] = m
     doc, gap = [], []
-    for pt, by_runner in sorted(per_point.items()):
+    assert exp.trace is not None
+    order = {lbl: i for i, lbl in enumerate(exp.trace.samples)}  # simulated-time order
+    for pt, by_runner in sorted(
+        per_point.items(), key=lambda kv: (order.get(kv[0][0], len(order)), kv[0])
+    ):
         if pt[:3] in diverged:
             continue
         m = next(iter(by_runner.values()))
@@ -574,7 +578,9 @@ def check(root: Path, case: TestCase) -> Report:
     for ms, views in sorted(gathered.items()):
         for r in _declared_rtl_runners(case):
             if ("rtl", r) not in views:
-                views[("rtl", r)] = View("rtl", r, "not-run", ms, None, {"reason": "no result"})
+                views[("rtl", r)] = View(
+                    "rtl", r, "not-run", ms, None, {"reason": "declared, but no result.json"}
+                )
         found = classify(case.id, views, case.expected_divergence, rep.issues)
         rep.findings += found
         matched |= {f.finding for f in found if f.finding}
