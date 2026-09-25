@@ -144,7 +144,20 @@ the test to make the disagreement go away. Write
 (`doc-vs-model`, `doc-gap`, `sim-divergence`, `x-dependence`,
 `transform-bug`, `flow-mismatch`, `silicon-mismatch`, `nondeterminism`,
 `harness-error`). Link it from the primitive's README, and optionally from
-an `expected_divergence` entry in `test.yaml`.
+an `expected_divergence` entry in `test.yaml` (the `expected_divergence`
+field arrives in step 2; `test.schema.json` does not accept it yet).
+
+**An expected divergence never masks** (spec §8, rev 3.1). Listing a
+disagreement in `expected_divergence` does not suppress it:
+
+- the expected bits stay defined — never turn one into a don't-care;
+- the disagreement is still computed and reported, classified
+  `known-divergence` with the finding id (and its original class);
+- it stays visible in PROGRESS.md and TODO.md for as long as the finding
+  is open, and every entry must reference an existing, **open**
+  `findings/*.md`;
+- `xut crosscheck` fails on any disagreement that no `expected_divergence`
+  entry lists.
 
 ## 10. Shell rules
 
@@ -182,7 +195,10 @@ agents (spec §13.4):
 Reviewers post findings with `gh pr review <N> --comment --body-file
 <file>`, each line marked **[must-fix]** or **[nit]**. Address every
 must-fix in new commits (never by amending or force-pushing over
-reviewed history) and ask for re-review. The merge gate is: `xut lint`
+reviewed history) and ask for re-review. The one exception: after
+rebasing a dependent branch (spec §13.3), **only the orchestrator** may
+`git push --force-with-lease` its own feature branches (controller
+Ruling 17); implementers and reviewers never force-push. The merge gate is: `xut lint`
 passes, CI is green, both reviewers approve with no open must-fix.
 
 **Concurrency (spec §13.5).** At most **two sub-agents in total, reviewers
@@ -220,8 +236,9 @@ re-runs their tests afterwards.
   `assign`/`deassign` forced-register constructs into the shadow-register
   form; the transformed copy lives under `build/verilatorized/` and is
   never committed. Any test that declares a `verilator` result implicitly
-  depends on that transform having an equivalence stimulus (spec §6.2);
-  `xut lint` fails a transformed model with none.
+  depends on that transform having an equivalence stimulus (spec §6.2).
+  From step 2, `xut lint` fails a transformed model with none (not
+  enforced yet).
 - `transform-bug` (spec §8) is a real finding class: it means Icarus
   disagrees between the original and the `verilatorize`-transformed
   model, i.e. the transform itself is wrong, not the primitive under
