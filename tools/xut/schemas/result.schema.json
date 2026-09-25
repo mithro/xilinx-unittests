@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/f4pga/xilinx-unittests/tools/xut/schemas/result.schema.json",
+  "title": "xut result.json: one (flow, runner, model source, test) run (spec §6, §14)",
+  "$comment": "build/<flow>/<runner>/<model-source>/<test-id>/result.json. Every skip, fail and error carries a reason (spec §14: no silent skips).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "test_id", "runner", "flow", "style", "status", "reason", "configs",
+    "model_source", "seeds", "defines", "tools", "container", "duration_s", "started",
+    "host", "x_dependence", "bins_reached", "hw"
+  ],
+  "properties": {
+    "format": {"const": "xut-result 1"},
+    "test_id": {"type": "string", "minLength": 1},
+    "runner": {"type": "string", "minLength": 1},
+    "flow": {"type": "string", "minLength": 1},
+    "style": {"enum": ["vector", "sv", "cocotb"]},
+    "status": {"enum": ["pass", "fail", "error", "skip"]},
+    "reason": {"type": ["string", "null"]},
+    "configs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cfg", "status", "reason", "stimulus_sha256", "trace_sha256", "mismatches"
+        ],
+        "properties": {
+          "cfg": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+          "status": {"enum": ["pass", "fail", "error", "skip"]},
+          "reason": {"type": ["string", "null"]},
+          "stimulus_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "trace_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "mismatches": {"type": "integer", "minimum": 0}
+        },
+        "if": {"properties": {"status": {"enum": ["fail", "error", "skip"]}}},
+        "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}
+      }
+    },
+    "model_source": {"type": ["string", "null"]},
+    "seeds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stimulus", "x"],
+      "properties": {
+        "stimulus": {"type": ["integer", "null"]},
+        "x": {"type": "array", "items": {"type": "integer"}}
+      }
+    },
+    "defines": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tools": {"type": "object", "additionalProperties": {"type": "string"}},
+    "container": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["image", "digest"],
+      "properties": {
+        "image": {"type": "string"},
+        "digest": {"type": ["string", "null"]}
+      }
+    },
+    "duration_s": {"type": "number", "minimum": 0},
+    "started": {"type": "string"},
+    "host": {"type": "string"},
+    "x_dependence": {"type": ["boolean", "null"]},
+    "bins_reached": {"type": ["array", "null"], "items": {"type": "string"}},
+    "hw": {
+      "type": ["object", "null"],
+      "$comment": "null until step 3, which records {dna, serial, site}.",
+      "properties": {
+        "dna": {"type": "string"},
+        "serial": {"type": "string"},
+        "site": {"type": "string"}
+      }
+    }
+  },
+  "if": {"properties": {"status": {"enum": ["fail", "error", "skip"]}}},
+  "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}
+}

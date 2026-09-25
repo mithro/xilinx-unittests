@@ -11,7 +11,7 @@ def l1_capture(ctx: GenContext) -> Iterator[Vec]:
     """One configuration per INIT value: D=1 and D=0 are each captured on a rising C."""
     for init in (0, 1):
         b = ctx.dut(f"init{init}", INIT=init)
-        b.sample("S0")
+        b.sample("start")
         for d in (1, 0):
             b.set(D=d)
             b.cycle("C")
