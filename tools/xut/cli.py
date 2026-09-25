@@ -127,7 +127,13 @@ def status_generate_cmd(force: bool) -> None:
     from xut.status import current_branch, load_status, render_log, render_progress, render_todo
     from xut.workunits import load_units
 
-    branch = current_branch()
+    try:
+        branch = current_branch()
+    except RuntimeError as e:
+        # current_branch() raises a plain RuntimeError (it doesn't depend on
+        # click); turn it into the same clean, no-traceback error every other
+        # user-facing failure in this command gets.
+        raise click.ClickException(str(e)) from e
     if branch != "main" and not force:
         raise click.ClickException(
             f"refusing to write generated status files on branch {branch!r}: "

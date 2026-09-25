@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for `xut status generate` (PROGRESS/TODO/LOG rendering, spec §11)."""
 
+import pytest
 from click.testing import CliRunner
+from xut import status as status_mod
 from xut.cli import main
 from xut.status import render_log, render_progress, render_todo
 from xut.workunits import WorkUnit
@@ -118,6 +120,60 @@ def test_render_progress_precedence_order():
     assert l3.strip()[3] == "∅"  # verilator: unsupported beats n/a
 
 
+def test_render_progress_groups_primitive_table_by_ug953_group():
+    """Review round 1: the per-primitive table is grouped into one `### <group>`
+    subsection per UG953 group (sorted), not one flat alphabetical table."""
+    units = {
+        "flops": WorkUnit(
+            name="flops", family="7series", primitives=("FDRE",), group_dirs=("register",)
+        ),
+        "bufg": WorkUnit(
+            name="bufg", family="7series", primitives=("BUFG",), group_dirs=("clock",)
+        ),
+    }
+    fdre = _status("FDRE", work_unit="flops")
+    bufg = _status("BUFG", work_unit="bufg")
+    out = render_progress([fdre, bufg], units)
+
+    assert "### clock" in out
+    assert "### register" in out
+    assert out.index("### clock") < out.index("### register")  # sorted alphabetically
+
+    clock_section = out.split("### clock", 1)[1].split("### register", 1)[0]
+    register_section = out.split("### register", 1)[1]
+    assert "| BUFG " in clock_section
+    assert "| FDRE " not in clock_section
+    assert "| FDRE " in register_section
+    assert "| BUFG " not in register_section
+
+
+def test_render_progress_primitive_rows_sorted_by_unit_then_primitive():
+    """Within a group's table, rows are sorted by (unit, primitive), not just
+    primitive: unit `a_unit` sorts before `z_unit` even though its primitive
+    (`ZZZZ`) sorts after `z_unit`'s primitive (`AAAA`)."""
+    units = {
+        "z_unit": WorkUnit(
+            name="z_unit", family="7series", primitives=("AAAA",), group_dirs=("clb",)
+        ),
+        "a_unit": WorkUnit(
+            name="a_unit", family="7series", primitives=("ZZZZ",), group_dirs=("clb",)
+        ),
+    }
+    aaaa = _status("AAAA", work_unit="z_unit")
+    zzzz = _status("ZZZZ", work_unit="a_unit")
+    out = render_progress([aaaa, zzzz], units)
+    section = out.split("### clb", 1)[1]
+    assert section.index("| ZZZZ ") < section.index("| AAAA ")
+
+
+def test_render_progress_unknown_group_falls_back_to_question_mark():
+    """A status for a primitive absent from `units` still renders, grouped under
+    the `?` placeholder group, instead of raising."""
+    out = render_progress([_status("MYSTERY", work_unit="?")], _unit(primitives=()))
+    assert "### ?" in out
+    assert "| MYSTERY " in out
+
+
 def test_render_progress_coverage_percentage():
     fdre = _status("FDRE", covered=["port:C", "port:D"], uncovered=[f"port:{i}" for i in range(6)])
     out = render_progress([fdre], _unit(primitives=("FDRE",)))
@@ -142,6 +198,32 @@ def test_render_todo_lists_uncovered_bins_unsupported_and_findings():
     assert "port:R" in out
     assert "L1/hw/vivado" in out
     assert "FDRE-reset-glitch" in out
+
+
+def test_current_branch_raises_clean_runtime_error_on_git_failure(monkeypatch, tmp_path):
+    class _FailedProc:
+        returncode = 128
+        stdout = ""
+        stderr = "fatal: not a git repository (or any of the parent directories)\n"
+
+    monkeypatch.setattr(status_mod.subprocess, "run", lambda *a, **k: _FailedProc())
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
+    with pytest.raises(RuntimeError, match="not a git repository"):
+        status_mod.current_branch()
+
+
+def test_generate_cli_wraps_current_branch_failure_cleanly(monkeypatch):
+    """A `current_branch()` failure must surface as a clean, non-traceback CLI
+    error, consistent with every other user-facing failure in this command."""
+
+    def _boom():
+        raise RuntimeError("current_branch(): git is not installed")
+
+    monkeypatch.setattr("xut.status.current_branch", _boom)
+    result = CliRunner().invoke(main, ["status", "generate"])
+    assert result.exit_code != 0
+    assert "git is not installed" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_generate_refuses_off_main_without_force(monkeypatch):
