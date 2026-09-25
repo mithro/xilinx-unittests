@@ -604,3 +604,34 @@ def test_map_json_scalar_types_are_checked(key, value):
     d[key] = value
     with pytest.raises(WrapError, match=key):
         DutMap.from_json(json.dumps(d))
+
+
+# --- Ruling S12: x/z literals only in reject-test (allow_illegal) wrappers ---------------
+
+
+@pytest.mark.parametrize("lit", ["1'bx", "1'bz", "1'bX"])
+def test_x_literal_allowed_only_with_allow_illegal(lit):
+    fdre = _entry("FDRE")
+    with pytest.raises(WrapError, match="x/z"):
+        spec_from_catalog(fdre, "c", {"INIT": lit})
+    spec = spec_from_catalog(fdre, "c", {"INIT": lit}, allow_illegal=True)
+    assert spec.attrs == (("INIT", lit),)
+    assert f"INIT({lit})" in render_wrapper(spec, build_map(spec)).replace(" ", "")
+
+
+@pytest.mark.parametrize(
+    ("attr", "lit", "match"),
+    [
+        (BITS8, "4'hx", "8 bits"),  # still sized to the attribute
+        (BITS8, "8'hxxx", "does not fit"),  # too many digits
+        (BITS8, "8'hxg", "Verilog integer literal|invalid"),
+    ],
+)
+def test_x_literal_still_checked_with_allow_illegal(attr, lit, match):
+    with pytest.raises(WrapError, match=match):
+        render_attr(attr, lit, allow_x=True)
+
+
+def test_x_literal_in_render_attr_default_refused():
+    with pytest.raises(WrapError, match="x/z"):
+        render_attr(BITS1, "1'bx")
