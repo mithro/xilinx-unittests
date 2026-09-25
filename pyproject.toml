@@ -28,6 +28,10 @@ packages = ["tools/xut"]
 
 [tool.pytest.ini_options]
 testpaths = ["tools/tests"]
+markers = [
+  "container: needs the xut-sim image (uv run xut container build)",
+  "vivado: needs Vivado 2025.2 at /opt/xilinx/Vivado/2025.2",
+]
 
 [tool.ruff]
 line-length = 100
