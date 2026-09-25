@@ -158,9 +158,15 @@ def status_generate_cmd(force: bool) -> None:
     "--branch",
     "branch_mode",
     is_flag=True,
-    help="Also check branch-ownership and generated-file rules against origin/main...HEAD.",
+    help="Also check branch-ownership and generated-file rules against <base>...HEAD.",
 )
-def lint_cmd(branch_mode: bool) -> None:
+@click.option(
+    "--base",
+    default="origin/main",
+    show_default=True,
+    help="Base ref to diff against in --branch mode (e.g. origin/<PR base branch> in CI).",
+)
+def lint_cmd(branch_mode: bool, base: str) -> None:
     """Enforce branch ownership, SPDX headers, generated files, docs and status schema.
 
     Exits non-zero iff any error-severity issue was found; warnings are printed but never
@@ -170,7 +176,7 @@ def lint_cmd(branch_mode: bool) -> None:
     from xut.paths import repo_root
 
     root = repo_root()
-    issues, warnings = lint(root, branch_mode)
+    issues, warnings = lint(root, branch_mode, base=base)
     for w in warnings:
         click.echo(f"warning: {w}", err=True)
     for issue in sorted(issues, key=lambda i: (i.path, i.rule)):

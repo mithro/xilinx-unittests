@@ -206,10 +206,36 @@ def test_current_branch_raises_clean_runtime_error_on_git_failure(monkeypatch, t
         stdout = ""
         stderr = "fatal: not a git repository (or any of the parent directories)\n"
 
+    monkeypatch.delenv("XUT_BRANCH", raising=False)
     monkeypatch.setattr(status_mod.subprocess, "run", lambda *a, **k: _FailedProc())
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
     with pytest.raises(RuntimeError, match="not a git repository"):
         status_mod.current_branch()
+
+
+def test_current_branch_honours_xut_branch_env_override(monkeypatch):
+    """CI sets XUT_BRANCH for a pull_request build, whose checkout is a detached HEAD
+    (controller ruling); the override must win without even shelling out to git."""
+
+    def _boom(*a, **k):
+        raise AssertionError("git should not run when XUT_BRANCH is set")
+
+    monkeypatch.setattr(status_mod.subprocess, "run", _boom)
+    monkeypatch.setenv("XUT_BRANCH", "unit/7series/flops")
+    assert status_mod.current_branch() == "unit/7series/flops"
+
+
+def test_current_branch_falls_through_to_git_when_env_unset(monkeypatch, tmp_path):
+    monkeypatch.delenv("XUT_BRANCH", raising=False)
+
+    class _Proc:
+        returncode = 0
+        stdout = "infra/bootstrap\n"
+        stderr = ""
+
+    monkeypatch.setattr(status_mod.subprocess, "run", lambda *a, **k: _Proc())
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
+    assert status_mod.current_branch() == "infra/bootstrap"
 
 
 def test_generate_cli_wraps_current_branch_failure_cleanly(monkeypatch):

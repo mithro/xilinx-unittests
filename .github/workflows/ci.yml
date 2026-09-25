@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-        with: {submodules: true}
+        with: {submodules: true, fetch-depth: 0}
       - uses: astral-sh/setup-uv@v3
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - run: uv venv && uv pip install -e '.[dev]'
@@ -14,3 +14,10 @@ jobs:
       - run: uv run ruff format --check tools
       - run: uv run pytest -v
       - run: uv run xut lint
+      - name: xut lint --branch (branch-path ownership)
+        if: github.event_name == 'pull_request'
+        env:
+          # actions/checkout leaves a PR build on a detached HEAD (the merge ref), not
+          # the PR's actual branch, so current_branch() can't discover it from git.
+          XUT_BRANCH: ${{ github.head_ref }}
+        run: uv run xut lint --branch --base "origin/${{ github.base_ref }}"
