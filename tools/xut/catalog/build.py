@@ -216,7 +216,7 @@ def build_all(
                 kind, what, cell = item.split()
                 report.append(f"{name}: {kind} {what} UG953 {cell} needs review")
         for p in model.ports if model is not None else []:
-            note = class_note(name, p.name)
+            note = class_note(name, p.name, p.direction)
             if note:
                 report.append(f"{name}: port {p.name} {note}")
         entry = _entry(name, sec, model, library, family)
@@ -230,7 +230,7 @@ _CATEGORIES = (
     ("Width or direction mismatches", lambda x: " width unisim=" in x or " direction unisim=" in x),
     ("Tables absent from UG953", lambda x: ": no Port Descriptions" in x or ": no Available" in x),
     ("UG953 cells needing review", lambda x: " need review " in x or " needs review" in x),
-    ("Port class notes", lambda x: " class depends on " in x),
+    ("Port class notes", lambda x: " class depends on " in x or " class data despite " in x),
     ("Missing UG953 section or model", lambda x: True),
 )
 
