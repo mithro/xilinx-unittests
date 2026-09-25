@@ -19,11 +19,7 @@ from pathlib import Path
 import requests
 
 from xut.docs_fetch import API, UG953
-from xut.paths import cache_dir, submodule_unisim
-
-#: Vivado 2025.2 settings script (global constraints); its presence is what enables the
-#: xsim and vivado runners.
-VIVADO_SETTINGS = Path("/opt/xilinx/Vivado/2025.2/settings64.sh")
+from xut.paths import VIVADO_SETTINGS, cache_dir, submodule_unisim
 
 #: fpgas.online SSH coordinates. TODO: read these from `hw/boards/fpgas_online.yaml`
 #: once that file exists (not yet created as of step 1 bootstrap; see task-9 brief).

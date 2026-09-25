@@ -20,8 +20,15 @@ def cache_dir() -> Path:
     return repo_root() / ".cache"
 
 
-VIVADO_UNISIM = Path("/opt/xilinx/Vivado/2025.2/data/verilog/src/unisims")
-VIVADO_RETARGET = Path("/opt/xilinx/Vivado/2025.2/data/verilog/src/retarget")
+#: The one Vivado install this suite targets (global constraints). Every Vivado path
+#: below is derived from it, so a version bump is a one-line change.
+VIVADO_ROOT = Path("/opt/xilinx/Vivado/2025.2")
+#: UNISIM simulation models (catalog source; CI falls back to `submodule_unisim()`).
+VIVADO_UNISIM = VIVADO_ROOT / "data/verilog/src/unisims"
+#: Retarget-only models (BUFGCE_1, BUFGMUX*, ROM*X1, ...), never in `VIVADO_UNISIM`.
+VIVADO_RETARGET = VIVADO_ROOT / "data/verilog/src/retarget"
+#: Settings script, only ever sourced in a subshell; its presence enables xsim/vivado.
+VIVADO_SETTINGS = VIVADO_ROOT / "settings64.sh"
 
 
 def submodule_unisim() -> Path:
