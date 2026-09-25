@@ -18,6 +18,7 @@ import yaml
 from xut.errors import GitError
 from xut.schemas import validate as validate_schema
 from xut.status import load_status
+from xut.testspec import DECLARED_RUNNERS
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
 
 #: Tracked-file extensions checked for the SPDX header (global constraints; controller
@@ -216,7 +217,9 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     doesn't exist anywhere under `tests/**` is a warning, not an error — a stale
     cross-reference is a documentation nit, not a broken build. Every runner declared
     `"no"` or `"unsupported"` must have an `unsupported_reasons` entry (rule
-    `runner-reasons`, error): a skip always carries a reason (spec §14)."""
+    `runner-reasons`, error): a skip always carries a reason (spec §14). A runner of
+    `xut.testspec.DECLARED_RUNNERS` missing from `runners` is a warning
+    (`runner-declared`)."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -250,6 +253,17 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
         for t in data["tests"]:
             tid = t["id"]
             reasons = t.get("unsupported_reasons", {})
+            for runner in DECLARED_RUNNERS:
+                if runner not in t["runners"]:
+                    issues.append(
+                        LintIssue(
+                            rel,
+                            "runner-declared",
+                            f"{tid}: runner {runner} is not declared in runners (it will "
+                            'skip with reason "not declared")',
+                            "warning",
+                        )
+                    )
             for runner, value in t["runners"].items():
                 if value != "yes" and runner not in reasons:
                     issues.append(
