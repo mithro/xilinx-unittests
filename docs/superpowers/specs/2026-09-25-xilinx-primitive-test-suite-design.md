@@ -1,9 +1,12 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3 (2026-09-25). Rev 2 incorporated the technical and
+- Status: revision 3.1 (2026-09-25). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
+  Rev 3.1 pins Verilator to v5.048, built from the upstream git tag, because
+  cocotb 2.0.1 needs Verilator 5.036 or later. The apt 5.032 is too old.
+  cocotb-on-Verilator is required.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -683,7 +686,10 @@ It reports what is missing, and which runners are available as a result.
    - The status schema, `xut status`, `xut lint`, and `xut doctor`.
 2. **Core infra and pilot.**
    - One simulator container, `FROM debian:trixie-slim@<digest>` with apt
-     `iverilog=12.0-2+b1`, `verilator=5.032-1+b2` and pip `cocotb==2.0.1`.
+     `iverilog=12.0-2+b1`, Verilator v5.048 built from the upstream git tag
+     (`https://github.com/verilator/verilator`, tag `v5.048`, commit
+     `d0aa828c217410fffc73d92077b6f4f54830357c`) in a multi-stage build on the
+     same base, and pip `cocotb==2.0.1`.
    - `xut verilatorize`, with its Icarus equivalence check.
    - The wrapper generator, `.xvec` and `.xtr` formats, and the vector
      testbench.
