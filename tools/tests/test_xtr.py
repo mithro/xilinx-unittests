@@ -52,6 +52,56 @@ def test_missing_and_extra_samples():
     a.add("S9", {"Q": "0"})
     kinds = sorted(x.kind for x in compare(loads(EXP), a))
     assert kinds == ["extra-sample", "missing-sample"]
+    assert "sample-order" not in kinds  # the surviving common labels (S1, S2) are still in order
+
+
+def test_sample_order_detected():
+    exp = loads(EXP)
+    a = Trace({"runner": "iverilog", "flow": "rtl", "model": "unisim-2025.2", "seed": "17"})
+    a.add("S2", {"Q": "1", "DO": "00001111"})
+    a.add("S0", {"Q": "0"})
+    a.add("S1", {"Q": "1"})
+    assert compare(exp, a) == [Mismatch("S0", "*", -1, "0", "1", None, "sample-order")]
+
+
+def test_diff_sample_order():
+    a = _act()
+    b = Trace({"runner": "verilator", "flow": "rtl", "model": "unisim-2025.2", "seed": "1"})
+    b.add("S1", {"Q": "1"})
+    b.add("S0", {"Q": "0"})
+    b.add("S2", {"Q": "1", "DO": "00001111"})
+    order = [x for x in diff(a, b) if x.kind == "sample-order"]
+    assert order == [Mismatch("S0", "*", -1, "0", "1", None, "sample-order")]
+
+
+def test_duplicate_label_error_has_line_number():
+    text = "# xut-trace 2  runner=x flow=rtl model=m seed=0\nS0  Q=0\nS0  Q=1\n"
+    with pytest.raises(XtrError, match=r"^line 3: duplicate label 'S0'$"):
+        loads(text)
+
+
+def test_port_width_vs_missing_port():
+    exp = loads(EXP)
+    a = _act(do="0001111")  # 7 bits, not 8: a width mismatch, not an absence
+    widths = [x for x in compare(exp, a) if x.port == "DO"]
+    assert widths == [Mismatch("S2", "DO", -1, "00001111", "0001111", "doc:375", "port-width")]
+
+    b = _act()
+    del b.samples["S2"]["DO"]
+    missing = [x for x in compare(exp, b) if x.port == "DO"]
+    assert missing == [Mismatch("S2", "DO", -1, "00001111", "missing", "doc:375", "missing-port")]
+
+
+def test_diff_port_width_vs_missing_port():
+    a = _act()
+    b = _act(do="0001111")
+    widths = [x for x in diff(a, b) if x.port == "DO"]
+    assert widths == [Mismatch("S2", "DO", -1, "00001111", "0001111", None, "port-width")]
+
+    c = _act()
+    del c.samples["S2"]["DO"]
+    missing = [x for x in diff(a, c) if x.port == "DO"]
+    assert missing == [Mismatch("S2", "DO", -1, "00001111", "missing", None, "missing-port")]
 
 
 def test_diff_respects_x_observability():
