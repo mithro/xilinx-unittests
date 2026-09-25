@@ -44,6 +44,18 @@ requires ``simultaneous`` on *every* event at that ``t``; an unmarked
 non-``set`` group is an error. A mix of marked and unmarked events at one ``t``
 is always an error, disjoint ``set``s included (the marking would be ambiguous). A lone
 event marked ``simultaneous`` (nothing else at its ``t``) is also an error.
+
+The same rules hold for a ``Vec`` built in memory: ``check_structure`` applies every
+per-line rule of the parser (via the shared ``_check_event``) plus a write/read round
+trip, so the builder and the validator can never approve what the parser refuses.
+
+Explicitly deferred (not supported yet):
+
+- glbl channel: only ``GSR``, ``GTS`` and ``GRESTORE``. The ``JTAG_*`` signals that
+  spec §5.2 also routes through glbl (used by BSCANE2) have no grammar yet; they
+  arrive with the configuration group.
+- DRP transactions (spec §5.5) have no representation here: ``drp``-class bits are
+  driven with plain ``set`` lines and validated as data for now.
 """
 
 from __future__ import annotations
