@@ -355,6 +355,87 @@ def test_tests_documented_related_id_missing_from_whole_tree_is_warning(tmp_path
     assert "7series.FDCE.L1.nosuchtest" in issues[0].message
 
 
+def _fdre_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "tests" / "7series" / "register" / "FDRE"
+    d.mkdir(parents=True)
+    (d / "README.md").write_text("Covers `7series.FDRE.L1.reset`.\n")
+    return d
+
+
+_VALID_TEST_YAML = """\
+primitive: FDRE
+family: 7series
+work_unit: flops
+doc_refs: []
+tests:
+  - id: 7series.FDRE.L1.reset
+    level: L1
+    style: vector
+    exercises: []
+    attr_sampling: {}
+    runners: {python: "yes"}
+    flows: [rtl]
+"""
+
+
+def test_tests_documented_valid_quoted_runner_is_clean(tmp_path):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    assert check_tests_documented(tmp_path) == []
+
+
+def test_test_yaml_missing_id_is_schema_error_not_traceback(tmp_path):
+    d = _fdre_dir(tmp_path)
+    (d / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace("  - id: 7series.FDRE.L1.reset\n    ", "  - ")
+    )
+    issues = check_tests_documented(tmp_path)
+    assert len(issues) == 1
+    assert issues[0].rule == "test-schema"
+    assert issues[0].severity == "error"
+    assert issues[0].path == "tests/7series/register/FDRE/test.yaml"
+    assert "'id' is a required property" in issues[0].message
+
+
+def test_test_yaml_bare_yes_runner_is_schema_error(tmp_path):
+    """Ruling 14: a bare `yes` is YAML 1.1 boolean True, which the schema rejects."""
+    d = _fdre_dir(tmp_path)
+    (d / "test.yaml").write_text(_VALID_TEST_YAML.replace('{python: "yes"}', "{python: yes}"))
+    issues = check_tests_documented(tmp_path)
+    assert len(issues) == 1
+    assert issues[0].rule == "test-schema"
+    assert issues[0].severity == "error"
+    assert "True" in issues[0].message
+    assert "runners" in issues[0].message
+
+
+@pytest.mark.parametrize("text", ["- just\n- a list\n", "just a string\n", ""])
+def test_test_yaml_non_mapping_is_schema_error(tmp_path, text):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    issues = check_tests_documented(tmp_path)
+    assert len(issues) == 1
+    assert issues[0].rule == "test-schema"
+    assert issues[0].severity == "error"
+
+
+def test_test_yaml_tests_not_a_list_is_schema_error(tmp_path):
+    d = _fdre_dir(tmp_path)
+    head = _VALID_TEST_YAML.split("tests:")[0]
+    (d / "test.yaml").write_text(head + "tests: {id: 7series.FDRE.L1.reset}\n")
+    issues = check_tests_documented(tmp_path)
+    assert [i.rule for i in issues] == ["test-schema"]
+
+
+def test_test_yaml_invalid_file_does_not_hide_other_files(tmp_path):
+    """A schema-invalid file is skipped for id/README checks; a valid sibling is still
+    checked (its undocumented id is still an error)."""
+    (_fdre_dir(tmp_path) / "test.yaml").write_text("- not a mapping\n")
+    fdce = tmp_path / "tests" / "7series" / "register" / "FDCE"
+    _write_test_yaml(fdce, ["7series.FDCE.L1.reset"], primitive="FDCE")
+    (fdce / "README.md").write_text("nothing\n")
+    rules = sorted(i.rule for i in check_tests_documented(tmp_path))
+    assert rules == ["test-schema", "tests-documented"]
+
+
 def test_tests_documented_no_test_yaml_anywhere_is_clean(tmp_path):
     (tmp_path / "tests").mkdir()
     assert check_tests_documented(tmp_path) == []
