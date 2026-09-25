@@ -13,6 +13,11 @@ stepped ``cycle`` (period ``P``, gap ``g``, start ``s``) is: ``s`` rising edge,
 The output is valid by construction: ``gap_ps`` and ``async_sep_ps`` may not be
 below ``xut.validate.MIN_SEP_PS`` (the validator's own minimum), and the separation
 used is recorded in the header as ``async_sep_ps``, which ``validate`` then applies.
+
+The gap actually used between distinct event times is ``max(gap_ps, async_sep_ps,
+the primitive's min_event_gap_ps)``: exactly the minimum event gap ``validate``
+requires for hardware renderability (Ruling S8-prime), so no two distinct event
+times the builder emits are ever closer than that.
 """
 
 from __future__ import annotations
@@ -25,7 +30,13 @@ from pathlib import Path
 from xut.errors import XutError
 from xut.formats.common import is_label
 from xut.formats.xvec import Clock, Event, Vec
-from xut.validate import DEFAULT_ASYNC_SEP_PS, DEFAULT_GAP_PS, MIN_SEP_PS, ROC_WIDTH_PS
+from xut.validate import (
+    DEFAULT_ASYNC_SEP_PS,
+    DEFAULT_GAP_PS,
+    MIN_SEP_PS,
+    MIN_SETTLE_PS,
+    min_event_gap,
+)
 from xut.wrap import DutMap, DutSpec, build_map, spec_from_catalog
 
 DEFAULT_SETTLE_PS = 120_000
@@ -53,14 +64,15 @@ class VecBuilder:
                 raise BuilderError(
                     f"{name}={v} is below the validator's minimum MIN_SEP_PS={MIN_SEP_PS}"
                 )
-        if settle_ps < ROC_WIDTH_PS + MIN_SEP_PS:
+        if settle_ps < MIN_SETTLE_PS:
             raise BuilderError(
-                f"settle_ps={settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {MIN_SEP_PS} margin"
+                f"settle_ps={settle_ps} < {MIN_SETTLE_PS} (glbl GSR/GTS pulses + margin)"
             )
+        gap_ps = max(gap_ps, min_event_gap(async_sep_ps, m))
         if 3 * gap_ps > period_ps // 2:
             raise BuilderError(
                 f"period_ps={period_ps} too short for edge + sample + change spacing "
-                f"(needs >= {6 * gap_ps} with gap_ps={gap_ps})"
+                f"(needs >= {6 * gap_ps} with an event gap of {gap_ps} ps)"
             )
         self.m, self.seed, self.settle, self.period = m, seed, settle_ps, period_ps
         self.gap, self.sep, self.expect = gap_ps, async_sep_ps, expect
@@ -76,7 +88,13 @@ class VecBuilder:
         self._sim: list[Event] | None = None  # events of the open simultaneous() block
 
     # -- helpers -------------------------------------------------------------
+    def _new_time(self) -> None:
+        """A new distinct event time is at least ``gap`` after the previous one."""
+        if self._events and self._events[-1].t < self.t < self._events[-1].t + self.gap:
+            self.t = self._events[-1].t + self.gap
+
     def _emit(self, op: str, target: str = "", lsb: int = 0, msb: int = 0, value: str = "") -> None:
+        self._new_time()
         e = Event(self.t, op, target, lsb, msb, value, self._sim is not None)
         self._events.append(e)
         if self._sim is not None:
@@ -89,6 +107,7 @@ class VecBuilder:
         bits = self.m.port_bits("in", port)
         if not bits:
             raise BuilderError(f"{self.m.prim} has no in_vec port {port!r}")
+        self._new_time()
         at, ports = self._set_at
         if at != self.t:
             self._set_at = (self.t, ports := set())
@@ -275,7 +294,9 @@ class VecBuilder:
             header["expect"] = self.expect
         header.update({f"attr.{k}": v for k, v in m.attrs.items()})
         clocks = [Clock(f"clk{b.bit}", b.bit, self.period, 0, 50, "stepped") for b in m.of("clk")]
-        end = Event(max(self.t, self._last_change + self.gap), "end")
+        self._after(self._last_change + self.gap)
+        self._new_time()
+        end = Event(self.t, "end")
         return Vec(header, clocks, [*self._events, end])
 
 
