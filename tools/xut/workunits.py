@@ -63,7 +63,8 @@ def owned_paths(unit: WorkUnit) -> list[str]:
     """Glob patterns for every path `unit` owns (spec §10, §13.1).
 
     Per-primitive paths (tests, overrides, per-prim model, status, findings)
-    plus per-unit paths (the shared family model, unit progress logs).
+    plus per-unit paths (the shared family model, the unit's shared test code under
+    `tests/<family>/<group>/_shared/<unit>/`, unit progress logs).
     Generated files (`catalog/<family>/<PRIM>.yaml`) are infra-owned, never
     a work unit's.
     """
@@ -76,6 +77,7 @@ def owned_paths(unit: WorkUnit) -> list[str]:
         paths.append(f"models/xut_models/{family}/{prim.lower()}.py")
         paths.append(f"status/{family}/{prim}.yaml")
         paths.append(f"findings/{prim}-*.md")
+    paths.append(f"tests/{family}/{group}/_shared/{unit.name}/**")
     paths.append(f"models/xut_models/{family}/_common/{unit.name}.py")
     paths.append(f"log/*-unit-{family}-{unit.name}-*.md")
     return paths

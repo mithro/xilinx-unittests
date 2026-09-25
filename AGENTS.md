@@ -74,6 +74,11 @@ branch may touch is determined by its **type** (spec §13.2); this is what
 | `docs/<topic>` | `docs/superpowers/**` (specs and plans only), plus its own log files |
 | `infra/<topic>` | anything **except** paths owned by a work unit — this includes the generated `catalog/<family>/<PRIM>.yaml` files, `docs/work-units.yaml`, `docs/review/**` and `docs/templates/**`. One exception: infra may **add** a new `status/<family>/<PRIM>.yaml` stub, but never modify or delete an existing status file (that is the owning unit's) |
 
+Shared test code for a unit (generator helpers, sv bodies, the cocotb session,
+metadata generators) lives in `tests/<family>/<group>/_shared/<unit>/`, which
+`owned_paths(unit)` includes; runners put it on the test's search path
+(`TestCase.shared_dirs`).
+
 Every branch, of every type, may also add its own progress-log entries:
 `log/<YYYY-MM-DDTHHMM>-<own-branch-slug>-<slug>.md`, where `<own-branch-slug>`
 is `xut.workunits.branch_slug(branch)` — the branch name with every `/`

@@ -32,6 +32,7 @@ def test_owned_paths_for_flops():
     assert "models/xut_models/7series/_common/flops.py" in paths
     assert "status/7series/FDRE.yaml" in paths
     assert "findings/FDRE-*.md" in paths
+    assert "tests/7series/register/_shared/flops/**" in paths  # shared unit test code
     assert "catalog/7series/FDRE.yaml" not in paths  # generated = infra only
 
 

@@ -43,17 +43,6 @@ def _case(root: Path = FIX) -> TestCase:
     return next(c for c in discover(root) if c.id == CASE_ID)
 
 
-def _shared_dirs(self: TestCase) -> list[Path]:
-    """Task 18's rule, ahead of Task 18: ``tests/<family>/<group>/_shared/<unit>``."""
-    d = self.test_dir.parent / "_shared" / self.work_unit
-    return [d] if d.is_dir() else []
-
-
-@pytest.fixture
-def shared(monkeypatch):
-    monkeypatch.setattr(TestCase, "shared_dirs", property(_shared_dirs))
-
-
 @pytest.fixture
 def toy_catalog(monkeypatch):
     """TOYFF's catalog entry only (a cocotb test needs no golden-model registry)."""
@@ -313,7 +302,7 @@ def test_launcher_plusargs_and_defines(launcher):
     assert (a.seed, a.shared, a.retarget, a.lib_first) == (5, ["s1", "s2"], None, [])
 
 
-def test_cocotb_command(tmp_path, shared):
+def test_cocotb_command(tmp_path):
     case = _case()
     ms = make_model_source(tmp_path / "ms")
     ctx = RunContext(tmp_path, "rtl", ms, defines={"P": "", "Q": "2"})
@@ -490,7 +479,7 @@ def _one_cfg(case: TestCase) -> TestCase:
 
 
 @pytest.mark.container
-def test_cocotb_toyff_passes(ctx, toy_catalog, shared):
+def test_cocotb_toyff_passes(ctx, toy_catalog):
     case = _case()
     res = IverilogRunner().run(case, ctx)
     d = workdir(ctx, "iverilog", case.id)
@@ -521,7 +510,7 @@ def test_cocotb_toyff_passes(ctx, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cocotb_seed_reproduces_the_session(tmp_path, toy_catalog, shared):
+def test_cocotb_seed_reproduces_the_session(tmp_path, toy_catalog):
     """The same --seed reproduces the trace exactly; another seed drives other D values."""
     ms = make_model_source(tmp_path / "ms")
     case = _one_cfg(_case())
@@ -539,7 +528,7 @@ def test_cocotb_seed_reproduces_the_session(tmp_path, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cocotb_model_mismatch_fails(ctx, toy_catalog, shared):
+def test_cocotb_model_mismatch_fails(ctx, toy_catalog):
     """A UNISIM model that disagrees with the golden model: fail, with the assertion."""
     m = ctx.model_source.unisims / "TOYFF.v"
     m.write_text(m.read_text().replace("else q <= D;", "else q <= ~D;"))
@@ -551,7 +540,7 @@ def test_cocotb_model_mismatch_fails(ctx, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cocotb_attributes_reach_the_dut(ctx, toy_catalog, shared):
+def test_cocotb_attributes_reach_the_dut(ctx, toy_catalog):
     """A model that ignores INIT fails init1 only: the configuration's attributes reach
     both the wrapper (xut_dut.v) and XutDut.attrs (the golden model)."""
     m = ctx.model_source.unisims / "TOYFF.v"
@@ -563,7 +552,7 @@ def test_cocotb_attributes_reach_the_dut(ctx, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cocotb_simulator_stopping_early_is_error(ctx, toy_catalog, shared):
+def test_cocotb_simulator_stopping_early_is_error(ctx, toy_catalog):
     m = ctx.model_source.unisims / "TOYFF.v"
     m.write_text(m.read_text().replace("  reg q;\n", "  reg q;\n  initial #125000 $finish;\n"))
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
@@ -572,17 +561,23 @@ def test_cocotb_simulator_stopping_early_is_error(ctx, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cocotb_import_failure_is_error(ctx, toy_catalog):
+def test_cocotb_import_failure_is_error(ctx, toy_catalog, tmp_path):
     """Without its shared directory the test module cannot import ToyDff: error."""
-    res = IverilogRunner().run(_one_cfg(_case()), ctx)
-    d = workdir(ctx, "iverilog", _case().id)
+    import shutil
+
+    bare = tmp_path / "bare"  # TOYFF without tests/7series/register/_shared/toy
+    shutil.copytree(REGISTER / "TOYFF", bare / "tests/7series/register/TOYFF")
+    case = _one_cfg(_case(bare))
+    assert case.shared_dirs == []
+    res = IverilogRunner().run(case, ctx)
+    d = workdir(ctx, "iverilog", case.id)
     assert res.status == "error"
     assert "no results.xml" in res.configs[0].reason
     assert "No module named 'toy_golden'" in (d / "run.log").read_text()
 
 
 @pytest.mark.container
-def test_cocotb_compile_failure_is_error(ctx, toy_catalog, shared):
+def test_cocotb_compile_failure_is_error(ctx, toy_catalog):
     (ctx.model_source.unisims / "TOYFF.v").write_text("module TOYFF(; endmodule\n")
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
     assert res.status == "error" and res.configs[0].reason.startswith("compile failed [seed ")
@@ -591,9 +586,7 @@ def test_cocotb_compile_failure_is_error(ctx, toy_catalog, shared):
 
 
 @pytest.mark.container
-def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(
-    tmp_path, toy_catalog, shared, monkeypatch
-):
+def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(tmp_path, toy_catalog, monkeypatch):
     """`xut run --runner python --runner iverilog --style cocotb --seed 7` on a copy of
     the fixture tree (TOYFF and its _shared/toy) rooted at tmp_path."""
     import shutil
@@ -617,7 +610,7 @@ def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(
 
 
 @pytest.mark.container
-def test_cocotb_model_error_fails_with_the_seed(ctx, toy_catalog, shared):
+def test_cocotb_model_error_fails_with_the_seed(ctx, toy_catalog):
     """A UNISIM model that reports an error while matching the golden model: fail
     (never silently ignored), and the reason names the seed to reproduce it."""
     m = ctx.model_source.unisims / "TOYFF.v"
