@@ -145,4 +145,14 @@ def test_test_yaml_template_validates():
     text = (repo_root() / "docs/templates/test.yaml").read_text()
     doc = yaml.safe_load(text.replace("<PRIM>", "FDRE").replace("<prim>", "fdre"))
     schemas.validate(doc, "test")
-    assert "config_exclusions" in text
+    assert all(t.get("gaps") for t in doc["tests"])  # lint rule gaps-present
+    for key in (
+        "source",
+        "configs",
+        "unsupported_reasons",
+        "config_exclusions",
+        "expected_divergence",
+        "timeout_s",
+        "sv_deviations",
+    ):
+        assert key in text, key  # every Task 8 key is shown (some commented out)

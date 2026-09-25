@@ -20,6 +20,9 @@ tests:
     # config_exclusions: {hw: {"*_dinv1_*": "IS_D_INVERTED=1 is not hw-renderable"}}
     flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
+    # Required and non-empty (lint rule gaps-present): what this test does not cover.
+    # A catalog bin no test exercises must start a gaps entry (lint rule bins-accounted):
+    # gaps: ["claim:<PRIM>.C8 — why it is not tested", ...]
     gaps: ["setup/hold timing out of scope"]
     # Optional:
     # timeout_s: 1200             # per runner; default --timeout, else 600
@@ -43,3 +46,4 @@ tests:
       hw: "GSR pulses are not hw-renderable until step 3"
     sv_deviations: []             # departures from the common SV subset (spec §4.3)
     flows: [rtl]
+    gaps: ["no GSR during a clock edge"]

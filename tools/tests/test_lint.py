@@ -12,7 +12,9 @@ from xut.cli import main
 from xut.lint import (
     GENERATED_STATUS_FILES,
     LintIssue,
+    check_bins_accounted,
     check_branch_paths,
+    check_gaps_present,
     check_generated_not_committed,
     check_spdx,
     check_status_files,
@@ -429,6 +431,7 @@ tests:
     attr_sampling: {}
     runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}
     flows: [rtl]
+    gaps: ["fixture"]
 """
 
 
@@ -812,6 +815,7 @@ def test_runners_empty_lint_cli_exits_0(tmp_path, monkeypatch):
 
     monkeypatch.setattr("xut.workunits.load_units", lambda root: {})
     monkeypatch.setattr("xut.lint._tracked_files", lambda root: [])
+    monkeypatch.setattr("xut.lint.check_bins_accounted", lambda root: [])  # no catalog here
     issues, _ = lint(tmp_path, branch_mode=False)
     assert issues and all(i.severity == "warning" for i in issues)
 
@@ -881,3 +885,77 @@ def test_expected_divergence_lint(tmp_path, entry, problems):
     assert [i.rule for i in issues] == ["expected-divergence"] * len(problems)
     for i, p in zip(issues, problems, strict=True):
         assert p in i.message and i.severity == "error"
+
+
+# --- check_bins_accounted / check_gaps_present ------------------------------------------
+
+
+def _bins_tree(tmp_path: Path, gaps: list[str], exercises: list[str] | None = None) -> Path:
+    """FDRE's real catalog entry (13 bins) and one test exercising all but port:R."""
+    import shutil
+
+    import yaml
+
+    from xut.paths import repo_root
+
+    (tmp_path / "catalog/7series").mkdir(parents=True)
+    shutil.copy(repo_root() / "catalog/7series/FDRE.yaml", tmp_path / "catalog/7series")
+    d = _fdre_dir(tmp_path)
+    data = yaml.safe_load(_VALID_TEST_YAML)
+    bits = ["1'b0", "1'b1"]
+    attrs = ["INIT", "IS_C_INVERTED", "IS_D_INVERTED", "IS_R_INVERTED"]
+    data["tests"][0]["exercises"] = exercises or [
+        "port:Q",
+        "port:C",
+        "port:CE",
+        "port:D",
+        *(f"attr:{a}={v}" for a in attrs for v in bits),
+    ]
+    data["tests"][0]["gaps"] = gaps
+    (d / "test.yaml").write_text(yaml.safe_dump(data))
+    return d
+
+
+def test_bins_accounted_flags_a_missing_bin(tmp_path):
+    _bins_tree(tmp_path, ["setup/hold timing", "port:Rx is not a bin"])
+    issues = check_bins_accounted(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("bins-accounted", "error")]
+    assert "port:R" in issues[0].message
+    assert issues[0].path == "tests/7series/register/FDRE/test.yaml"
+
+
+def test_bins_accounted_accepts_a_bin_listed_in_gaps(tmp_path):
+    _bins_tree(tmp_path, ["port:R — the reset is covered by FDRE.L1.other (fixture)"])
+    assert check_bins_accounted(tmp_path) == []
+
+
+def test_bins_accounted_counts_exercises_of_every_test_in_the_file(tmp_path):
+    import yaml
+
+    d = _bins_tree(tmp_path, ["fixture"])
+    data = yaml.safe_load((d / "test.yaml").read_text())
+    other = dict(data["tests"][0], id="7series.FDRE.L1.other", exercises=["port:R"])
+    data["tests"].append(other)
+    (d / "test.yaml").write_text(yaml.safe_dump(data))
+    assert check_bins_accounted(tmp_path) == []
+
+
+def test_bins_accounted_without_a_catalog_entry_is_error(tmp_path):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    issues = check_bins_accounted(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("bins-accounted", "error")]
+    assert "no usable catalog entry for FDRE" in issues[0].message
+
+
+@pytest.mark.parametrize("gaps", ["    gaps: []\n", ""])
+def test_gaps_present_flags_empty_and_missing_gaps(tmp_path, gaps):
+    text = _VALID_TEST_YAML.replace('    gaps: ["fixture"]\n', gaps)
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    issues = check_gaps_present(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("gaps-present", "error")]
+    assert "7series.FDRE.L1.reset" in issues[0].message
+
+
+def test_gaps_present_accepts_a_stated_gap(tmp_path):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    assert check_gaps_present(tmp_path) == []

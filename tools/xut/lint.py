@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """`xut lint`: the checks that let many parallel agents work on separate branches
 without interfering (AGENTS.md §3, §5). Enforces branch path ownership, SPDX headers,
-never-committed generated files, documented tests and valid status files.
+never-committed generated files, documented tests, accounted-for coverage bins, stated
+gaps and valid status files.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 import jsonschema
 import yaml
 
-from xut.errors import GitError
+from xut.errors import GitError, XutError
 from xut.schemas import validate as validate_schema
 from xut.status import load_status
 from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, finding_id
@@ -351,6 +352,76 @@ def _expected_divergence_issues(rel: str, prim: str, t: dict) -> list[LintIssue]
     return out
 
 
+# --- bins-accounted / gaps-present --------------------------------------------------
+
+
+def _valid_test_files(root: Path) -> list[tuple[str, dict]]:
+    """``(relative path, data)`` of every schema-valid ``tests/**/test.yaml``. An invalid
+    one is skipped here: ``check_tests_documented`` reports it (rule ``test-schema``)."""
+    out = []
+    for f in sorted(Path(root).glob("tests/**/test.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+            validate_schema(data, "test")
+        except (yaml.YAMLError, jsonschema.ValidationError):
+            continue
+        out.append((str(f.relative_to(root)), data))
+    return out
+
+
+def _gap_names(gap: str, b: str) -> bool:
+    """True if ``gap`` starts with bin ``b`` as a whole word (``"claim:FDRE.C8 — why"``)."""
+    if not gap.startswith(b):
+        return False
+    rest = gap[len(b) :]
+    return not rest or not (rest[0].isalnum() or rest[0] in "_.='")
+
+
+def check_bins_accounted(root: Path) -> list[LintIssue]:
+    """Spec §12 "every bin is covered or listed as a gap": for each ``test.yaml``, every
+    bin of ``xut.status.coverage_bins`` (from the primitive's catalog entry) appears in
+    some test's ``exercises`` or at the start of some ``gaps`` string (rule
+    ``bins-accounted``, error). A ``test.yaml`` whose primitive has no catalog entry is
+    an error too: its bins cannot be accounted for."""
+    from xut.catalog.model import load_entry
+    from xut.status import coverage_bins
+
+    root = Path(root)
+    issues = []
+    for rel, data in _valid_test_files(root):
+        prim, family = data["primitive"], data["family"]
+        try:
+            entry = load_entry(family, prim, root)
+        except (OSError, yaml.YAMLError, jsonschema.ValidationError, XutError) as e:
+            msg = f"no usable catalog entry for {prim}: {str(e).splitlines()[0]}"
+            issues.append(LintIssue(rel, "bins-accounted", msg, "error"))
+            continue
+        exercised = {b for t in data["tests"] for b in t["exercises"]}
+        gaps = [g for t in data["tests"] for g in t.get("gaps", [])]
+        for b in coverage_bins(entry):
+            if b not in exercised and not any(_gap_names(g, b) for g in gaps):
+                issues.append(
+                    LintIssue(
+                        rel,
+                        "bins-accounted",
+                        f"bin {b} is in no test's exercises and starts no gaps entry",
+                        "error",
+                    )
+                )
+    return issues
+
+
+def check_gaps_present(root: Path) -> list[LintIssue]:
+    """Every test says what it misses (spec §1.6, controller ruling on review (b) #3): a
+    test whose ``gaps`` is missing or empty is an error (rule ``gaps-present``)."""
+    return [
+        LintIssue(rel, "gaps-present", f"{t['id']}: gaps is missing or empty", "error")
+        for rel, data in _valid_test_files(root)
+        for t in data["tests"]
+        if not t.get("gaps")
+    ]
+
+
 # --- status-schema -------------------------------------------------------------------
 
 
@@ -439,13 +510,14 @@ def _added_files(root: Path, base: str) -> set[str]:
 def lint(
     root: Path, branch_mode: bool, base: str = "origin/main"
 ) -> tuple[list[LintIssue], list[str]]:
-    """Run every lint rule. Always runs spdx, tests-documented and status-schema over the
-    whole tree; `branch_mode` additionally runs branch-paths and generated-files against
-    the current branch's diff from `<base>...HEAD` (those two rules are meaningless
-    without a diff — every file under `tools/**` is "on" a unit branch merely because it
-    was inherited from `main`, not because that branch touched it). The current branch is
-    `xut.status.current_branch()`, which honours the `XUT_BRANCH` env override CI needs
-    for a pull_request event's detached-HEAD checkout.
+    """Run every lint rule. Always runs spdx, tests-documented, bins-accounted,
+    gaps-present and status-schema over the whole tree; `branch_mode` additionally runs
+    branch-paths and generated-files against the current branch's diff from
+    `<base>...HEAD` (those two rules are meaningless without a diff — every file under
+    `tools/**` is "on" a unit branch merely because it was inherited from `main`, not
+    because that branch touched it). The current branch is `xut.status.current_branch()`,
+    which honours the `XUT_BRANCH` env override CI needs for a pull_request event's
+    detached-HEAD checkout.
 
     Returns `(issues, warnings)`; `warnings` never affect the exit code.
     """
@@ -461,6 +533,8 @@ def lint(
     tracked = _tracked_files(root)
     issues += check_spdx(root, tracked)
     issues += check_tests_documented(root)
+    issues += check_bins_accounted(root)
+    issues += check_gaps_present(root)
     issues += check_status_files(root)
 
     if branch_mode:
