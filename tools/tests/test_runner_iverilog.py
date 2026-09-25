@@ -586,7 +586,7 @@ def test_cli_python_then_iverilog_on_the_fixture(work, toy, monkeypatch):
     ]
     r = CliRunner().invoke(main, [*args, "TOYFF"])
     assert r.exit_code == 0, r.output
-    summary = json.loads((work / "build/rtl/summary.json").read_text())
+    summary = json.loads((work / "build/rtl/summary-toyff-test.json").read_text())
     got = {(x["test_id"], x["runner"]): x["status"] for x in summary["results"]}
     assert got == {
         ("7series.TOYFF.L1.capture", "python"): "pass",

@@ -2,6 +2,7 @@
 """Command-line entry point."""
 
 import subprocess
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -370,7 +371,12 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
 @click.option("--model-source", default="auto", show_default=True)
 @click.option("--style", "styles", multiple=True, type=click.Choice(["vector", "sv", "cocotb"]))
 @click.option("--level", "levels", multiple=True, type=click.Choice(["L0", "L1", "L2", "L3"]))
-@click.option("--seed", type=int, help="stimulus seed (default: crc32 of the test id)")
+@click.option(
+    "--seed",
+    type=int,
+    help="stimulus/cocotb/sv seed (default: crc32 of the test id, the SAME on every run: "
+    "pass --seed to explore others; every cocotb fail/error reason names its seed)",
+)
 @click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("--timeout", type=click.IntRange(min=1), help="per-runner seconds (default 600)")
 def run_cmd(
@@ -387,8 +393,10 @@ def run_cmd(
     """Run tests: SELECT is a test-id glob, a primitive name or unit:<name> (default: all).
 
     Every selected (test, runner) pair writes
-    build/<flow>/<runner>/<model-source>/<test-id>/result.json. Exits 1 if any result is
-    fail or error.
+    build/<flow>/<runner>/<model-source>/<test-id>/result.json, and the run writes
+    build/<flow>/summary-<model-source>.json. Exits 1 if any result is fail or error,
+    or if a SELECT matches no test at all (filters leaving nothing selected exit 0).
+    Skip reasons are printed, one line per distinct reason.
     """
     from xut import modelsrc
     from xut import run as run_mod
@@ -407,9 +415,11 @@ def run_cmd(
     root = repo_root()
     cases = discover(root)
     if selectors:
-        for sel in selectors:
-            if not select(cases, [sel]):
-                click.echo(f"warning: selector {sel!r} matched no test", err=True)
+        # A selector matching no test at all is an error (a typo must not pass in CI);
+        # --level/--style filtering the matches down to nothing is not (exit 0 below).
+        unmatched = [sel for sel in selectors if not select(cases, [sel])]
+        if unmatched:
+            raise XutError(f"no tests matched selector(s) {unmatched}")
         cases = select(cases, list(selectors))
     cases = [
         c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
@@ -424,7 +434,8 @@ def run_cmd(
         results = run_mod.run_tests(cases, names, ctx)
     except KeyboardInterrupt:
         click.echo(
-            f"interrupted: queued runs cancelled; partial summary in build/{flow}/summary.json",
+            "interrupted: queued runs cancelled; partial summary in "
+            f"build/{flow}/summary-{ctx.model_source.name}.json",
             err=True,
         )
         raise SystemExit(130) from None
@@ -440,5 +451,8 @@ def run_cmd(
     bad = [r for r in results if r.status in ("fail", "error")]
     for r in bad:
         click.echo(f"{r.status}: {r.test_id} {r.runner}: {r.reason}")
+    skips = Counter(r.reason for r in results if r.status == "skip")
+    for why, n in skips.items():
+        click.echo(f"skip: {why} ({n} result{'s' if n > 1 else ''})")
     if bad:
         raise SystemExit(1)
