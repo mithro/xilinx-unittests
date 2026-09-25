@@ -343,3 +343,19 @@ def test_non_7series_values_have_their_own_report_section():
     md = render_report(lines, ["BUFGCE"], "toy")
     section = md.split("## Values not applicable to 7-series")[1].split("##")[0]
     assert "BUFGCE: attribute SIM_DEVICE" in section
+
+
+def test_min_event_gap_override(tmp_path):
+    """B2: an optional per-primitive min_event_gap_ps (overrides only; absent = default)."""
+    import jsonschema
+
+    out = tmp_path / "catalog" / "7series"
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
+    assert load_entry("7series", "TOYFF", tmp_path).min_event_gap_ps is None
+    ov = out / "TOYFF.overrides.yaml"
+    ov.write_text(yaml.safe_dump({"min_event_gap_ps": 5000}))
+    assert load_entry("7series", "TOYFF", tmp_path).min_event_gap_ps == 5000
+    for bad in (0, "5000", 1.5):
+        ov.write_text(yaml.safe_dump({"min_event_gap_ps": bad}))
+        with pytest.raises(jsonschema.ValidationError):
+            load_entry("7series", "TOYFF", tmp_path)

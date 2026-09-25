@@ -572,3 +572,35 @@ def test_every_accepted_cfg_is_a_valid_xtr_prefix():
         part.add("S0", {"Q": "1"})
         t = concat([(cfg, part)], part.header)
         assert list(loads(dumps(t)).samples) == [f"{cfg}/S0"]
+
+
+# --- B2: the primitive's min_event_gap_ps travels in the spec and map
+
+
+def test_min_event_gap_in_spec_and_map():
+    import dataclasses
+
+    e = dataclasses.replace(_fdre(), min_event_gap_ps=5000)
+    spec = spec_from_catalog(e, "c", {})
+    m = build_map(spec)
+    assert spec.min_event_gap_ps == 5000 and m.min_event_gap_ps == 5000
+    assert DutMap.from_json(m.to_json()) == m
+    assert build_map(spec_from_catalog(_fdre(), "c", {})).min_event_gap_ps is None
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("min_event_gap_ps", 0),
+        ("min_event_gap_ps", "5000"),
+        ("nclk", "1"),
+        ("nin", True),
+        ("cfg", 3),
+        ("attrs", {"INIT": 1}),
+    ],
+)
+def test_map_json_scalar_types_are_checked(key, value):
+    d = json.loads(build_map(spec_from_catalog(_fdre(), "c", {})).to_json())
+    d[key] = value
+    with pytest.raises(WrapError, match=key):
+        DutMap.from_json(json.dumps(d))
