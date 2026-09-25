@@ -141,3 +141,9 @@ def declared(case: TestCase, runner: str) -> tuple[bool, str]:
     if value == "yes":
         return True, ""
     return False, case.unsupported_reasons.get(r, f'"{value}" without a reason')
+
+
+def exclusions_for(case: TestCase, runner: str) -> dict[str, str]:
+    """``{cfg glob: reason}`` excluded for ``runner``; ``iverilog-vz`` inherits
+    ``verilator``'s exclusions exactly as it inherits its declaration."""
+    return dict(case.config_exclusions.get(DECLARATION_OF.get(runner, runner), {}))

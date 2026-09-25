@@ -814,3 +814,29 @@ def test_runners_empty_lint_cli_exits_0(tmp_path, monkeypatch):
     monkeypatch.setattr("xut.lint._tracked_files", lambda root: [])
     issues, _ = lint(tmp_path, branch_mode=False)
     assert issues and all(i.severity == "warning" for i in issues)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('hw: "yes"}', 'hw: "yes", hardware: "yes"}'),
+        ('hw: "yes"}', 'hw: "yes"}\n    unsupported_reasons: {xsm: "typo"}'),
+        ('hw: "yes"}', 'hw: "yes"}\n    config_exclusions: {verilater: {"*": "typo"}}'),
+    ],
+)
+def test_unknown_runner_name_is_error(tmp_path, old, new):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML.replace(old, new))
+    issues = check_tests_documented(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("runner-unknown", "error")]
+
+
+def test_exclusion_glob_matching_no_sv_config_is_warning(tmp_path):
+    text = _VALID_TEST_YAML.replace("style: vector", "style: sv").replace(
+        'hw: "yes"}',
+        'hw: "yes"}\n    configs: [{cfg: init0}]\n'
+        '    config_exclusions: {hw: {"init0": "ok", "nomatch*": "stale"}}',
+    )
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    issues = check_tests_documented(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("config-exclusions", "warning")]
+    assert "nomatch*" in issues[0].message

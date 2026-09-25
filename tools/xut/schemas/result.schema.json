@@ -67,6 +67,7 @@
     "hw": {
       "type": ["object", "null"],
       "$comment": "null until step 3, which records {dna, serial, site}.",
+      "additionalProperties": false,
       "properties": {
         "dna": {"type": "string"},
         "serial": {"type": "string"},
