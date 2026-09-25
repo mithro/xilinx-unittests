@@ -1,0 +1,10 @@
+.cache/
+build/
+__pycache__/
+*.pyc
+.venv/
+*.jou
+*.log
+.Xil/
+xsim.dir/
+obj_dir/
