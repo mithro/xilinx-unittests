@@ -12,14 +12,21 @@ The text is a PDF rendering, so tables are only aligned by column position:
 * tables continue over page breaks (footer, running header, repeated table
   header) and contain full-width prose paragraphs.
 
-The parser therefore finds anchor lines, assigns every other table line to the
-nearest anchor, and classifies the text runs on those lines by column.
+The parser therefore finds anchor lines (a direction or type token in its
+column), chains column-0 name fragments that continue each other, classifies the
+other text runs by column (estimated per page from the rows and the repeated
+table header), and gives each value fragment to the cell it continues (an open
+quote or a trailing comma) or else to the nearest anchor.
+
+The printed page number of a line is taken from the next page footer at or
+after it (``pdftotext`` puts each page's footer at the bottom of that page).
 
 Only facts (names, widths, values) and short fragments (at most
 ``MAX_FRAGMENT`` characters) of AMD's text are kept.
 """
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from statistics import median
 
@@ -49,11 +56,13 @@ _ID = r"[A-Z_][A-Z0-9_]*(?: _[A-Z0-9_]+)*"
 _NAMEFRAG = rf"{_ID}(?:,\s*{_ID})*,?(?: to(?: {_ID})?)?"
 _TYPES = "BINARY|HEX|DECIMAL|STRING|FLOAT|INTEGER|BOOLEAN|REAL"
 _ATTR_ANCHOR = re.compile(
-    rf"^(?P<name>{_NAMEFRAG})?(?P<gap>\s+)(?:3 significant\s+)?(?:digit\s+)?"
-    rf"(?P<type>{_TYPES})(?=\s|$)(?P<rest>.*)$"
+    rf"^(?P<name>{_NAMEFRAG})?(?P<gap>\s+)(?:\d significant\s+)?(?:digit\s+)?"
+    rf"(?P<cell>(?P<type>{_TYPES})(?:\s?\([^)]*\)| MHz)?)(?=\s|$)(?P<rest>.*)$"
 )
-_NAME_AT_START = re.compile(rf"^(?P<name>{_NAMEFRAG})(?=\s{{2,}}|$)")
+# A name fragment at column 0; a single space followed by lowercase text means prose.
+_NAME_AT_START = re.compile(rf"^(?P<name>{_NAMEFRAG})(?=\s|$)(?! [a-z])")
 _TYPE_MAX_COL = 45
+_SIGNIFICANT = re.compile(r"\d significant")
 
 _BUS = r"(?:\s*[<\[]\d+:\d+[>\]])?"
 _PID = rf"[A-Z][A-Za-z0-9_]*{_BUS}"
@@ -160,17 +169,20 @@ def _blocks(body: list) -> dict[str, list]:
     return blocks
 
 
-def _nearest(idx: int, anchors: list[int], barriers: list[int], prefer, pos=None) -> int | None:
+def _nearest(
+    idx: float, anchors: list[int], barriers: list[int], prefer, pos=None, penalty=None
+) -> int | None:
     """Index of the anchor nearest ``idx`` with no barrier in between.
 
-    ``pos`` optionally maps an anchor to the (fractional) line its row is centred on.
+    ``pos`` optionally maps an anchor to the (fractional) line its row is centred on;
+    ``penalty(anchor)`` adds to the distance (e.g. the anchor already has that cell).
     """
     best = None
     for a in anchors:
         lo, hi = sorted((a, idx))
         if any(lo < b < hi for b in barriers):
             continue
-        d = abs((pos or {}).get(a, a) - idx)
+        d = abs((pos or {}).get(a, a) - idx) + (penalty(a) if penalty else 0)
         if best is None or d < best[0]:
             best = (d, a)
         elif d == best[0]:
@@ -217,21 +229,18 @@ def _parse_ports(block: list) -> dict[str, dict]:
             anchors[i] = m
         elif ln[:1].strip():
             barriers.append(i)  # column-0 prose row
-    func_col = {i: m.start("func") for i, m in anchors.items() if m.group("func")}
-    col = median(func_col.values()) if func_col else None
-    first_desc: dict[int, tuple[int, str]] = {}
-    for i, m in anchors.items():
-        if m.group("func"):
-            first_desc[i] = (i, m.group("func"))
-    if col is not None:
-        for i, ln in enumerate(block):
-            if i in anchors or i in barriers or ln is _PAGEBREAK or not ln.strip():
-                continue
-            if abs((len(ln) - len(ln.lstrip())) - col) > 12:
-                continue
-            a = _nearest(i, list(anchors), barriers, lambda a: a not in func_col)
-            if a is not None and (a not in first_desc or i < first_desc[a][0]):
-                first_desc[a] = (i, ln.strip())
+    # Only the Function column is indented this far; it wraps above and below the row.
+    func_min_col = 20
+    has_func = {i for i, m in anchors.items() if m.group("func")}
+    first_desc: dict[int, tuple[int, str]] = {i: (i, anchors[i].group("func")) for i in has_func}
+    for i, ln in enumerate(block):
+        if i in anchors or i in barriers or ln is _PAGEBREAK or not ln.strip():
+            continue
+        if len(ln) - len(ln.lstrip()) < func_min_col:
+            continue
+        a = _nearest(i, list(anchors), barriers, lambda a: a not in has_func)
+        if a is not None and (a not in first_desc or i < first_desc[a][0]):
+            first_desc[a] = (i, ln.strip())
     ports: dict[str, dict] = {}
     for i, m in anchors.items():
         direction = _DIRECTIONS.get(m.group("dir"))
@@ -276,18 +285,27 @@ def _expand_range(a: str, b: str) -> list[str] | None:
 
 
 def _join(frags: list[str]) -> str:
+    """Join a value cell's fragments; a fragment inside an open quote was wrapped mid-word."""
     out = ""
     for f in frags:
         f = f.strip()
         if not out:
             out = f
-        elif out.endswith("_") or f.startswith("_") or f.startswith('_"'):
+        elif out.endswith("_") or f.startswith("_") or (out.count('"') % 2 and f[0] != '"'):
             out += f
-        elif out.endswith(",") or out.endswith(" to"):
-            out += " " + f
         else:
             out += " " + f
     return out
+
+
+def _continues(prev: str, frag: str, gap: int, prev_is_anchor: bool) -> bool:
+    """Does column-0 name fragment ``frag`` continue ``prev`` (``gap`` lines below)?"""
+    if gap > 3:
+        return False
+    if prev.endswith((",", " to", "_")) or frag.startswith("_"):
+        return True
+    # the short tail of a name wrapped mid-word ("CLKFBOUT_PHAS" / "E")
+    return gap <= 2 and not prev_is_anchor and len(frag) <= 3 and not frag.endswith(",")
 
 
 def _join_name(frags: list[str]) -> str:
@@ -303,6 +321,14 @@ def _join_name(frags: list[str]) -> str:
     return out
 
 
+def _expand_open(a: str, b: str) -> list[str]:
+    """``CLKFBOUT_X to CLKOUT6_X``: ``a`` plus the numbered family ``b`` counts up from 0."""
+    m = re.fullmatch(r"(.*?[A-Z_])(\d+)(\D*)", b)
+    if m and not re.search(r"\d", a) and int(m.group(2)) <= 64:
+        return [a, *(f"{m.group(1)}{i}{m.group(3)}" for i in range(int(m.group(2)) + 1))]
+    return [a, b]
+
+
 def _attr_names(spec: str) -> list[str]:
     spec = spec.replace(" _", "_")
     names: list[str] = []
@@ -311,14 +337,25 @@ def _attr_names(spec: str) -> list[str]:
             continue
         m = re.fullmatch(r"(\S+) to (\S+)", part)
         if m:
-            names.extend(_expand_range(m.group(1), m.group(2)) or [m.group(1), m.group(2)])
+            names.extend(_expand_range(m.group(1), m.group(2)) or _expand_open(*m.groups()))
         else:
             names.append(part)
     return names
 
 
+def _is_tail(text: str) -> bool:
+    """The rest of a quoted value wrapped mid-word (``INED"``, ``_HIGH"``)."""
+    return bool(text) and text[0] != '"' and text.count('"') % 2 == 1
+
+
+def _is_prose(text: str) -> bool:
+    """Running description text rather than a value ("Sets the mode of ...")."""
+    words = text.split()
+    return len(words) >= 3 and sum(bool(re.fullmatch(r"[a-z][a-z,.()-]*", w)) for w in words) >= 2
+
+
 def _split_values(text: str) -> list[str]:
-    return [v.strip() for v in text.split(",") if v.strip()]
+    return [v.strip() for v in re.split(r",|\s+or\s+", text) if v.strip()]
 
 
 def _parse_attributes(block: list) -> dict[str, dict]:
@@ -345,94 +382,241 @@ def _parse_attributes(block: list) -> dict[str, dict]:
     # between the two lines, not on the line holding the type token.
     pos: dict[int, float] = {}
     for i, m in anchors.items():
-        if "3 significant" in m.group(0) or not re.search(
+        if _SIGNIFICANT.search(m.group(0)) or not re.search(
             r"digit\s+" + m.group("type"), m.group(0)
         ):
             continue
         for j in (i - 1, i - 2):
-            if j >= 0 and block[j] is not _PAGEBREAK and "3 significant" in block[j]:
+            if j >= 0 and block[j] is not _PAGEBREAK and _SIGNIFICANT.search(block[j]):
                 pos[i] = (i + j) / 2
                 break
 
-    # Column starts for (type, allowed, default, description), estimated per page
-    # segment from anchor lines, falling back to the whole table and the header.
+    # Column starts for type (T), allowed values (A), default (D) and description
+    # (X), estimated per page segment: T from the anchors, X from the most common
+    # indentation of description-only lines, A and D from anchors that hold all
+    # three value cells, else from the segment's repeated table header.
     seg_of: dict[int, int] = {}
+    seg_header: dict[int, str] = {}
     seg = 0
     for i, ln in enumerate(block):
         if ln is _PAGEBREAK:
             seg += 1
+        elif i in barriers and i < len(block) and ln in headers:
+            seg_header[seg] = ln
         seg_of[i] = seg
 
-    def estimate(rows, wants=(3, 2)):
-        t = [anchors[i].start("type") for i in rows]
-        samples: dict[str, list[int]] = {"A": [], "D": [], "X": []}
-        for want in wants:
-            for i in rows:
-                m = anchors[i]
-                rs = _runs(m.group(0), m.end("type"))
-                if len(rs) >= want:
-                    for key, r in zip("ADX", rs, strict=False):
-                        samples[key].append(r[0])
-            if samples["A"] and samples["D"]:
-                break
-        cols = {"T": median(t)} if t else {}
-        cols.update({k: median(v) for k, v in samples.items() if v})
+    def hdr_col(h: str | None, word: str) -> int | None:
+        return h.index(word) if h and word in h else None
+
+    def estimate(s: int) -> dict[str, float]:
+        rows = [i for i in anchors if seg_of[i] == s]
+        h = seg_header.get(s) or (headers[0] if headers else None)
+        cols: dict[str, float] = {}
+        t = [anchors[i].start("type") for i in rows] or [
+            c for c in [hdr_col(h, "Type")] if c is not None
+        ]
+        if t:
+            cols["T"] = median(t)
+        full = [_runs(anchors[i].group(0), anchors[i].end("cell")) for i in rows]
+        full = [rs for rs in full if len(rs) >= 3]
+        if full:
+            cols["A"] = median(rs[0][0] for rs in full)
+            cols["D"] = median(rs[1][0] for rs in full)
+            d_seen[s] = {rs[1][0] for rs in full}
+        else:
+            for key, word in (("A", "Allowed"), ("D", "Default")):
+                c = hdr_col(h, word)
+                if c is not None:
+                    cols[key] = c
+        floor = cols.get("A", (cols.get("T") or 0) + 10) + 4
+        starts = Counter(
+            rs[-1][0]
+            for i, ln in enumerate(block)
+            if seg_of[i] == s
+            and ln is not _PAGEBREAK
+            and i not in barriers
+            and (rs := _runs(ln))
+            and rs[-1][0] > floor
+            and len(re.findall(r"\b[a-z]{2,}\b", rs[-1][1])) >= 2
+        )
+        if starts:
+            cols["X"] = max(starts.items(), key=lambda kv: (kv[1], -kv[0]))[0]
+        elif full:
+            cols["X"] = median(rs[2][0] for rs in full)
+        elif hdr_col(h, "Description") is not None:
+            cols["X"] = hdr_col(h, "Description") - 12
         return cols
 
-    table_cols = estimate(list(anchors))
-    if headers and ("D" not in table_cols or "X" not in table_cols):
-        h = headers[0]
-        for key, word in (("A", "Allowed"), ("D", "Default"), ("X", "Description")):
-            if key not in table_cols and word in h:
-                table_cols[key] = h.index(word) - 4
-    seg_cols = {}
-    for s in set(seg_of[i] for i in anchors):
-        rows = [i for i in anchors if seg_of[i] == s]
-        c = estimate(rows, wants=(3,))
-        seg_cols[s] = {**table_cols, **c} if {"A", "D", "X"} <= set(c) else table_cols
+    d_seen: dict[int, set[int]] = {}
+    seg_cols = {s: estimate(s) for s in set(seg_of.values())}
+    table_cols = estimate(seg_of[min(anchors)])
+    for s, c in seg_cols.items():
+        seg_cols[s] = {**table_cols, **c}
 
-    def classify(col: int, cols: dict) -> str:
-        return min(cols, key=lambda k: (abs(cols[k] - col), k))
+    def classify(col: int, cols: dict, keys: str = "TADX") -> str:
+        return min((k for k in cols if k in keys), key=lambda k: (abs(cols[k] - col), k))
 
-    cells: dict[int, dict[str, list[tuple[int, str]]]] = {
-        i: {"N": [], "A": [], "D": []} for i in anchors
-    }
+    # Standalone default-cell fragments mark where merged runs must be split.
+    for i, ln in enumerate(block):
+        if ln is _PAGEBREAK or i in barriers:
+            continue
+        for c, _ in _runs(ln)[1:]:
+            if classify(c, seg_cols[seg_of[i]]) == "D":
+                d_seen.setdefault(seg_of[i], set()).add(c)
+
+    def split_run(c: int, text: str, s: int) -> list[tuple[int, str]]:
+        """Split a run where a word starts on a later column (single-space merged cells)."""
+        cols = seg_cols[s]
+        edges = {v for k, v in cols.items() if k in "DX"} | d_seen.get(s, set())
+        for m in re.finditer(r" (?=\S)", text):
+            p = c + m.end()
+            head, tail = text[: m.start()], text[m.end() :]
+            if (
+                (
+                    any(abs(p - v) <= 1 and v > c + 2 for v in edges)
+                    # never split inside a list ("14, 15, 16, 17, 18,")
+                    and (not head.endswith(",") or re.fullmatch(r"[^,\s]+", tail))
+                )
+                or (not re.search("[a-z]", head) and _is_prose(tail))
+                or (head.count('"') % 2 == 0 and _is_tail(tail.split()[0]))
+            ):
+                return [(c, head), *split_run(p, tail, s)]
+        return [(c, text)]
+
+    # Name column: chain column-0 fragments that continue each other, then give
+    # each chain to the anchor on one of its lines, else to the nearest free anchor.
+    frags: list[tuple[int, str]] = []
+    for i, ln in enumerate(block):
+        if i in barriers or ln is _PAGEBREAK:
+            continue
+        if i in anchors:
+            if anchors[i].group("name"):
+                frags.append((i, anchors[i].group("name")))
+        elif ln[:1].strip():
+            m = _NAME_AT_START.match(ln)
+            if m:
+                frags.append((i, m.group("name")))
+    chains: list[list[tuple[int, str]]] = []
+    for i, f in frags:
+        if chains:
+            pi, pf = chains[-1][-1]
+            if not any(pi < b < i for b in barriers) and _continues(pf, f, i - pi, pi in anchors):
+                chains[-1].append((i, f))
+                continue
+        chains.append([(i, f)])
+    chain_of: dict[int, list[tuple[int, str]]] = {}
+    loose: list[list[tuple[int, str]]] = []
+    for ch in chains:
+        mine = [i for i, _ in ch if i in anchors and i not in chain_of]
+        if mine:
+            chain_of[mine[0]] = ch
+        else:
+            loose.append(ch)
+    typeless: list[list[tuple[int, str]]] = []
+    for ch in loose:
+        centre = (ch[0][0] + ch[-1][0]) / 2
+        free = [a for a in anchors if a not in chain_of and abs(pos.get(a, a) - centre) <= 6]
+        a = _nearest(centre, free, barriers, lambda a: 0, pos)
+        if a is None:
+            typeless.append(ch)
+        else:
+            chain_of[a] = ch
+
+    cells: dict[int, dict[str, list[tuple[int, str]]]] = {i: {"A": [], "D": []} for i in anchors}
     own: dict[int, set[str]] = {}
     for i, m in anchors.items():
         cols = seg_cols[seg_of[i]]
-        if m.group("name"):
-            cells[i]["N"].append((i, m.group("name")))
-        for c, text in _runs(m.group(0), m.end("type")):
-            k = classify(c, cols)
-            if k in "AD":
-                cells[i][k].append((i, text))
+        for c0, t0 in _runs(m.group(0), m.end("cell")):
+            for c, text in split_run(c0, t0, seg_of[i]):
+                k = classify(c, cols, "ADX")
+                if k == "A" or (k == "D" and not _is_prose(text)):
+                    cells[i][k].append((i, text))
         own[i] = {k for k, v in cells[i].items() if v}
 
+    loose_vals: list[tuple[int, str, str]] = []
     for i, ln in enumerate(block):
         if i in anchors or i in barriers or ln is _PAGEBREAK or not ln.strip():
             continue
-        runs = _runs(ln)
-        for c, text in runs:
-            if c == 0:
-                nm = _NAME_AT_START.match(text) or re.match(rf"^{_NAMEFRAG}", text)
-                if not nm:
+        cols = seg_cols[seg_of[i]]
+        for c0, t0 in _runs(ln):
+            if c0 == 0:
+                # the rest of a name line ("REFCLK   1 significant 190-210, ...")
+                m = _NAME_AT_START.match(t0)
+                if not m:
                     continue
-                k, text = "N", nm.group(0)
-            else:
-                cols = seg_cols.get(seg_of[i], table_cols)
+                rest = t0[m.end() :]
+                c0, t0 = c0 + m.end() + len(rest) - len(rest.lstrip()), rest.strip()
+            m = re.match(r"\d significant\s*", t0)
+            if m:
+                c0, t0 = c0 + m.end(), t0[m.end() :]
+            if not t0:
+                continue
+            for c, text in split_run(c0, t0, seg_of[i]):
                 k = classify(c, cols)
-                if k not in "AD":
-                    continue
-            a = _nearest(i, list(anchors), barriers, lambda a, k=k: k not in own[a], pos)
-            if a is not None:
-                cells[a][k].append((i, text))
+                if k in "AD" and not (k == "D" and _is_prose(text)):
+                    loose_vals.append((i, k, text))
+
+    def closed(text: str) -> bool:
+        return text.count('"') % 2 == 0 and not text.endswith((",", " to"))
+
+    def penalty(a: int, k: str, i: int) -> float:
+        """Prefer anchors without this cell; a cell complete on its anchor line cannot
+        continue on the lines below it."""
+        if k not in own[a]:
+            return 0
+        mine = [t for j, t in cells[a][k] if j == a]
+        return 100 if i > a and mine and closed(mine[-1]) else 1.5
+
+    # Assign in line order so a wrapped tail follows the cell whose quote is still open.
+    for i, k, text in loose_vals:
+        a = None
+        # A cell left open on a line just above (a quote not yet closed, or a list
+        # ending in a comma) is continued by this fragment.
+        open_cells = [
+            b
+            for b in anchors
+            if cells[b][k]
+            and 0 < i - cells[b][k][-1][0] <= 2
+            and not any(cells[b][k][-1][0] < x < i for x in barriers)
+            and (
+                "".join(t for _, t in cells[b][k]).count('"') % 2 == 1
+                or cells[b][k][-1][1].endswith(",")
+            )
+        ]
+        if open_cells:
+            a = max(open_cells, key=lambda b: cells[b][k][-1][0])
+        elif _is_tail(text) and k == "D":
+            # "CENTER_LOW", "CENTER / "DOWN_HIGH", _HIGH": the open value merged into
+            # the allowed cell is really the start of the default
+            for b in anchors:
+                for n, (j, frag) in enumerate(cells[b]["A"]):
+                    mm = re.fullmatch(r'(.*",)\s+("[^"\s]*)', frag)
+                    if mm and 0 < i - j <= 3:
+                        cells[b]["A"][n] = (j, mm.group(1))
+                        cells[b]["D"].append((j, mm.group(2)))
+                        a = b
+                        break
+                if a is not None:
+                    break
+        if a is None:
+            a = _nearest(
+                i,
+                list(anchors),
+                barriers,
+                lambda a, k=k: k not in own[a],
+                pos,
+                lambda a, k=k, i=i: penalty(a, k, i),
+            )
+        if a is not None:
+            cells[a][k].append((i, text))
+            cells[a][k].sort()
 
     attrs: dict[str, dict] = {}
     for i in sorted(anchors):
-        c = cells[i]
-        if not c["N"]:
+        if i not in chain_of:
             continue
-        spec = _join_name([t for _, t in sorted(c["N"])])
+        c = cells[i]
+        spec = _join_name([t for _, t in chain_of[i]])
         allowed = _join([t for _, t in sorted(c["A"])])
         default = _join([t for _, t in sorted(c["D"])])
         m = _DEFAULT_PHRASE.match(allowed)
@@ -449,6 +633,9 @@ def _parse_attributes(block: list) -> dict[str, dict]:
         }
         for name in _attr_names(spec):
             attrs[name] = dict(entry, allowed=list(entry["allowed"]))
+    for ch in typeless:
+        for name in _attr_names(_join_name([t for _, t in ch])):
+            attrs.setdefault(name, {"type": "", "allowed": [], "default": ""})
     return attrs
 
 
@@ -464,8 +651,6 @@ def _parse_design_entry(block: list) -> dict[str, str]:
             continue
         m = re.match(r"^(\S.*?)\s{2,}(\S.*?)\s*$", ln)
         if not m:
-            if out and not ln.strip():
-                continue
             continue
         key = m.group(1).strip().lower()
         if key.startswith("ip"):
@@ -512,7 +697,7 @@ def split_sections(text: str, names: list[str]) -> dict[str, DocSection]:
         desc = lines[i + 1].split(":", 1)[1].strip()
         nxt = lines[i + 2]
         if nxt and not nxt[0].isspace() and ":" not in nxt:
-            desc += " " + nxt.strip()
+            desc += ("" if desc.endswith("-") else " ") + nxt.strip()
 
         def grab(key, head=head):
             for ln in head:
