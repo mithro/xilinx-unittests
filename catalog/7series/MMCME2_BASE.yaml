@@ -82,7 +82,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: MMCM has achieved phase alignment within a predefined
+  doc_function: An output from the MMCM that indicates when the
 - name: CLKFBIN
   direction: input
   width: 1
@@ -102,7 +102,7 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: enables itself when this signal is released (that is, MMCM
+  doc_function: Asynchronous reset signal.
 attributes:
 - name: BANDWIDTH
   kind: string

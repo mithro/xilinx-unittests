@@ -17,7 +17,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: state.
+  doc_function: Buffer output representing the input path to the device.
 - name: I
   direction: input
   width: 1

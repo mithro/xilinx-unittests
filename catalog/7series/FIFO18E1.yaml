@@ -67,7 +67,7 @@ ports:
   direction: input
   width: 32
   cls: data
-  doc_function: threshold where this flag is triggered relative to full/empty.
+  doc_function: FIFO data input bus.
 - name: DIP
   direction: input
   width: 4

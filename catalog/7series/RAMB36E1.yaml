@@ -62,7 +62,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: RAM_MODE="SDP."
+  doc_function: Status output from ECC function to indicate a single bit
 - name: ADDRARDADDR
   direction: input
   width: 16
@@ -117,7 +117,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: used if RAM_MODE="TDP."
+  doc_function: Port A RAM enable/Read enable.
 - name: ENBWREN
   direction: input
   width: 1
@@ -147,12 +147,12 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: SRVAL_A.
+  doc_function: Synchronous data latch set/reset to value indicated by
 - name: RSTRAMB
   direction: input
   width: 1
   cls: data
-  doc_function: output when RAM_MODE="SDP."
+  doc_function: Synchronous data latch set/reset to value indicated by
 - name: RSTREGARSTREG
   direction: input
   width: 1

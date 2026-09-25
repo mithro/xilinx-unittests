@@ -77,8 +77,7 @@ attributes:
   kind: string
   width: null
   default: 7SERIES
-  allowed:
-  - 'TRUE'
+  allowed: []
   doc_type: STRING
 - name: SLEW
   kind: string
@@ -91,6 +90,7 @@ attributes:
   width: null
   default: 'TRUE'
   allowed:
+  - 'TRUE'
   - 'FALSE'
   - T_CONTROL
   doc_type: STRING

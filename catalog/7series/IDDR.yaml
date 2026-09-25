@@ -32,7 +32,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: flop.
+  doc_function: Enable pin affects the loading of data into the DDR flip-
 - name: D
   direction: input
   width: 1

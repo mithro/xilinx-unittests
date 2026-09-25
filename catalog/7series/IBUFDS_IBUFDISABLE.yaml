@@ -17,7 +17,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: when the I/O is idle for a period of time.
+  doc_function: Buffer output
 - name: I
   direction: input
   width: 1

@@ -21,13 +21,13 @@ ports:
 - name: CE
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Enables propagation of signal from I to O.
 - name: I
   direction: input
   width: 1
   cls: clock
-  doc_function: value.
+  doc_function: Clock input.
 attributes:
 - name: CE_TYPE
   kind: string

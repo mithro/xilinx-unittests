@@ -52,7 +52,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: frequency matching within a predefined PPM range.
+  doc_function: An output from the PLL that indicates when the PLL has
 - name: CLKFBIN
   direction: input
   width: 1
@@ -67,12 +67,12 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: shift).
+  doc_function: Powers down instantiated but unused PLLs.
 - name: RST
   direction: input
   width: 1
   cls: async
-  doc_function: PLL synchronously re-enables itself when this signal is
+  doc_function: The RST signal is an asynchronous reset for the PLL.
 attributes:
 - name: BANDWIDTH
   kind: string

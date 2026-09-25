@@ -22,7 +22,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: '• ALM[6:4]: Not defined.'
+  doc_function: ADC busy signal.
 - name: CHANNEL
   direction: output
   width: 5
@@ -52,7 +52,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: registers.
+  doc_function: Used to indicate that a JTAG DRP transaction is in progress.
 - name: JTAGLOCKED
   direction: output
   width: 1
@@ -72,7 +72,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: external multiplexer.
+  doc_function: Over-Temperature alarm
 - name: CONVST
   direction: input
   width: 1
@@ -82,12 +82,12 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: clock net.
+  doc_function: Convert start clock input.
 - name: DADDR
   direction: input
   width: 7
   cls: drp
-  doc_function: the sampling instant (delay and jitter), a global clock input
+  doc_function: Address bus for the dynamic reconfiguration port.
 - name: DCLK
   direction: input
   width: 1
@@ -111,7 +111,7 @@ ports:
 - name: RESET
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Reset signal for the XADC control logic.
 - name: VAUXN
   direction: input

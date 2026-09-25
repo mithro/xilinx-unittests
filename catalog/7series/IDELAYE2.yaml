@@ -22,7 +22,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: inverted.
+  doc_function: Delayed data from either the IDATAIN or DATAIN input
 - name: C
   direction: input
   width: 1
@@ -32,7 +32,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: the same clock in the SelectIOlogic resources (when using
+  doc_function: Active-High enable for increment/decrement function.
 - name: CINVCTRL
   direction: input
   width: 1
@@ -42,7 +42,7 @@ ports:
   direction: input
   width: 5
   cls: data
-  doc_function: not use the IDELAYE2 control pins for two clock cycles.
+  doc_function: Counter value from FPGA logic for dynamically loadable tap
 - name: DATAIN
   direction: input
   width: 1
@@ -62,12 +62,12 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: IDELAY_VALUE attribute.
+  doc_function: ''
 - name: LDPIPEEN
   direction: input
   width: 1
   cls: data
-  doc_function: is the new tap value.
+  doc_function: When High, loads the pipeline register with the value
 - name: REGRST
   direction: input
   width: 1

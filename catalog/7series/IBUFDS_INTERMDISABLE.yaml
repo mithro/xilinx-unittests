@@ -17,7 +17,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: power at times when the I/O is idle for a period of time.
+  doc_function: Buffer output
 - name: I
   direction: input
   width: 1
@@ -67,14 +67,14 @@ attributes:
   kind: string
   width: null
   default: 7SERIES
-  allowed:
-  - 'TRUE'
+  allowed: []
   doc_type: STRING
 - name: USE_IBUFDISABLE
   kind: string
   width: null
   default: 'TRUE'
   allowed:
+  - 'TRUE'
   - 'FALSE'
   - T_CONTROL
   doc_type: STRING

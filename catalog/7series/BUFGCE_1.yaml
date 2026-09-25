@@ -21,7 +21,7 @@ ports:
 - name: CE
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Clock buffer active-High enable.
 - name: I
   direction: input

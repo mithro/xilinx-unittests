@@ -146,7 +146,7 @@ ports:
 - name: RESET
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Active-High asynchronous reset.
 - name: WRCLK
   direction: input

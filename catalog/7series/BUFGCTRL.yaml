@@ -32,7 +32,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: to switch away from the I1 input immediately when the
+  doc_function: Primary clock input into the BUFGCTRL enabled by the
 - name: I1
   direction: input
   width: 1
@@ -42,7 +42,7 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: prevents the BUFGCTRL from detecting the conditions
+  doc_function: Clock ignore input for I0 input.
 - name: IGNORE1
   direction: input
   width: 1
@@ -52,7 +52,7 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: select pin for each clock input.
+  doc_function: Clock select input for I0.
 - name: S1
   direction: input
   width: 1

@@ -32,7 +32,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: A1) + A0 + 1
+  doc_function: Active-High clock enable.
 - name: CLK
   direction: input
   width: 1

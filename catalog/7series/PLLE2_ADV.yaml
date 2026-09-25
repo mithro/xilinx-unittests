@@ -62,7 +62,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: achieved phase alignment within a predefined window and
+  doc_function: An output from the PLL that indicates when the PLL has
 - name: CLKFBIN
   direction: input
   width: 1
@@ -72,7 +72,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: • Low = CLKIN2
+  doc_function: Primary clock input.
 - name: CLKIN2
   direction: input
   width: 1
@@ -87,12 +87,12 @@ ports:
   direction: input
   width: 7
   cls: drp
-  doc_function: bus provides a reconfiguration address for the dynamic
+  doc_function: The dynamic reconfiguration address (DADDR) input
 - name: DCLK
   direction: input
   width: 1
   cls: clock
-  doc_function: zeros.
+  doc_function: The DCLK signal is the reference clock for the dynamic
 - name: DEN
   direction: input
   width: 1
@@ -112,12 +112,12 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: shift).
+  doc_function: Powers down instantiated but unused PLLs.
 - name: RST
   direction: input
   width: 1
   cls: async
-  doc_function: PLL synchronously re-enables itself when this signal is
+  doc_function: The RST signal is an asynchronous reset for the PLL.
 attributes:
 - name: BANDWIDTH
   kind: string

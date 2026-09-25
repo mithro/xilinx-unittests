@@ -17,7 +17,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: tied to logic '0'.
+  doc_function: Buffer diff_p output
 - name: OB
   direction: output
   width: 1
