@@ -111,10 +111,10 @@ def test_gsr_released_before_first_event():
 def test_free_clock_edges_are_expanded():
     text = """\
 # xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0 attr.INIT=1'b1
-clock clk0 period=10000 phase=0 duty=50 mode=free
+clock clk0 period=10000 phase=2500 duty=50 mode=free
 t=102000 set in[0]=1
-t=112000 sample S0
-t=113000 set in[0]=0
+t=114000 sample S0
+t=115000 set in[0]=0
 t=127000 sample S1
 """
     vec = loads(text)
@@ -122,9 +122,10 @@ t=127000 sample S1
 
     edges = [e for e in expand_free_clocks(vec) if e.op == "edge"]
     assert all(e.target == "clk0" for e in edges)
-    assert [(e.t, e.value) for e in edges[:3]] == [(0, "r"), (5000, "f"), (10000, "r")]
+    assert [(e.t, e.value) for e in edges[:3]] == [(2500, "r"), (7500, "f"), (12500, "r")]
     trace, reach = replay(ToyDff, vec, MAP)
-    # rise at 110 ns captures D=1; rise at 120 ns captures D=0
+    # rise at 112.5 ns captures D=1; rise at 122.5 ns captures D=0 (phase 2500: no edge
+    # races glbl's GSR release at 100 ns)
     assert trace.samples["S0"]["Q"] == "1" and trace.samples["S1"]["Q"] == "0"
     assert "port:C" in reach.bins()
 
@@ -151,9 +152,9 @@ def test_hw_unrenderable_but_valid_stimulus_replays():
     # D changes 500 ps before a free-clock edge: legal for simulation, hw_renderable no.
     text = """\
 # xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0 attr.INIT=1'b1
-clock clk0 period=10000 phase=0 duty=50 mode=free
-t=109500 set in[0]=1
-t=112000 sample S0
+clock clk0 period=10000 phase=2500 duty=50 mode=free
+t=112000 set in[0]=1
+t=114000 sample S0
 """
     vec = loads(text)
     report = validate(vec, MAP)

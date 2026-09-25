@@ -596,3 +596,17 @@ def test_cli_python_then_iverilog_on_the_fixture(work, toy, monkeypatch):
         ("7series.TOYFF.L1.sv_basic", "python"): "skip",
         ("7series.TOYFF.L1.sv_basic", "iverilog"): "pass",
     }
+
+
+# --- ruling S15: zero evidence is never a pass ------------------------------------------
+
+
+@pytest.mark.container
+def test_vector_without_samples_is_error(work, toy):
+    from test_runner_base import NO_SAMPLE_GEN, _tmp_toy
+
+    ctx = RunContext(work, "rtl", make_model_source(work / "ms"))
+    case = _tmp_toy(work, NO_SAMPLE_GEN)
+    assert PythonRunner().run(case, ctx).status == "error"
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error" and "no samples" in res.configs[0].reason, res.reason

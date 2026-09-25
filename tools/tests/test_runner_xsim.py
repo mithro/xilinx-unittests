@@ -663,3 +663,16 @@ def test_run_script_timeout_kills_the_whole_group(tmp_path):
     while child.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
     assert not child.exists() or "\tZ" in (child / "status").read_text()
+
+
+# --- ruling S15: zero evidence is never a pass ------------------------------------------
+
+
+@pytest.mark.vivado
+def test_vector_without_samples_is_error(ctx, work, toy):
+    from test_runner_base import NO_SAMPLE_GEN, _tmp_toy
+
+    case = _tmp_toy(work, NO_SAMPLE_GEN)
+    assert PythonRunner().run(case, ctx).status == "error"
+    res = XsimRunner(extra_files=[_toyff(work)]).run(case, ctx)
+    assert res.status == "error" and "no samples" in res.configs[0].reason, res.reason
