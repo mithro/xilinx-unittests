@@ -10,15 +10,22 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
   missing, skipped or erroring result stays visible: in the matrix (a declared runner
   without a result is ``not-run``), and as an *issue* when it is an ``error`` or a
   ``fail`` that no disagreement explains.
+- **A result must carry its evidence.** A pass/fail that ran a configuration but
+  wrote no trace.xtr, a trace.xtr without result.json, and a configuration the golden
+  model ran that a result omits are issues; one a runner skipped (``config_exclusions``)
+  is a coverage note.
 - **An expected divergence never masks** (spec §8 rev 3.1). Every disagreement is
   computed; one an ``expected_divergence`` entry lists is reported as
-  ``known-divergence`` with the original class and the finding id.
+  ``known-divergence`` with the original class and the finding id. An entry matches
+  only its exact finding id (``xut.testspec.finding_id``), the class, a superset of
+  the finding's runners, and its optional ``model_sources``/``flows`` scope (ruling
+  S17); an in-scope entry with another id is an issue.
 - **Coverage gaps.** ``compare`` ignores ports only the actual trace has (the golden
   model may leave an output unmodelled); ``check`` lists them instead of dropping them.
 
 ``check`` returns a ``Report`` whose ``exit_code`` is 1 for any unlisted finding,
 otherwise 2 for any issue (a result that could not be compared or explained), otherwise
-0 (agreement, known divergences only, or nothing to compare against).
+0. The CLI also exits 2 when no selected test had two traces to compare.
 """
 
 from __future__ import annotations
@@ -34,7 +41,14 @@ from pathlib import Path
 
 from xut.formats.xtr import Mismatch, Trace, XtrError, compare, diff, load
 from xut.golden import bit_prov
-from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, TestCase
+from xut.testspec import (
+    DECLARATION_OF,
+    DECLARED_RUNNERS,
+    TestCase,
+    finding_id,
+    finding_slug,
+    prim_of,
+)
 
 FINDING_CLASSES = (
     "doc-vs-model",
@@ -102,7 +116,7 @@ class Finding:
 
     @property
     def slug(self) -> str:
-        return f"{self.cls}-{self.test_id.split('.', 2)[2].replace('.', '-')}"
+        return finding_slug(self.cls, self.test_id)
 
     def to_dict(self) -> dict:
         return {
@@ -155,16 +169,36 @@ def _view(d: Path, flow: str, runner: str, ms: str, test_id: str) -> View:
             trace = load(d / "trace.xtr")
         except XtrError as e:
             return _error_view(flow, runner, ms, data, f"malformed trace.xtr: {e}")
+    ran = sorted(c.get("cfg") for c in data.get("configs") or [] if c.get("status") in _RAN)
+    if trace is None and data.get("status") in _RAN and ran:
+        return _error_view(
+            flow,
+            runner,
+            ms,
+            data,
+            f"reported {data.get('status')} for configuration(s) {', '.join(ran)} "
+            "but wrote no trace.xtr",
+        )
     return View(flow, runner, str(data.get("status")), ms, trace, data)
 
 
 def gather(root: Path, test_id: str) -> dict[str, dict[tuple[str, str], View]]:
     """Per model source, the test's views keyed ``(flow, runner)``."""
     out: dict[str, dict[tuple[str, str], View]] = defaultdict(dict)
-    for res in sorted(Path(root, "build").glob(f"*/*/*/{test_id}/result.json")):
-        d = res.parent
+    build = Path(root, "build")
+    dirs = {
+        p.parent
+        for pat in ("result.json", "trace.xtr")
+        for p in build.glob(f"*/*/*/{test_id}/{pat}")
+    }
+    for d in sorted(dirs):
         ms, runner, flow = d.parent.name, d.parent.parent.name, d.parent.parent.parent.name
-        out[ms][(flow, runner)] = _view(d, flow, runner, ms, test_id)
+        if (d / "result.json").is_file():
+            out[ms][(flow, runner)] = _view(d, flow, runner, ms, test_id)
+        else:
+            out[ms][(flow, runner)] = _error_view(
+                flow, runner, ms, {}, f"trace.xtr without result.json in {d}"
+            )
     return dict(out)
 
 
@@ -236,7 +270,10 @@ def _golden_vs_sims(
         e, a = _pair(exp, v)
         for m in compare(e, a, x_observable=X_OBSERVABLE.get(r, True)):
             per_point[(m.label, m.port, m.bit, m.kind)][r] = m
-    doc, gap = [], []
+    doc: list[str] = []
+    gap: list[str] = []
+    doc_rs: set[str] = set()
+    gap_rs: set[str] = set()
     assert exp.trace is not None
     order = {lbl: i for i, lbl in enumerate(exp.trace.samples)}  # simulated-time order
     for pt, by_runner in sorted(
@@ -258,15 +295,17 @@ def _golden_vs_sims(
             )
         elif prov.startswith("doc:"):
             doc.append(_point(m))
+            doc_rs |= observers
         elif prov.startswith("inferred:"):
             gap.append(_point(m))
+            gap_rs |= observers
         else:
             issues.append(f"{ms} rtl: provenance {prov!r} is neither doc: nor inferred: ({m})")
     out = []
     if doc:
-        out.append(_f("doc-vs-model", test_id, "rtl", ms, group, doc))
+        out.append(_f("doc-vs-model", test_id, "rtl", ms, doc_rs, doc))
     if gap:
-        out.append(_f("doc-gap", test_id, "rtl", ms, group, gap))
+        out.append(_f("doc-gap", test_id, "rtl", ms, gap_rs, gap))
     return out
 
 
@@ -360,25 +399,47 @@ def classify(
                 pts = [_point(m) for m in compare(*_pair(exp, v), x_observable=False)]
                 if pts:
                     out.append(_f("silicon-mismatch", test_id, flow, None, ["hw"], pts))
-    return [_mark(f, tuple(expected_divergence)) for f in out]
+    return [_mark(f, tuple(expected_divergence), issues) for f in out]
 
 
-def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
-    """A listed divergence is still reported, as known-divergence (never masked)."""
+def covers(e: dict, f: Finding) -> bool:
+    """Whether ``expected_divergence`` entry ``e`` is in scope for finding ``f``: same
+    class, its ``runners`` a superset of the finding's, and within its optional
+    ``model_sources``/``flows`` scope (ruling S17). The id is checked by ``_mark``."""
+    return (
+        e.get("cls") == f.cls
+        and set(e.get("runners") or ()) >= set(f.runners)
+        and ("model_sources" not in e or f.model_source in e["model_sources"])
+        and ("flows" not in e or f.flow in e["flows"])
+    )
+
+
+def _mark(f: Finding, expected: tuple[dict, ...], issues: list[str]) -> Finding:
+    """A listed divergence is still reported, as known-divergence (never masked). An
+    entry matches only with the exact finding id (ruling S17); one in scope under
+    another id is an issue, never a match."""
+    want = finding_id(prim_of(f.test_id), f.cls, f.test_id)
     for e in expected:
-        if e.get("cls") == f.cls and set(e.get("runners", f.runners)) >= set(f.runners):
-            fid = Path(e["finding"]).stem
-            return Finding(
-                "known-divergence",
-                f.test_id,
-                f.flow,
-                f.model_source,
-                f.runners,
-                f.points,
-                True,
-                f.cls,
-                fid,
+        if not covers(e, f):
+            continue
+        fid = Path(e["finding"]).stem
+        if fid != want:
+            issues.append(
+                f"expected_divergence {e['finding']} is in scope for a {f.cls} finding "
+                f"({f.flow} / {f.model_source or 'n/a'}) but is not its id {want}: not matched"
             )
+            continue
+        return Finding(
+            "known-divergence",
+            f.test_id,
+            f.flow,
+            f.model_source,
+            f.runners,
+            f.points,
+            True,
+            f.cls,
+            fid,
+        )
     return f
 
 
@@ -429,14 +490,38 @@ def finding_path(root: Path, prim: str, f: Finding) -> Path:
 
 
 def write_finding(root: Path, prim: str, f: Finding) -> Path | None:
-    """Write the ``findings/<PRIM>-<slug>.md`` stub (spec §8 "Recording"). Never
-    overwrites: an existing file returns ``None``. A ``known-divergence`` returns
-    ``None`` without writing, because its finding already exists (``f.finding``)."""
+    """Write the ``findings/<PRIM>-<slug>.md`` stub (spec §8 "Recording") and return
+    its path. Never overwrites: for an existing file it returns ``None`` (after
+    ``record_finding``'s append-only ``Also seen`` line when the finding is seen on a
+    new flow / model source). A ``known-divergence`` returns ``None`` without writing,
+    because its finding already exists (``f.finding``)."""
+    action, p = record_finding(root, prim, f)
+    return p if action == "wrote" else None
+
+
+def _where(f: Finding) -> str:
+    return f"{f.flow} / {f.model_source or 'n/a'}"
+
+
+def record_finding(root: Path, prim: str, f: Finding) -> tuple[str, Path | None]:
+    """``("wrote", path)`` for a new stub; ``("recorded", path)`` when an existing
+    finding file gained an ``- Also seen: <flow> / <ms> (<date> at <head>)`` line (a
+    slug is per test and class, so two model sources or flows share one file; the file
+    is only ever appended to); ``("exists", path)`` when it already names that
+    flow / model source; ``("known", None)`` for a known-divergence."""
     if f.cls == "known-divergence":
-        return None
+        return "known", None
     p = finding_path(root, prim, f)
     if p.exists():
-        return None
+        lines = p.read_text().splitlines()
+        where = _where(f)
+        if f"- Flow / model source: {where}" in lines or any(
+            ln.startswith(f"- Also seen: {where} (") for ln in lines
+        ):
+            return "exists", p
+        with p.open("a") as fh:
+            fh.write(f"- Also seen: {where} ({_today()} at {_head(root)})\n")
+        return "recorded", p
     evidence = "\n".join(f"- {pt}" for pt in f.points)
     text = (
         f"# {prim}: {f.cls} in {f.test_id}\n"
@@ -461,7 +546,7 @@ def write_finding(root: Path, prim: str, f: Finding) -> Path | None:
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("x") as fh:  # exclusive: never overwrite, even in a race
         fh.write(text)
-    return p
+    return "wrote", p
 
 
 # --- one test, end to end ----------------------------------------------------------------
@@ -519,36 +604,93 @@ class Report:
         }
 
 
-def _declared_rtl_runners(case: TestCase) -> list[str]:
-    """Runners declared ``"yes"`` that run the rtl flow (``hw`` never does)."""
-    out = [r for r in DECLARED_RUNNERS if r != "hw" and case.runners.get(r) == "yes"]
+def _declared_runners(case: TestCase, flow: str) -> list[str]:
+    """Runners declared ``"yes"`` that run ``flow``: the golden model (``python``) only
+    runs rtl, ``hw`` never does; ``iverilog-vz`` follows ``verilator``."""
+    out = [
+        r
+        for r in DECLARED_RUNNERS
+        if case.runners.get(r) == "yes" and r != ("hw" if flow == "rtl" else "python")
+    ]
     out += [r for r, of in DECLARATION_OF.items() if case.runners.get(of) == "yes"]
-    return out
+    return sorted(out, key=_runner_key)
+
+
+def _declared_rtl_runners(case: TestCase) -> list[str]:
+    return _declared_runners(case, "rtl")
 
 
 def _coverage_gaps(ms: str, views: dict[tuple[str, str], View]) -> list[str]:
+    """Ports a runner observed that the golden model does not model, per flow and per
+    configuration (``compare`` ignores them, so they are listed here)."""
     exp = views.get(("rtl", "python"))
     if not _has_trace(exp):
         return []
     assert exp is not None and exp.trace is not None
-    modelled = {p for ports in exp.trace.samples.values() for p in ports}
-    extra: dict[str, set[str]] = defaultdict(set)
+    modelled: dict[str, set[str]] = defaultdict(set)
+    for lbl, ports in exp.trace.samples.items():
+        modelled[_cfg(lbl)] |= set(ports)
+    extra: dict[tuple[str, str], dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for (flow, runner), v in views.items():
-        if flow == "rtl" and runner != "python" and _has_trace(v):
+        if runner != "python" and _has_trace(v):
             assert v.trace is not None
-            for ports in v.trace.samples.values():
-                for p in set(ports) - modelled:
-                    extra[p].add(runner)
-    return [
-        f"{ms} rtl: {p} observed by {', '.join(sorted(rs, key=_runner_key))}, "
-        "not modelled by the golden model"
-        for p, rs in sorted(extra.items())
-    ]
+            for lbl, ports in _restrict(v.trace, v.ran).samples.items():
+                for p in set(ports) - modelled[_cfg(lbl)]:
+                    extra[(flow, p)][_cfg(lbl)].add(runner)
+    out = []
+    for (flow, p), by_cfg in sorted(extra.items()):
+        runners = sorted(set().union(*by_cfg.values()), key=_runner_key)
+        out.append(
+            f"{ms} {flow}: {p} observed by {', '.join(runners)} in cfg "
+            f"{', '.join(sorted(by_cfg))}, not modelled by the golden model"
+        )
+    return out
+
+
+def _config_coverage(ms: str, views: dict[tuple[str, str], View]) -> tuple[list[str], list[str]]:
+    """``(notes, issues)``: every configuration the golden model ran must be visible
+    in every other result. One a runner skipped (``config_exclusions``) is a coverage
+    note; one missing from its result entirely is an issue."""
+    exp = views.get(("rtl", "python"))
+    golden = sorted(exp.ran or ()) if exp is not None and exp.status in _RAN else []
+    notes: list[str] = []
+    issues: list[str] = []
+    for (flow, runner), v in sorted(views.items()):
+        listed = {c.get("cfg"): c for c in v.result.get("configs") or []}
+        if runner == "python" or not listed:
+            continue  # no configurations: not run, skipped whole, or an error (an issue)
+        for g in golden:
+            c = listed.get(g)
+            if c is None:
+                issues.append(
+                    f"{ms} {flow}/{runner}: cfg {g}, run by the golden model, is absent "
+                    "from its result"
+                )
+            elif c.get("status") == "skip":
+                notes.append(
+                    f"{ms} {flow}/{runner}: cfg {g} skipped: "
+                    f"{c.get('reason') or 'no reason recorded'}"
+                )
+    return notes, issues
+
+
+#: Classes that compare values: a fail is explained by one of these naming its runner.
+VALUE_CLASSES = (
+    "sim-divergence",
+    "doc-vs-model",
+    "doc-gap",
+    "transform-bug",
+    "flow-mismatch",
+    "silicon-mismatch",
+)
 
 
 def _explained(v: View, findings: list[Finding]) -> bool:
     return any(
-        v.runner in f.runners and f.flow == v.flow and f.model_source in (v.model_source, None)
+        (f.known_of or f.cls) in VALUE_CLASSES
+        and v.runner in f.runners
+        and f.flow == v.flow
+        and f.model_source in (v.model_source, None)
         for f in findings
     )
 
@@ -576,16 +718,19 @@ def check(root: Path, case: TestCase) -> Report:
     rep = Report(case, gathered)
     matched: set[str] = set()
     for ms, views in sorted(gathered.items()):
-        for r in _declared_rtl_runners(case):
-            if ("rtl", r) not in views:
-                views[("rtl", r)] = View(
-                    "rtl", r, "not-run", ms, None, {"reason": "declared, but no result.json"}
-                )
+        for flow in dict.fromkeys(["rtl", *case.flows]):
+            for r in _declared_runners(case, flow):
+                if (flow, r) not in views:
+                    views[(flow, r)] = View(
+                        flow, r, "not-run", ms, None, {"reason": "declared, but no result.json"}
+                    )
         found = classify(case.id, views, case.expected_divergence, rep.issues)
         rep.findings += found
         matched |= {f.finding for f in found if f.finding}
         rep.compared |= sum(_has_trace(v) for v in views.values()) >= 2
-        rep.coverage_gaps += _coverage_gaps(ms, views)
+        notes, cfg_issues = _config_coverage(ms, views)
+        rep.coverage_gaps += _coverage_gaps(ms, views) + notes
+        rep.issues += cfg_issues
         for _, v in sorted(views.items()):
             rep.issues += _result_issues(ms, v, found)
     for e in case.expected_divergence:

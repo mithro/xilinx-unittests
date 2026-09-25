@@ -473,7 +473,8 @@ def crosscheck_cmd(selectors: tuple[str, ...], write_findings: bool) -> None:
     compared like-for-like, per model source. Prints the matrix, findings and issues,
     and writes build/crosscheck/<test-id>.json. Exit status: 1 if any finding is not
     listed in the test's expected_divergence; otherwise 2 if any result is an error, a
-    fail no disagreement explains, or nothing was run at all; otherwise 0.
+    fail no disagreement explains, or no selected test had two traces to compare;
+    otherwise 0.
     """
     from xut import crosscheck as xc
     from xut.paths import repo_root
@@ -497,13 +498,13 @@ def crosscheck_cmd(selectors: tuple[str, ...], write_findings: bool) -> None:
         click.echo(xc.render(rep))
         if write_findings:
             for f in rep.unlisted:
-                p = xc.write_finding(root, case.prim, f)
-                rel = xc.finding_path(root, case.prim, f).relative_to(root)
-                click.echo(f"wrote {rel}" if p else f"exists: {rel}")
+                action, p = xc.record_finding(root, case.prim, f)
+                if p is not None:
+                    click.echo(f"{action}{'' if action == 'wrote' else ':'} {p.relative_to(root)}")
     verdicts = Counter(r.verdict for r in reports)
     click.echo("crosscheck: " + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items())))
     code = max((r.exit_code for r in reports), key=lambda c: (c == 1, c))
-    if code == 0 and all(r.verdict == "not-run" for r in reports):
-        code = 2  # nothing to cross-check is never a clean result
+    if code == 0 and all(r.verdict in ("not-run", "uncompared") for r in reports):
+        code = 2  # no cross-checked evidence at all is never a clean result
     if code:
         raise SystemExit(code)
