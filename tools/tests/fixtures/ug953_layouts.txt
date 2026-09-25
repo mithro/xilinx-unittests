@@ -1,0 +1,112 @@
+                                                                                               Design Elements
+TOYRAM
+Primitive: Toy block memory with a long title that wraps onto
+a second line
+
+    PRIMITIVE_GROUP: BLOCKRAM
+    PRIMITIVE_SUBGROUP: BRAM
+
+Introduction
+Toy text for layout tests.
+
+
+Port Descriptions
+
+          Port           Direction         Width                            Function
+ADDRA<15:0>              Input         16          Toy address bus.
+ADDRB <13:0>             Input         14          Toy second address bus.
+                                                   Toy clock. Edge set by an
+CLKA                     Input         1
+                                                   inversion attribute.
+                                                   Toy output bus. Only valid when
+DOA[31:0]                Output        32          the toy mode is set and the
+                                                   toy enable is High.
+Q1 - Q2                  Output        1           Toy paired outputs.
+CE1, CE2                 Input         1           Toy paired enables.
+SHIFTIN1 / SHIFTIN2      Input         1           Toy cascade inputs.
+D1 : D2                  Input         1 (each)    Toy paired data.
+INTERNAL_TCK             Internal      1           Toy other-family pin.
+
+
+
+
+UG953 v2026.1                                                                                              20
+                                                                             Send Feedback
+June 23, 2026
+                                                                                          Design Elements
+
+
+           Port   Direction       Width                              Function
+                                          Toy reset with a long description
+RSTA              Input       1           spanning several lines of the
+                                          table cell.
+WEA<3:0>          Input       4           Toy write enable.
+LUT Inputs: Toy prose row that is not a port.
+
+
+Design Entry Method
+Instantiation                                      Yes
+Inference                                          Recommended
+IP catalog                                         Yes
+Macro support                                      Yes
+
+
+Available Attributes
+
+     Attribute   Type             Allowed Values       Default                     Description
+                                                            Toy wrapped name with a
+RDADDR                                                      two-line default and a
+                           "DELAYED_WRITE",        "DELAYED
+_COLL            STRING                                     long description that
+                           "PERFORMANCE"           _WRITE"
+_HW                                                         keeps going.
+                                                                 Toy list with the default on a
+                           "ALL",                                middle line.
+SIM_COLL                   "GEN_X",
+                 STRING                       "ALL"              More toy words.
+_CHECK                     "NONE",
+                           "WARN"                                End of toy words.
+Programmable Inversion Attributes: Toy prose paragraph that spans the full width of the page and
+must never be read as an attribute row by the parser.
+                                                            Toy grouped names.
+DOA_REG,
+                 DECIMAL   0, 1                    0
+DOB_REG
+EN_ECC           BOOLEAN FALSE, TRUE               FALSE         Toy boolean.
+IS_CLK_INVERTED BINARY     1'b0 to 1'b1          1'b0
+
+
+
+
+UG953 v2026.1                                                                                                   21
+                                                                            Send Feedback
+June 23, 2026
+                                                                                                  Design Elements
+
+
+     Attribute    Type         Allowed Values            Default                    Description
+INIT_00 to INIT_0F HEX     256 bit HEX              All zeros         Toy range.
+INITP_00 to                                                        Toy range on
+                  HEX      256 bit HEX              All zeros
+INITP_01                                                           two lines.
+SRVAL_A, SRVAL_B HEX       36 bit HEX               All zeros
+WIDTH             DECIMAL  0, 1, 2, 4, 9 0                         Toy merged cells.
+SRVAL             HEX      Any 72-Bit Value All zeros              Toy merged default.
+                    3 significant
+CLKOUT0_DIVIDE _F                   1.000 to 128.000 1.000          Toy float.
+                    digit FLOAT
+                                                                    Toy phase range.
+CLKOUT0_PHASE to    3 significant   -360.000 to
+                                                      0.000         More toy words.
+CLKOUT2_PHASE       digit FLOAT     360.000
+CLKOUT4 _CASCADE BOOLEAN            FALSE, TRUE       FALSE         Toy cascade.
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   22
+                                                                            Send Feedback
+June 23, 2026

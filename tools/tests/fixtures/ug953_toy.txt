@@ -1,0 +1,52 @@
+TOYFF
+Primitive: Toy flip-flop for parser tests
+
+    PRIMITIVE_GROUP: REGISTER
+    PRIMITIVE_SUBGROUP: SDR
+
+Introduction
+Toy text.
+
+Port Descriptions
+
+              Port                Direction            Width                  Function
+C                                 Input           1              Clock input.
+D                                 Input           1              Data input
+Q                                 Output          1              Data output
+DO[15:0]                          Output          16             Wide output
+
+
+Design Entry Method
+Instantiation                                                         Yes
+Inference                                                             Recommended
+IP and IP Integrator Catalog                                          No
+
+
+Available Attributes
+
+         Attribute         Type           Allowed Values        Default          Description
+INIT                       BINARY         1'b0, 1'b1           1'b0             Initial value
+MODE                       STRING         "FAST", "SLOW"       "FAST"           Toy mode
+                                                                                wrapped line
+
+
+UG953 v2026.1                                                     10
+                                                          Send Feedback
+June 23, 2026
+                                                                    Design Elements
+TOYLUT
+Primitive: Toy LUT
+
+    PRIMITIVE_GROUP: CLB
+    PRIMITIVE_SUBGROUP: LUT
+
+Port Descriptions
+
+              Port                Direction            Width                  Function
+I0                                Input           1              Input
+O                                 Output          1              Output
+
+
+UG953 v2026.1                                                     11
+                                                          Send Feedback
+June 23, 2026
