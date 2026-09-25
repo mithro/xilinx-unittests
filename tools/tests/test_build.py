@@ -125,3 +125,74 @@ def test_overrides_are_validated(tmp_path):
     ov.write_text(yaml.safe_dump({"ports": {"NOPE": {"cls": "data"}}}))
     with pytest.raises(KeyError):
         load_entry("7series", "TOYFF", tmp_path)
+
+
+def test_async_controls_follow_spec_intent():
+    for p in ("S0", "S1", "CE0", "CE1", "IGNORE0", "IGNORE1"):
+        assert default_class("BUFGCTRL", p, "input") == "async", p
+    # only BUFGCTRL: ISERDESE2 CE1 is an ordinary enable like CE2
+    assert default_class("ISERDESE2", "CE1", "input") == "data"
+    assert default_class("ISERDESE2", "CE2", "input") == "data"
+    for prim in ("BUFGMUX", "BUFGMUX_1", "BUFGMUX_CTRL"):
+        assert default_class(prim, "S", "input") == "async", prim
+    for prim in ("BUFGCE", "BUFGCE_1", "BUFHCE", "BUFMRCE", "BUFR"):
+        assert default_class(prim, "CE", "input") == "async", prim
+    assert default_class("IDELAYCTRL", "RST", "input") == "async"
+    for prim in ("XADC", "IN_FIFO", "OUT_FIFO"):
+        assert default_class(prim, "RESET", "input") == "async", prim
+    assert default_class("FDRE", "CE", "input") == "data"
+    assert default_class("RAMB36E1", "RSTRAMB", "input") == "data"
+
+
+def test_srtype_dependent_classes_are_noted():
+    from xut.catalog.portclass import class_note
+
+    for prim in ("IDDR", "IDDR_2CLK", "ODDR"):
+        for p in ("S", "R"):
+            assert default_class(prim, p, "input") == "data"
+            assert "SRTYPE" in class_note(prim, p)
+    assert class_note("FDRE", "R") is None
+
+
+def test_value_issues_catch_duplicates_and_missing_default():
+    from types import SimpleNamespace
+
+    from xut.catalog.build import value_issues
+    from xut.catalog.ug953 import DocSection
+
+    sec = DocSection("TOYX", "", "G", "S", 1)
+    sec.attributes = {
+        "DUP": {"type": "STRING", "allowed": ['"A"', '"B"', '"A"'], "default": ""},
+        "MISS": {"type": "STRING", "allowed": ['"TRUE"'], "default": ""},
+        "NUM": {"type": "DECIMAL", "allowed": ["1", "2"], "default": "1"},
+        "RANGE": {"type": "DECIMAL", "allowed": ["1 to 128"], "default": "1"},
+        "OK": {"type": "BOOLEAN", "allowed": ["FALSE", "TRUE"], "default": "FALSE"},
+    }
+    P = SimpleNamespace
+    model = SimpleNamespace(
+        params=[
+            P(name="DUP", default="A"),
+            P(name="MISS", default="7SERIES"),
+            P(name="NUM", default=4),
+            P(name="RANGE", default=200),
+            P(name="OK", default="FALSE"),
+        ]
+    )
+    lines = value_issues("TOYX", sec, model)
+    assert any("DUP" in x and "duplicate" in x for x in lines)
+    assert any("MISS" in x and "7SERIES" in x for x in lines)
+    assert any("NUM" in x and "4" in x for x in lines)
+    assert not any(" RANGE " in x or " OK " in x for x in lines)
+
+
+def test_function_review_and_class_notes_reach_the_report(tmp_path):
+    out = tmp_path / "catalog"
+    u = tmp_path / "unisims"
+    u.mkdir()
+    (u / "TOYSER.v").write_text(
+        "module TOYSER(input TSLIP, TCE1, TCE2, TCLK, TDIV, TSEL, TODD); endmodule\n"
+    )
+    (u / "IDDR.v").write_text("module IDDR(output Q1, input C, S, R); endmodule\n")
+    report = build_all(FIX / "ug953_layouts.txt", ["TOYSER", "IDDR"], out, [u])
+    assert "TOYSER: port TODD UG953 function needs review" in report
+    assert any(x.startswith("IDDR: port S class depends on SRTYPE") for x in report)

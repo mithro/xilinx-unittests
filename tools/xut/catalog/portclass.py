@@ -26,8 +26,17 @@ _CLOCKS = frozenset(
         "WCLK",
     }
 )
-_ASYNC = frozenset({"CLR", "PRE", "S0", "S1", "CE0", "CE1", "PWRDWN", "GSR", "GTS"})
-_RST_ASYNC_PREFIXES = ("FIFO", "MMCM", "PLL", "ISERDES", "OSERDES")
+_ASYNC = frozenset({"CLR", "PRE", "PWRDWN", "GSR", "GTS"})
+# (primitive, port) pairs whose control input is asynchronous (spec §5.1)
+_ASYNC_ON = {
+    **{p: {"BUFGCTRL"} for p in ("S0", "S1", "CE0", "CE1", "IGNORE0", "IGNORE1")},
+    "S": {"BUFGMUX", "BUFGMUX_1", "BUFGMUX_CTRL"},
+    "CE": {"BUFGCE", "BUFGCE_1", "BUFHCE", "BUFMRCE", "BUFR"},
+    "RESET": {"XADC", "IN_FIFO", "OUT_FIFO"},
+}
+_RST_ASYNC_PREFIXES = ("FIFO", "MMCM", "PLL", "ISERDES", "OSERDES", "IDELAYCTRL")
+# set/reset whose timing is chosen by an attribute; default class is data
+_SRTYPE_DEPENDENT = {"IDDR", "IDDR_2CLK", "ODDR"}
 _DRP = frozenset({"DADDR", "DI", "DO", "DEN", "DWE", "DRDY"})
 _DRP_PREFIXES = ("MMCM", "PLL", "XADC")
 
@@ -53,11 +62,9 @@ def default_class(prim: str, port: str, direction: str) -> str:
             return "clock"
         if port == "I" and _is_buf(prim):
             return "clock"
-        if port in _ASYNC:
+        if port in _ASYNC or prim in _ASYNC_ON.get(port, ()):
             return "async"
         if port == "RST" and prim.startswith(_RST_ASYNC_PREFIXES):
-            return "async"
-        if port in ("IGNORE0", "IGNORE1") and prim.startswith("BUFGCTRL"):
             return "async"
         return "data"
     # outputs
@@ -70,3 +77,13 @@ def default_class(prim: str, port: str, direction: str) -> str:
     if port == "O" and _is_buf(prim):
         return "clock_out"
     return "data"
+
+
+def class_note(prim: str, port: str) -> str | None:
+    """Why the default class of ``prim.port`` may be wrong for some configurations."""
+    if prim in _SRTYPE_DEPENDENT and port in ("S", "R"):
+        return (
+            "class depends on SRTYPE (data for SYNC, async for ASYNC); "
+            "needs a per-configuration override"
+        )
+    return None
