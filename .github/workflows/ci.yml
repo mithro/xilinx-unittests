@@ -27,3 +27,16 @@ jobs:
           # the PR's actual branch, so current_branch() can't discover it from git.
           XUT_BRANCH: ${{ github.head_ref }}
         run: uv run xut lint --branch --base "origin/${{ github.base_ref }}"
+  sim:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: true}
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --locked --extra dev
+      - run: uv run xut container build
+      - name: show the docker build log on failure
+        if: failure()
+        run: cat .cache/container-build.log
+      - run: uv run xut container versions
+      - run: uv run pytest -v -m container
