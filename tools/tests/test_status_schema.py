@@ -51,10 +51,20 @@ def test_fdre_stub_fields():
 
 
 def test_coverage_bins_non_enumerated_attrs_collapse_to_one_bin():
+    e = _fdre()
+    e.attributes = [{"name": "INIT_A", "allowed": ["16'h0000 to 16'hffff"]}]
+    bins = coverage_bins(e)
+    # a multi-bit range is not an enumeration: one bin for the whole attribute
+    assert bins.count("attr:INIT_A") == 1
+    assert not any(b.startswith("attr:INIT_A=") for b in bins)
+
+
+def test_coverage_bins_one_bit_inversion_gets_a_bin_per_polarity():
+    """Live FDRE catalog entry: UG953's `1'b0 to 1'b1` is enumerated by the parser."""
     bins = coverage_bins(_fdre())
-    # IS_C_INVERTED's allowed value is a range ("1'b0 to 1'b1"), not an enumeration.
-    assert bins.count("attr:IS_C_INVERTED") == 1
-    assert "attr:IS_C_INVERTED=1'b0" not in bins
+    assert "attr:IS_C_INVERTED=1'b0" in bins
+    assert "attr:IS_C_INVERTED=1'b1" in bins
+    assert "attr:IS_C_INVERTED" not in bins
 
 
 def test_results_key_pattern_accepts_valid_key():
