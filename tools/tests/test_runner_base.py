@@ -4,6 +4,7 @@
 import dataclasses
 import hashlib
 import json
+import os
 import shutil
 import textwrap
 from concurrent.futures import ThreadPoolExecutor
@@ -500,3 +501,164 @@ def test_python_fixture_l0_reject_end_to_end(ctx, toy):
     assert t.samples == {} and t.header["expect"] == "reject"
     assert expected_trace(ctx, case, "init_x") == cd / "expected.xtr"
     assert res.bins_reached == []  # nothing replayed
+
+
+# --- fix round 1 ----------------------------------------------------------------------
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_undeletable_stale_dir_is_error_result_not_crash(ctx, monkeypatch):
+    monkeypatch.setitem(RUNNERS, "fake", Fake)
+    d = workdir(ctx, "fake", _case().id)
+    locked = d / "locked"
+    locked.mkdir(parents=True)
+    (locked / "stale").write_text("old")
+    locked.chmod(0o500)
+    try:
+        res = Fake().run(_sv_case(), ctx)
+        assert res.status == "error" and "Permission" in res.reason
+        assert _result(d)["status"] == "error"
+        # and through run_tests: the invocation completes, with a summary
+        [r] = run_tests([_sv_case()], ["fake"], ctx)
+        assert r.status == "error"
+        assert (ctx.root / "build/rtl/summary.json").is_file()
+    finally:
+        locked.chmod(0o700)
+
+
+def test_run_tests_survives_a_run_that_raises(ctx, monkeypatch):
+    class Raises(Fake):
+        def run(self, case, ctx):
+            raise RuntimeError("run() itself is broken")
+
+    monkeypatch.setitem(RUNNERS, "fake", Raises)
+    [res] = run_tests([_sv_case()], ["fake"], ctx)
+    assert res.status == "error" and "run() itself is broken" in res.reason
+    _result(workdir(ctx, "fake", _case().id))
+
+
+def test_iverilog_vz_inherits_verilator_exclusions(ctx):
+    class Vz(Fake):
+        name = "iverilog-vz"
+
+    Fake.calls = []
+    case = _sv_case(cfgs=["a", "b"], config_exclusions={"verilator": {"b": "x inputs"}})
+    case = dataclasses.replace(case, runners={**case.runners, "verilator": "yes"})
+    res = Vz().run(case, ctx)
+    assert Fake.calls == ["a"]
+    assert [(c.cfg, c.status, c.reason) for c in res.configs][1] == (
+        "b",
+        "skip",
+        "excluded: x inputs",
+    )
+
+
+def test_reason_lists_fail_and_error_configs(ctx):
+    class Mixed(Fake):
+        def run_config(self, case, cfg, cfgdir, ctx):
+            xtr.dump(_toy_trace(), cfgdir / "trace.xtr")
+            if cfg == "a":
+                return ConfigResult(cfg, "fail", "Q mismatch", mismatches=1)
+            raise RuntimeError("sim crashed")
+
+    res = Mixed().run(_sv_case(cfgs=["a", "b"]), ctx)
+    assert res.status == "fail"
+    assert "a: Q mismatch" in res.reason and "b: RuntimeError: sim crashed" in res.reason
+
+
+def test_pass_with_skipped_configs_says_so(ctx):
+    case = _sv_case(cfgs=["a", "b"], config_exclusions={"fake": {"b": "hw only"}})
+    res = Fake().run(case, ctx)
+    assert res.status == "pass"
+    assert res.reason == "1 config(s) skipped: b: excluded: hw only"
+    _result(workdir(ctx, "fake", case.id))
+
+
+def test_exclusion_glob_matching_nothing_is_logged(ctx):
+    case = _sv_case(cfgs=["a"], config_exclusions={"fake": {"zz*": "never"}})
+    Fake().run(case, ctx)
+    log = (workdir(ctx, "fake", case.id) / "run.log").read_text()
+    assert "glob 'zz*' matched no configuration" in log
+
+
+def test_pass_without_trace_is_error(ctx):
+    class NoTrace(Fake):
+        def run_config(self, case, cfg, cfgdir, ctx):
+            return ConfigResult(cfg, "pass")
+
+    res = NoTrace().run(_sv_case(), ctx)
+    assert res.status == "error" and "wrote no trace.xtr" in res.reason
+
+
+def test_tools_captured_before_any_config(ctx):
+    class BadTools(Fake):
+        def tools(self, ctx):
+            raise RuntimeError("simulator missing")
+
+    Fake.calls = []
+    res = BadTools().run(_sv_case(), ctx)
+    assert res.status == "error" and Fake.calls == []
+
+
+def test_seeds_record_the_seed_used(ctx, toy, tmp_path):
+    import zlib
+
+    py = PythonRunner().run(_case(), ctx)
+    assert py.seeds["stimulus"] == zlib.crc32(_case().id.encode())
+    seeded = dataclasses.replace(ctx, seed=77)
+    PythonRunner().run(_case(), seeded)
+    # another runner records the python run's seed, not its own crc32 default
+    assert FakeIverilog().run(_case(), ctx).seeds["stimulus"] == 77
+    # a frozen .xvec keeps the seed it was generated with
+    stim = workdir(ctx, "python", _case().id) / "cfg-init0/stim.xvec"
+    case = _tmp_toy(tmp_path, "", source="vectors/frozen.xvec")
+    shutil.copy(stim, case.test_dir / "vectors/frozen.xvec")
+    assert PythonRunner().run(case, ctx).seeds["stimulus"] == 77
+
+
+def test_python_timeout_is_error(ctx, toy, tmp_path):
+    case = _tmp_toy(
+        tmp_path,
+        """
+        import time
+
+        def gen(ctx):
+            time.sleep(5)
+            yield from ()
+        """,
+    )
+    res = PythonRunner().run(dataclasses.replace(case, timeout_s=1), ctx)
+    assert res.status == "error" and "timeout" in res.reason and "1 s" in res.reason
+
+
+def test_keyboard_interrupt_cancels_and_writes_partial_summary(ctx, monkeypatch):
+    ran: list[str] = []
+
+    class Interrupting(Fake):
+        def run(self, case, ctx):
+            ran.append(case.id)
+            if case.id.endswith(".b"):
+                raise KeyboardInterrupt
+            return super().run(case, ctx)
+
+    monkeypatch.setitem(RUNNERS, "fake", Interrupting)
+    cases = [dataclasses.replace(_sv_case(), id=f"7series.TOYFF.L1.{x}") for x in "abc"]
+    with pytest.raises(KeyboardInterrupt):
+        run_tests(cases, ["fake"], ctx)
+    assert ran == ["7series.TOYFF.L1.a", "7series.TOYFF.L1.b"]  # c was cancelled
+    summary = json.loads((ctx.root / "build/rtl/summary.json").read_text())
+    assert summary["interrupted"] is True
+    assert [r["test_id"] for r in summary["results"]] == ["7series.TOYFF.L1.a"]
+
+
+def test_result_schema_hw_is_closed():
+    import jsonschema
+
+    from xut.runners.base import RunResult
+
+    doc = RunResult("t", "hw", "rtl", "vector", "pass").to_dict()
+    doc["hw"] = {"dna": "1", "serial": "2", "site": "3", "extra": "4"}
+    with pytest.raises(jsonschema.ValidationError):
+        schemas.validate(doc, "result")
+    doc["hw"].pop("extra")
+    schemas.validate(doc, "result")
