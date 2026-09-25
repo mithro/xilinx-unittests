@@ -18,6 +18,8 @@ from pathlib import Path
 
 import requests
 
+from xut.container import SIM_IMAGE
+from xut.container import image_digest as _image_digest
 from xut.docs_fetch import API, UG953
 from xut.paths import VIVADO_SETTINGS, cache_dir, submodule_unisim
 
@@ -81,6 +83,10 @@ class Probe:
         except requests.RequestException as e:
             return False, f"{url}: {e}"
 
+    def image_digest(self, image: str) -> str | None:
+        """The local image ID of `image`, or None if it is not built."""
+        return _image_digest(image)
+
 
 def _safe(name: str, enables: tuple[str, ...], fn: Callable[[], tuple[bool, str]]) -> Check:
     """Run one check's `fn`, turning any exception into a failing `Check` rather than
@@ -99,6 +105,15 @@ def _check_vivado(probe: Probe) -> tuple[bool, str]:
 
 def _check_docker(probe: Probe) -> tuple[bool, str]:
     return probe.command_ok(["docker", "info"], timeout=10)
+
+
+def _check_sim_container(probe: Probe, docker: Check) -> tuple[bool, str]:
+    if not docker.ok:
+        return False, f"{SIM_IMAGE}: docker unavailable"
+    digest = probe.image_digest(SIM_IMAGE)
+    if digest is None:
+        return False, f"{SIM_IMAGE} not built (run: uv run xut container build)"
+    return True, f"{SIM_IMAGE} {digest}"
 
 
 def _check_gh(probe: Probe) -> tuple[bool, str]:
@@ -144,16 +159,21 @@ def _check_fpgas_online(probe: Probe) -> tuple[bool, str]:
 def run_checks(probe: Probe | None = None) -> list[Check]:
     """Run every preflight check, in the order of the task-9 brief's table.
 
-    `docker` only enables `iverilog` and `verilator` — spec rev 3.1's runner
-    vocabulary (controller ruling). cocotb is a test *style* run inside those
-    runners, not a runner itself. The yosys, `openxc7` (yosys + openXC7 nextpnr +
-    prjxray) and `vpr` (F4PGA/VPR) flow containers don't exist yet; later steps add
-    their own checks once they do.
+    The `docker` daemon alone enables nothing: the `sim-container` check (the built
+    xut-sim image, which needs docker) carries `iverilog`, `verilator` and `cocotb`.
+    The yosys, `openxc7` (yosys + openXC7 nextpnr + prjxray) and `vpr` (F4PGA/VPR)
+    flow containers don't exist yet; later steps add their own checks once they do.
     """
     p = probe or Probe()
+    docker = _safe("docker", (), lambda: _check_docker(p))
     return [
         _safe("vivado", ("xsim", "vivado"), lambda: _check_vivado(p)),
-        _safe("docker", ("iverilog", "verilator"), lambda: _check_docker(p)),
+        docker,
+        _safe(
+            "sim-container",
+            ("iverilog", "verilator", "cocotb"),
+            lambda: _check_sim_container(p, docker),
+        ),
         _safe("gh", (), lambda: _check_gh(p)),
         _safe("submodule", ("CI UNISIM",), lambda: _check_submodule(p)),
         _safe("docs", ("catalog",), lambda: _check_docs(p)),

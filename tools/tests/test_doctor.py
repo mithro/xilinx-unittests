@@ -6,6 +6,7 @@ ssh."""
 from click.testing import CliRunner
 
 from xut.cli import main
+from xut.container import SIM_IMAGE
 from xut.doctor import Check, available_runners, run_checks
 from xut.paths import VIVADO_SETTINGS
 
@@ -15,7 +16,8 @@ class FakeProbe:
     them. Missing keys default to "everything succeeds" so a test only needs to
     override what it cares about."""
 
-    def __init__(self, *, exists=None, which=None, command_ok=None, http_ok=None):
+    def __init__(self, *, exists=None, which=None, command_ok=None, http_ok=None, images=None):
+        self._images = images or {}
         self._exists = exists or {}
         self._which = which or {}
         self._command_ok = command_ok or {}
@@ -34,6 +36,9 @@ class FakeProbe:
     def http_ok(self, url, timeout):
         return self._http_ok.get(url, (True, f"GET {url}: 200"))
 
+    def image_digest(self, image):
+        return self._images.get(image, "sha256:fake")
+
 
 class RaisingProbe:
     """Every method raises, to prove `run_checks` never lets a broken probe crash it."""
@@ -50,6 +55,9 @@ class RaisingProbe:
     def http_ok(self, url, timeout):
         raise TimeoutError("hung")
 
+    def image_digest(self, image):
+        raise OSError("docker on fire")
+
 
 def _by_name(checks: list[Check]) -> dict[str, Check]:
     return {c.name: c for c in checks}
@@ -58,7 +66,16 @@ def _by_name(checks: list[Check]) -> dict[str, Check]:
 def test_all_checks_present_and_detail_non_empty():
     checks = run_checks(FakeProbe())
     names = {c.name for c in checks}
-    assert names == {"vivado", "docker", "gh", "submodule", "docs", "pdftotext", "fpgas.online"}
+    assert names == {
+        "vivado",
+        "docker",
+        "sim-container",
+        "gh",
+        "submodule",
+        "docs",
+        "pdftotext",
+        "fpgas.online",
+    }
     for c in checks:
         assert c.detail, f"{c.name} has an empty detail"
 
@@ -70,6 +87,8 @@ def test_all_ok_enables_every_runner():
     assert "xsim" in runners
     assert "vivado" in runners
     assert "iverilog" in runners
+    assert "verilator" in runners
+    assert "cocotb" in runners
     assert "CI UNISIM" in runners
     assert "catalog" in runners
     assert "hw" in runners
@@ -111,13 +130,31 @@ def test_docker_command_failure_reported_not_raised():
     assert "verilator" not in runners
 
 
-def test_docker_enables_only_spec_3_1_runner_names():
-    """Controller ruling: docker only enables iverilog/verilator. cocotb is a test
-    style run inside those runners, not a runner; yosys/nextpnr-xilinx/vpr containers
-    don't exist yet (a later step adds them, under the flow name `openxc7`, not
-    `nextpnr-xilinx`)."""
-    docker = _by_name(run_checks(FakeProbe()))["docker"]
-    assert docker.enables == ("iverilog", "verilator")
+def test_docker_enables_nothing_itself():
+    """The docker daemon alone runs nothing: the `sim-container` check (the built
+    xut-sim image) carries the simulator runners. yosys/openxc7/vpr containers don't
+    exist yet (a later step adds them)."""
+    checks = _by_name(run_checks(FakeProbe()))
+    assert checks["docker"].enables == ()
+    assert checks["sim-container"].enables == ("iverilog", "verilator", "cocotb")
+
+
+def test_docker_ok_but_no_image_disables_simulators():
+    probe = FakeProbe(images={SIM_IMAGE: None})
+    checks = run_checks(probe)
+    sim = _by_name(checks)["sim-container"]
+    assert sim.ok is False
+    assert "uv run xut container build" in sim.detail
+    runners = available_runners(checks)
+    assert "iverilog" not in runners
+    assert "verilator" not in runners
+    assert "cocotb" not in runners
+
+
+def test_sim_container_detail_is_digest():
+    sim = _by_name(run_checks(FakeProbe(images={SIM_IMAGE: "sha256:abc"})))["sim-container"]
+    assert sim.ok is True
+    assert "sha256:abc" in sim.detail
 
 
 def test_docs_falls_back_to_http_when_pdf_missing():
@@ -197,7 +234,7 @@ def test_fpgas_online_uses_command_ok_with_ssh():
 
 def test_raising_probe_never_crashes_run_checks():
     checks = run_checks(RaisingProbe())
-    assert len(checks) == 7
+    assert len(checks) == 8
     for c in checks:
         assert c.ok is False
         assert c.detail
@@ -217,7 +254,7 @@ def test_default_probe_used_when_none_given(monkeypatch):
     monkeypatch.setattr("xut.doctor.Probe", FakeDefaultProbe)
     checks = run_checks()
     assert len(instances) == 1
-    assert len(checks) == 7
+    assert len(checks) == 8
     for c in checks:
         assert c.detail
         assert c.ok is True
