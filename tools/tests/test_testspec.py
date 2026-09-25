@@ -12,12 +12,17 @@ FIX = Path(__file__).parent / "fixtures"
 
 def test_discover_and_select():
     cases = discover(FIX)
-    assert [c.id for c in cases] == ["7series.TOYFF.L1.capture"]
+    assert [c.id for c in cases] == [
+        "7series.TOYFF.L1.capture",
+        "7series.TOYFF.L0.reject",
+        "7series.TOYFF.L1.sv_basic",
+    ]
     c = cases[0]
     assert (c.prim, c.level, c.style, c.group) == ("TOYFF", "L1", "vector", "register")
     assert c.source == "vectors/gen.py:l1_capture"  # kept as written in test.yaml
     assert select(cases, ["7series.TOYFF.*"]) == cases
     assert select(cases, ["TOYFF"]) == cases
+    assert select(cases, ["7series.TOYFF.L1.*"]) == [cases[0], cases[2]]
     assert select(cases, ["FDRE"]) == []
 
 
