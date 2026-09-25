@@ -6,6 +6,17 @@
   "additionalProperties": false,
   "required": ["primitive", "family", "work_unit", "model_library", "measured", "results",
                "findings", "coverage", "notes"],
+  "$defs": {
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^L[0-3]/[a-z]+/[a-z0-9-]+$": {
+          "enum": ["pass", "fail", "error", "skip", "not-run", "unsupported", "n/a"]
+        }
+      }
+    }
+  },
   "properties": {
     "primitive": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
     "family": {"type": "string"},
@@ -17,17 +28,24 @@
       "required": ["tree_hash", "tools"],
       "properties": {
         "tree_hash": {"type": ["string", "null"]},
-        "tools": {"type": "object", "additionalProperties": {"type": "string"}}
+        "tools": {"type": "object", "additionalProperties": {"type": "string"}},
+        "model_sources": {
+          "description": "Every model source `xut status record` has recorded results for (review (b) round 2, N2). The model source is recorded here, never in `tools`.",
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        }
       }
     },
     "results": {
+      "description": "Results against the reference model source (unisim-2025.2).",
+      "$ref": "#/$defs/results"
+    },
+    "results_by_model_source": {
+      "description": "Results against every other model source (e.g. unisim-gh-2020.1), keyed by its name, with the same key shape as `results`. Recording one source never touches another's results.",
       "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {
-        "^L[0-3]/[a-z]+/[a-z0-9-]+$": {
-          "enum": ["pass", "fail", "error", "skip", "not-run", "unsupported", "n/a"]
-        }
-      }
+      "propertyNames": {"minLength": 1, "not": {"const": "unisim-2025.2"}},
+      "additionalProperties": {"$ref": "#/$defs/results"}
     },
     "findings": {
       "type": "array",
