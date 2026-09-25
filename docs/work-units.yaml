@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+family: 7series
+units:
+  flops:        {group: register, primitives: [FDCE, FDPE, FDRE, FDSE]}
+  latches:      {group: register, primitives: [LDCE, LDPE]}
+  ddr_regs:     {group: register, primitives: [IDDR, IDDR_2CLK, ODDR]}
+  luts:         {group: clb, primitives: [LUT1, LUT2, LUT3, LUT4, LUT5, LUT6, LUT6_2, CFGLUT5]}
+  muxf:         {group: clb, primitives: [MUXF7, MUXF8]}
+  carry:        {group: clb, primitives: [CARRY4]}
+  lutram:       {group: clb, primitives: [RAM128X1D, RAM128X1S, RAM256X1S, RAM32M, RAM32X1D, RAM32X1S, RAM32X1S_1, RAM32X2S, RAM64M, RAM64X1D, RAM64X1S, RAM64X1S_1]}
+  rom:          {group: clb, primitives: [ROM32X1, ROM64X1, ROM128X1, ROM256X1]}
+  srl:          {group: clb, primitives: [SRL16E, SRLC32E]}
+  bram:         {group: blockram, primitives: [RAMB18E1, RAMB36E1]}
+  bram_fifo:    {group: blockram, primitives: [FIFO18E1, FIFO36E1]}
+  dsp:          {group: arithmetic, primitives: [DSP48E1]}
+  bufg:         {group: clock, primitives: [BUFG, BUFGCE, BUFGCE_1, BUFGCTRL, BUFGMUX, BUFGMUX_1, BUFGMUX_CTRL]}
+  regional_clk: {group: clock, primitives: [BUFH, BUFHCE, BUFIO, BUFMR, BUFMRCE, BUFR]}
+  mmcm_pll:     {group: clock, primitives: [MMCME2_ADV, MMCME2_BASE, PLLE2_ADV, PLLE2_BASE]}
+  config_jtag:  {group: configuration, primitives: [BSCANE2, CAPTUREE2]}
+  config_id:    {group: configuration, primitives: [DNA_PORT, EFUSE_USR, USR_ACCESSE2]}
+  config_icap:  {group: configuration, primitives: [ICAPE2, FRAME_ECCE2, STARTUPE2]}
+  ibuf:         {group: io, primitives: [IBUF, IBUFDS, IBUFDS_DIFF_OUT, IBUFDS_DIFF_OUT_IBUFDISABLE, IBUFDS_DIFF_OUT_INTERMDISABLE, IBUFDS_IBUFDISABLE, IBUFDS_INTERMDISABLE, IBUF_IBUFDISABLE, IBUF_INTERMDISABLE]}
+  obuf:         {group: io, primitives: [OBUF, OBUFDS, OBUFT, OBUFTDS]}
+  iobuf:        {group: io, primitives: [IOBUF, IOBUFDS, IOBUFDS_DCIEN, IOBUFDS_DIFF_OUT, IOBUFDS_DIFF_OUT_DCIEN, IOBUFDS_DIFF_OUT_INTERMDISABLE, IOBUFDS_INTERMDISABLE, IOBUF_DCIEN, IOBUF_INTERMDISABLE]}
+  weak_drivers: {group: io, primitives: [KEEPER, PULLDOWN, PULLUP]}
+  dci:          {group: io, primitives: [DCIRESET]}
+  delay:        {group: io, primitives: [IDELAYCTRL, IDELAYE2, ODELAYE2]}
+  serdes:       {group: io, primitives: [ISERDESE2, OSERDESE2]}
+  phy_fifo:     {group: io, primitives: [IN_FIFO, OUT_FIFO]}
+  xadc:         {group: advanced, primitives: [XADC]}
+  gt_buf:       {group: advanced, primitives: [IBUFDS_GTE2]}
