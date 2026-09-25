@@ -35,6 +35,7 @@ import bisect
 from dataclasses import dataclass, field
 from itertools import groupby
 
+from xut.errors import XutError
 from xut.formats.xvec import (
     Event,
     Vec,
@@ -59,6 +60,10 @@ GRES_END_PS = 20_000  # glbl.v: GRES_START + GRES_WIDTH
 _NOT_CHANGES = ("sample", "end", "clock_start", "clock_stop")
 
 
+class ValidationError(XutError, ValueError):
+    """An invalid stimulus was used where a valid one is required (``mark``)."""
+
+
 @dataclass
 class Report:
     errors: list[str] = field(default_factory=list)
@@ -76,7 +81,7 @@ class Report:
 
 def _desc(e: Event) -> str:
     if e.op == "set":
-        return f"set in[{e.msb}:{e.lsb}]"
+        return f"set in[{e.msb}]" if e.msb == e.lsb else f"set in[{e.msb}:{e.lsb}]"
     return f"{e.op} {e.target}".strip()
 
 
@@ -86,6 +91,15 @@ def _check_header(vec: Vec, m: DutMap, r: Report) -> None:
             r.errors.append(f"header {key}={vec.header[key]} but the wrapper has {want}")
     if vec.prim != m.prim:
         r.errors.append(f"header prim={vec.prim} but the wrapper is {m.prim}")
+    if vec.cfg != m.cfg:
+        r.errors.append(f"header cfg={vec.cfg} but the wrapper is configuration {m.cfg}")
+    for k in sorted(vec.attrs.keys() | m.attrs.keys()):
+        have, want = vec.attrs.get(k), m.attrs.get(k)
+        if have != want:
+            r.errors.append(
+                f"header attr.{k}={have if have is not None else '(absent)'} but the "
+                f"wrapper has {want if want is not None else '(not set)'}"
+            )
     if vec.settle_ps < ROC_WIDTH_PS + MIN_SEP_PS:
         r.errors.append(
             f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {MIN_SEP_PS} margin"
@@ -244,6 +258,6 @@ def mark(vec: Vec, report: Report) -> None:
     """Record ``report``'s hw renderability in ``vec`` (its ``hw_renderable`` line).
     Refuses a report with errors: an invalid file has no renderability to record."""
     if report.errors:
-        raise ValueError(f"cannot mark an invalid stimulus: {report.errors[0]}")
+        raise ValidationError(f"cannot mark an invalid stimulus: {report.errors[0]}")
     vec.hw_renderable = report.hw_renderable
     vec.hw_reason = "; ".join(report.hw_reasons)

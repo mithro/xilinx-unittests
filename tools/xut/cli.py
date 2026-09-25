@@ -344,12 +344,13 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
     try:
         vec = load(path)
     except XvecError as e:
-        raise click.ClickException(f"{path}: {e}") from e
+        raise XvecError(f"{path}: {e}") from e
     r = validate(vec, DutMap.load(map_path))
     for e in r.errors:
         click.echo(f"error: {e}")
+    if r.errors:  # an invalid file has no renderability (review A4)
+        click.echo("hw_renderable: n/a (invalid)")
+        raise SystemExit(1)
     click.echo(f"hw_renderable: {'yes' if r.hw_renderable else 'no'}")
     for h in r.hw_reasons:
         click.echo(f"  reason: {h}")
-    if r.errors:
-        raise SystemExit(1)
