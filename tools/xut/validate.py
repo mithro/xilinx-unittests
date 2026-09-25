@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Port-class rules for stimulus files (spec §5.1, §5.3) and hw renderability.
+
+``xut.formats.xvec`` checks syntax and co-timing (Ruling S6: co-timed ``set``s on
+disjoint bits are one atomic input change; any other co-timed group must be all
+``simultaneous``). This module adds the §5.1 class rules on top, using the DUT map
+for each ``in_vec`` bit's class, and decides whether the file can be rendered for
+hardware. ``simultaneous`` makes a file legal for simulation but never
+hardware-renderable.
+
+``clock_start``/``clock_stop`` are not changes in their own right: the changes they
+cause are the free-clock edges from ``free_clock_edges``, which are merged into the
+timeline (so a ``clock_start`` does not collide with its own first rising edge).
+"""
+
+from __future__ import annotations
+
+import bisect
+from dataclasses import dataclass, field
+from itertools import groupby
+
+from xut.formats.xvec import Event, Vec, free_clock_edges, free_runs
+from xut.wrap import DutMap
+
+DEFAULT_GAP_PS = 1_000  # sample/change spacing; clears the UNISIM 100 ps clock-to-Q
+DEFAULT_ASYNC_SEP_PS = 1_000
+ROC_WIDTH_PS = 100_000  # glbl.v: GSR released after ROC_WIDTH
+GRES_END_PS = 20_000  # glbl.v: GRES_START + GRES_WIDTH
+
+#: Ops that are not input changes (clock_start/stop act through their computed edges).
+_NOT_CHANGES = ("sample", "end", "clock_start", "clock_stop")
+
+
+@dataclass
+class Report:
+    errors: list[str] = field(default_factory=list)
+    hw_reasons: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+    @property
+    def hw_renderable(self) -> bool:
+        return not self.hw_reasons
+
+
+def _desc(e: Event) -> str:
+    if e.op == "set":
+        return f"set in[{e.msb}:{e.lsb}]"
+    return f"{e.op} {e.target}".strip()
+
+
+def _check_header(vec: Vec, m: DutMap, r: Report) -> None:
+    for key, want in (("nin", m.nin), ("nout", m.nout), ("nclk", m.nclk)):
+        if int(vec.header[key]) != want:
+            r.errors.append(f"header {key}={vec.header[key]} but the wrapper has {want}")
+    if vec.prim != m.prim:
+        r.errors.append(f"header prim={vec.prim} but the wrapper is {m.prim}")
+    if vec.settle_ps < ROC_WIDTH_PS + DEFAULT_GAP_PS:
+        r.errors.append(
+            f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {DEFAULT_GAP_PS} margin"
+        )
+
+
+def _check_free_stops(vec: Vec, r: Report) -> None:
+    """A clock_stop must fall strictly inside a low phase (the testbench's generator then
+    stops without another edge), and a restart must wait for that low phase to end."""
+    for c, start, stop in free_runs(vec):
+        if stop is None:
+            continue
+        high, pos = c.period * c.duty // 100, (stop - start) % c.period
+        if not high < pos:
+            r.errors.append(f"t={stop}: clock_stop {c.name} must fall strictly inside a low phase")
+        restart = next(
+            (
+                e.t
+                for e in vec.events
+                if e.op == "clock_start" and e.target == c.name and e.t > stop
+            ),
+            None,
+        )
+        if restart is not None and restart < stop + (c.period - pos):
+            r.errors.append(
+                f"t={restart}: clock_start {c.name} before its previous low phase ended"
+            )
+
+
+def _check_set_classes(t: int, e: Event, cls: dict[int, str], r: Report) -> set[str]:
+    """Class and hw checks every ``set`` gets, initialisation lines included."""
+    classes = {cls[b] for b in range(e.lsb, e.msb + 1)}
+    if "clock" in classes:
+        r.errors.append(f"t={t}: set touches a clock-class bit")
+    if set(e.value) - {"0", "1"}:
+        r.hw_reasons.append(f"t={t}: x/z stimulus")
+    if "pad" in classes:
+        r.hw_reasons.append(f"t={t}: pad-class port needs the pad harness (spec §7.3)")
+    return classes
+
+
+def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) -> Report:
+    r = Report()
+    _check_header(vec, m, r)
+    if r.errors and any(int(vec.header[k]) != getattr(m, k) for k in ("nin", "nclk")):
+        return r  # bit classes cannot be looked up against the wrong wrapper
+    sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
+    cls = {b.bit: b.cls for b in m.of("in")}
+    _check_free_stops(vec, r)
+    for e in vec.events:
+        if e.t == 0 and e.op == "set":
+            _check_set_classes(0, e, cls, r)
+    # Free-clock edges are changes like any other (review #6c): merged into the timeline,
+    # they take part in the alone, sample-coincidence, sample-gap and async-separation rules.
+    computed = free_clock_edges(vec)
+    auto = {(e.t, e.target, e.value) for e in computed}
+    timed = sorted(
+        [e for e in vec.events if not (e.t == 0 and e.op == "set")] + computed,
+        key=lambda e: e.t,
+    )  # stable: file order within a time
+    edges = [e.t for e in timed if e.op == "edge"]
+    level: dict[str, str] = {c.name: "f" for c in vec.clocks}
+    last_change: int | None = None
+    for t, group in groupby(timed, key=lambda e: e.t):
+        grp = list(group)
+        changes = [e for e in grp if e.op not in _NOT_CHANGES]
+        samples = [e for e in grp if e.op == "sample"]
+        if samples and changes:
+            r.errors.append(f"t={t}: a sample shares its time with a change")
+        for s in samples:
+            if last_change is not None and t - last_change < min_sample_gap_ps:
+                r.errors.append(
+                    f"t={t}: sample {s.target} is {t - last_change} ps after the last "
+                    f"change (< {min_sample_gap_ps})"
+                )
+        lonely = []
+        for e in changes:
+            if e.op in ("edge", "glbl"):
+                if len(changes) > 1:
+                    lonely.append(e)
+            elif e.op == "set":
+                classes = [cls[b] for b in range(e.lsb, e.msb + 1)]
+                n_async = sum(c in ("async", "gate") for c in classes)
+                if n_async and (len(changes) > 1 or n_async > 1 or len(classes) > n_async):
+                    lonely.append(e)
+        if lonely and not all(e.simultaneous for e in changes):
+            r.errors.append(
+                f"t={t}: {', '.join(_desc(e) for e in lonely)} must be alone in its "
+                "event (spec §5.1) or every event at this time marked 'simultaneous'"
+            )
+        if any(e.simultaneous for e in grp):
+            r.hw_reasons.append(f"t={t}: simultaneous events")
+        for e in changes:
+            if e.op == "edge":
+                if vec.clock(e.target).mode == "free":
+                    if (e.t, e.target, e.value) not in auto:
+                        r.errors.append(f"t={t}: explicit edge on free-running {e.target}")
+                elif level[e.target] == e.value:
+                    r.errors.append(f"t={t}: edges on {e.target} must alternate r/f from idle 0")
+                level[e.target] = e.value
+            elif e.op == "set":
+                classes = _check_set_classes(t, e, cls, r)
+                if classes & {"async", "gate"} and not e.simultaneous:
+                    i = bisect.bisect_left(edges, t)
+                    near = [abs(x - t) for x in edges[max(0, i - 1) : i + 1]]
+                    if near and min(near) < sep:
+                        r.errors.append(
+                            f"t={t}: async/gate change {min(near)} ps from a clock "
+                            f"edge (< async_sep_ps={sep})"
+                        )
+            elif e.op == "glbl" and e.target != "GSR":
+                r.hw_reasons.append(f"t={t}: glbl {e.target} is sim-only (spec §5.2)")
+        if changes:
+            last_change = t
+    return r
+
+
+def mark(vec: Vec, report: Report) -> None:
+    """Record ``report``'s hw renderability in ``vec`` (its ``hw_renderable`` line)."""
+    vec.hw_renderable = report.hw_renderable
+    vec.hw_reason = "; ".join(report.hw_reasons)
