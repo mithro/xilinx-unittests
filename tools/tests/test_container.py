@@ -158,6 +158,18 @@ def test_executor_for_mounts_a_work_root_outside_the_repository(tmp_path, monkey
     assert executor_for(inside, repo_root() / "build").mounts == ()
 
 
+@pytest.mark.parametrize("which", ["root", "home", "repo-parent"])
+def test_executor_for_refuses_a_broad_work_root(tmp_path, monkeypatch, which):
+    """The run root is mounted read-write: /, $HOME and repo ancestors are refused."""
+    monkeypatch.delenv("XUT_NATIVE", raising=False)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    root = {"root": Path("/"), "home": home, "repo-parent": repo_root().parent}[which]
+    with pytest.raises(container.ContainerError, match="refusing to mount"):
+        executor_for(ModelSource("toy", tmp_path / "ms"), root)
+
+
 def test_image_digest_missing_image():
     if shutil.which("docker") is None:
         pytest.skip("docker not installed")
