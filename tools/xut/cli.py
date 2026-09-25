@@ -215,6 +215,41 @@ def lint_cmd(branch_mode: bool, base: str) -> None:
         raise SystemExit(1)
 
 
+@main.group("container")
+def container_grp() -> None:
+    """The pinned simulator container (containers/sim)."""
+
+
+@container_grp.command("build")
+def container_build_cmd() -> None:
+    """docker build -t xut-sim:<n> containers/sim (log: .cache/container-build.log)."""
+    from xut import container
+    from xut.paths import cache_dir, repo_root
+
+    log = cache_dir() / "container-build.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    argv = ["docker", "build", "-t", container.SIM_IMAGE, str(repo_root() / "containers/sim")]
+    with log.open("w") as f:
+        try:
+            rc = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT).returncode
+        except FileNotFoundError as e:
+            raise click.ClickException("docker: command not found") from e
+    if rc:
+        raise click.ClickException(f"docker build failed (exit {rc}); see {log}")
+    click.echo(f"{container.SIM_IMAGE} {container.image_digest(container.SIM_IMAGE)}")
+
+
+@container_grp.command("versions")
+def container_versions_cmd() -> None:
+    """Print the pinned tool versions inside xut-sim."""
+    from xut import container
+    from xut.paths import repo_root
+
+    work = repo_root() / "build"
+    for k, v in container.sim_tool_versions(container.DockerExecutor(), work).items():
+        click.echo(f"{k}: {v}")
+
+
 @main.command("doctor")
 def doctor_cmd() -> None:
     """Preflight checks: what's installed, and which runners it enables (spec §15).

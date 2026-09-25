@@ -272,3 +272,79 @@ def test_verilator_still_rejects_procedural_deassign(tmp_path):
         ["verilator", "--lint-only", "toy.v"], cwd=work, log=log, timeout_s=120
     )
     assert rc != 0 and "deassign" in log.read_text()
+
+
+# --- CLI: xut container build / versions -------------------------------------------
+
+
+def test_cli_container_build(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        kw["stdout"].write("#1 building\n")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(container, "image_digest", lambda image=SIM_IMAGE: "sha256:abc")
+    monkeypatch.setattr("xut.paths.cache_dir", lambda: tmp_path)  # keep the real build log
+    result = CliRunner().invoke(main, ["container", "build"])
+    assert result.exit_code == 0, result.output
+    assert calls == [["docker", "build", "-t", SIM_IMAGE, str(repo_root() / "containers/sim")]]
+    assert f"{SIM_IMAGE} sha256:abc" in result.output
+    assert (tmp_path / "container-build.log").read_text() == "#1 building\n"
+
+
+def test_cli_container_build_failure_is_clean_error(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+
+    monkeypatch.setattr("xut.paths.cache_dir", lambda: tmp_path)
+
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 2))
+    result = CliRunner().invoke(main, ["container", "build"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "docker build failed (exit 2)" in result.output
+    assert "container-build.log" in result.output
+
+
+def test_cli_container_build_without_docker_is_clean_error(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+
+    monkeypatch.setattr("xut.paths.cache_dir", lambda: tmp_path)
+
+    def no_docker(argv, **kw):
+        raise FileNotFoundError(2, "No such file or directory", "docker")
+
+    monkeypatch.setattr(subprocess, "run", no_docker)
+    result = CliRunner().invoke(main, ["container", "build"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "docker" in result.output and "not found" in result.output
+
+
+def test_cli_container_versions(monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+
+    seen = []
+
+    def fake_versions(ex, workdir):
+        seen.append((ex, workdir))
+        return {"iverilog": "Icarus Verilog version 12.0 (stable) ()", "cocotb": "2.0.1"}
+
+    monkeypatch.setattr(container, "sim_tool_versions", fake_versions)
+    result = CliRunner().invoke(main, ["container", "versions"])
+    assert result.exit_code == 0, result.output
+    assert result.output == "iverilog: Icarus Verilog version 12.0 (stable) ()\ncocotb: 2.0.1\n"
+    assert isinstance(seen[0][0], DockerExecutor)
+    assert seen[0][1] == repo_root() / "build"
