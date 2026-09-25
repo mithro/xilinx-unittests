@@ -553,7 +553,8 @@ def test_cli_python_iverilog_xsim_on_the_toyff_fixture(work, toy, monkeypatch, c
     monkeypatch.setitem(RUNNERS, "xsim", ToyXsim)
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
     monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": ms)
-    args = ["run", "--runner", "python", "--runner", "iverilog", "--runner", "xsim", "TOYFF"]
+    args = ["run", "--runner", "python", "--runner", "iverilog", "--runner", "xsim"]
+    args += ["--style", "vector", "--style", "sv", "TOYFF"]  # cocotb: test_runner_cocotb
     r = CliRunner().invoke(main, args)
     assert r.exit_code == 0, r.output
     summary = json.loads((work / "build/rtl/summary.json").read_text())
