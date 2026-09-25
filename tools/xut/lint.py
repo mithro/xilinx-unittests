@@ -219,7 +219,11 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     `"no"` or `"unsupported"` must have an `unsupported_reasons` entry (rule
     `runner-reasons`, error): a skip always carries a reason (spec §14). A runner of
     `xut.testspec.DECLARED_RUNNERS` missing from `runners` is a warning
-    (`runner-declared`)."""
+    (`runner-declared`); a runner name outside that list in `runners`,
+    `unsupported_reasons` or `config_exclusions` is an error (`runner-unknown`); an
+    sv/cocotb exclusion glob matching none of the test's configs is a warning
+    (`config-exclusions`; vector configs are only known at run time, where the runner
+    logs the same warning)."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -253,6 +257,32 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
         for t in data["tests"]:
             tid = t["id"]
             reasons = t.get("unsupported_reasons", {})
+            for key in ("runners", "unsupported_reasons", "config_exclusions"):
+                for runner in sorted(set(t.get(key, {})) - set(DECLARED_RUNNERS)):
+                    issues.append(
+                        LintIssue(
+                            rel,
+                            "runner-unknown",
+                            f"{tid}: {key} names unknown runner {runner!r} "
+                            f"(known: {', '.join(DECLARED_RUNNERS)})",
+                            "error",
+                        )
+                    )
+            cfgs = [c["cfg"] for c in t.get("configs", [])]
+            if t["style"] != "vector":  # vector configs come from the generator
+                cfgs = cfgs or ["default"]
+                for runner, globs in t.get("config_exclusions", {}).items():
+                    for g in globs:
+                        if not any(fnmatch.fnmatchcase(c, g) for c in cfgs):
+                            issues.append(
+                                LintIssue(
+                                    rel,
+                                    "config-exclusions",
+                                    f"{tid}: config_exclusions.{runner} glob {g!r} "
+                                    f"matches no configuration of {cfgs}",
+                                    "warning",
+                                )
+                            )
             for runner in DECLARED_RUNNERS:
                 if runner not in t["runners"]:
                     issues.append(

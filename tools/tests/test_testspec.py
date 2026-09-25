@@ -121,3 +121,22 @@ def test_discover_duplicate_id_is_config_error(tmp_path):
 
 def test_discover_no_tests_dir_is_empty(tmp_path):
     assert discover(tmp_path) == []
+
+
+def test_exclusions_for_iverilog_vz_follows_verilator(tmp_path):
+    from xut.testspec import exclusions_for
+
+    _tree(
+        tmp_path,
+        [
+            _entry(
+                "7series.FDRE.L1.a",
+                runners={"python": "yes", "verilator": "yes"},
+                config_exclusions={"verilator": {"*_x": "x inputs"}, "hw": {"*": "no"}},
+            )
+        ],
+    )
+    c = discover(tmp_path)[0]
+    assert exclusions_for(c, "iverilog-vz") == {"*_x": "x inputs"}
+    assert exclusions_for(c, "hw") == {"*": "no"}
+    assert exclusions_for(c, "xsim") == {}
