@@ -136,8 +136,8 @@ def test_end_to_end_python_on_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
     r = _run("TOYFF", "--runner", "python")
     assert r.exit_code == 0, r.output
-    # two vector tests run python; the sv test gets a declared-unsupported skip
-    assert "progress: done=3 total=3" in r.output
+    # two vector tests run python; the sv and cocotb tests get declared-unsupported skips
+    assert "progress: done=4 total=4" in r.output
     res = tmp_path / "build/rtl/python/unisim-test/7series.TOYFF.L1.capture/result.json"
     assert res.is_file()
     assert (tmp_path / "build/rtl/summary.json").is_file()
