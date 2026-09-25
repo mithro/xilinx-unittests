@@ -14,15 +14,27 @@ from pathlib import Path
 
 import yaml
 
+#: A generated catalog file's basename (before `.yaml`) is exactly a
+#: primitive name: uppercase letters, digits and `_` only, never a `.`.
+#: `<PRIM>.overrides.yaml` is a work unit's, never infra's, but a naive
+#: `catalog/7series/*.yaml` glob also matches it, because fnmatch's `*`
+#: matches `.` too. Matching the primitive-name charset one character at a
+#: time (no `*`) excludes any name containing a `.` or a lowercase letter,
+#: which rules out `*.overrides.yaml` for every length up to the bound
+#: below (27 is the longest current 7-series name).
+_MAX_PRIM_NAME_LEN = 40
+_PRIM_NAME_CHAR = "[A-Z0-9_]"
+
 #: Paths that belong to no work unit: shared tooling, generated catalog
-#: entries, docs infra, etc. (spec §10). Populated by `load_units`.
+#: entries, docs infra, etc. (spec §10). A static constant, independent of
+#: any particular `docs/work-units.yaml`.
 INFRA_PATHS: list[str] = [
     "tools/**",
     "hw/**",
     "containers/**",
     ".github/**",
     "third_party/**",
-    "catalog/7series/*.yaml",
+    *(f"catalog/7series/{_PRIM_NAME_CHAR * n}.yaml" for n in range(1, _MAX_PRIM_NAME_LEN + 1)),
     "docs/work-units.yaml",
     "docs/review/**",
     "docs/templates/**",
@@ -94,3 +106,12 @@ def unit_for_branch(branch: str) -> str | None:
     """Return the work-unit name for a `unit/<family>/<unit>` branch, else None."""
     m = _UNIT_BRANCH.match(branch)
     return m.group("unit") if m else None
+
+
+def branch_slug(branch: str) -> str:
+    """Return `branch` with every `/` replaced by `-` (AGENTS.md §2, §6).
+
+    Used to name a branch's own log entries:
+    `log/<YYYY-MM-DDTHHMM>-<branch_slug(branch)>-<slug>.md`.
+    """
+    return branch.replace("/", "-")
