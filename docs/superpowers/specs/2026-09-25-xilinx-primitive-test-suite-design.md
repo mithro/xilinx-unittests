@@ -1,6 +1,6 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3.1 (2026-09-25). Rev 2 incorporated the technical and
+- Status: revision 3.2 (2026-09-26). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
@@ -14,6 +14,11 @@
   Step-1 review wording fixes: the shared model is `_common/<unit>.py`, one
   per work unit (§10, §13.1), and `test.yaml` runner values are the quoted
   strings `"yes"`, `"no"` or `"unsupported"` (§11).
+  Rev 3.2 records two step-2 rulings. In §5.3, co-timed `set`s on disjoint
+  bits are one atomic input change and need no `simultaneous` marking, and
+  marking is all-or-nothing (S6). In §5.1, `hw_renderable` means
+  order-renderable on the stepped harness, under the conditions listed there
+  (S8′).
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -164,6 +169,39 @@ generator how the port may be driven and tells the harness how to realise it.
 | `pad` | IBUF.I, OBUF.O | Only realisable on hardware through the pad harness (§7.3) |
 | `drp` | MMCM/PLL/XADC DADDR/DI/DO/DEN/DWE/DRDY | Checked at transaction level (§5.5) |
 
+**Hardware renderability (ruling S8′).** `hw_renderable: yes` means
+*order-renderable*. The stepped harness (§7.1) renders the order of events,
+not their picosecond times: it re-times every event with a gap of N system
+cycles. That preserves behaviour only under these conditions, and the
+validator marks a file `hw_renderable: no`, with the reason, when any of them
+fails:
+
+- **No free-running clock.** A `mode=free` clock keeps running while the
+  harness inserts its system cycles, so re-timing changes how many free-clock
+  edges fall between two events. Any file that declares a `mode=free` clock is
+  `hw_renderable: no` ("free-running clocks need real-time rendering") until
+  step 3 defines real-time rendering. The separation rules against free-clock
+  edges still apply in simulation.
+- **Model-internal delays are shorter than the event gap.** Stepped rendering
+  preserves order only when every model-internal delay of the primitive is
+  shorter than the smallest gap between two distinct event times. Every such
+  gap must therefore be at least max(`async_sep_ps`, `min_event_gap_ps`).
+  `min_event_gap_ps` is an optional per-primitive catalog override. It
+  defaults to 1 ns, which clears FDRE's 100 ps clock-to-Q. A unit whose
+  primitive has longer internal delays must set it: for IDELAYE2, 31 taps
+  × 78 ps plus DELAY_D is about 2.4 ns. The stimulus builder uses the same
+  gap.
+- **No pad-class or inout port** on the wrapper, input or output. These are
+  realisable only through the pad harness (§7.3).
+- **No `glbl` event.** GTS and GRESTORE are sim-only (§5.2). GSR needs the
+  GSR-immune harness (§7.2), so until step 3 builds it, a GSR event also makes
+  the file `hw_renderable: no`.
+- **No x/z stimulus and no `simultaneous` events.**
+
+The validator also reports whether the file drives any `x` or `z`
+(`x_inputs`). The 2-state runners, Verilator and hw, skip such a stimulus
+with that reason; they never run it.
+
 ### 5.2 DUT wrapper
 
 `xut wrap` generates one wrapper per *test configuration* (a primitive plus an
@@ -204,9 +242,19 @@ t=126000  sample S1
   max(ROC_WIDTH, GRES_START+GRES_WIDTH) from `glbl`, plus margin.
 - A `mode=free` clock runs continuously. Primitives that measure their input
   clock, such as the MMCM and PLL, need one.
-- Events at the same time are allowed in simulation only if the file marks
-  them `simultaneous`. The generator validates the class rules from §5.1 and
-  marks the file `hw_renderable: yes|no`, with a reason when it is not.
+- **Co-timed events (ruling S6).** Several `set` events at the same time
+  on *disjoint* bit ranges are one atomic input change, like one multi-bit
+  `set` line. They need no marking and remain hardware-renderable. Any other
+  events that share a time are allowed in simulation only if every one of
+  them is marked `simultaneous`. Examples are an edge with anything else, or
+  a sample with a change. Marking is all-or-nothing: a mix of marked and
+  unmarked events at one time is an error, disjoint `set`s included, and so
+  is a lone event marked `simultaneous`. Overlapping `set` ranges at one time
+  are always an error.
+- The generator validates the class rules from §5.1 and marks the file
+  `hw_renderable: yes|no`, with a reason when it is not. The §5.1
+  hardware-renderability conditions apply, and a `simultaneous` event always
+  makes the file `hw_renderable: no`.
 - `sample <label>` records out_vec.
 
 The trace has one line per sample:
