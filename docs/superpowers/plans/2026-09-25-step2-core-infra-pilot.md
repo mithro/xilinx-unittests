@@ -4971,6 +4971,9 @@ def test_vztrig_golden_fragments():
     out = rewrite(analyze(FIX / "vz_trig.v", "VZTRIG", GLBL))
     assert "reg q__base; reg [1:0] q__ovr_sel = 2'd0; wire q;" in out
     assert "else begin if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end end" in out
+    assert "always @(posedge C) q__base <= D;" in out
+    assert ("assign q = (q__ovr_sel == 2'd0) ? q__base : (q__ovr_sel == 2'd1) ? q__ovr_1 : "
+            "(q__ovr_sel == 2'd2) ? q__ovr_2 : q__ovr_3;") in out
 
 
 def test_deassign_in_then_arm_keeps_its_else():
@@ -4978,8 +4981,7 @@ def test_deassign_in_then_arm_keeps_its_else():
     assert ("if (C2) begin if (q__ovr_sel != 1'd0) begin q__base = q; q__ovr_sel = 1'd0; end end"
             " else q__ovr_sel = 1'd1;") in out
     assert "always @(posedge C) q__base <= D;" in out
-    assert ("assign q = (q__ovr_sel == 2'd0) ? q__base : (q__ovr_sel == 2'd1) ? q__ovr_1 : "
-            "(q__ovr_sel == 2'd2) ? q__ovr_2 : q__ovr_3;") in out
+    assert "assign q = (q__ovr_sel == 1'd0) ? q__base : q__ovr_1;" in out  # one override
 
 
 def test_delay_and_blocking_form_preserved():
