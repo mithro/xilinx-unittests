@@ -29,22 +29,32 @@ RUNNER_ORDER = ("python", "xsim", "iverilog", "verilator", "hw")
 #: Test levels, in column order.
 LEVELS = ("L0", "L1", "L2", "L3")
 
-#: Compact one-character marks for a runner's aggregated result at one level.
+#: Precedence when several flows of one runner disagree (worst/most-informative
+#: first), and the source of truth for the PROGRESS.md legend: "fail beats error
+#: beats pass" (brief), extended to cover every RESULT_VALUES entry (controller
+#: ruling on Task 7 concern 1). A deliberate `skip` (skipped with a reason) and a
+#: `not-run` cell (never attempted) mean different things and get distinct marks;
+#: `skip` outranks `not-run` because a recorded skip is more informative than no
+#: record at all. A runner with no matching `results` entry at all is treated as
+#: `not-run`.
+_PRECEDENCE = ("fail", "error", "pass", "skip", "not-run", "unsupported", "n/a")
+
+#: Compact one-character marks for a runner's aggregated result at one level, one
+#: per `_PRECEDENCE` entry (== one per `RESULT_VALUES` entry: all 7 are distinct).
 _MARKS = {
     "fail": "✗",
     "error": "!",
     "pass": "✓",
+    "skip": "s",
+    "not-run": "–",
     "unsupported": "∅",
     "n/a": "·",
-    "skip": "–",
 }
-_NOT_RUN_MARK = "–"
+_NOT_RUN_MARK = _MARKS["not-run"]
 
-#: Precedence when several flows of one runner disagree (worst/most-informative first):
-#: "fail beats error beats pass" (brief), extended to the remaining RESULT_VALUES so
-#: every legal `results` value maps to exactly one mark. `skip` shares the `not-run`
-#: mark: neither one is a real measurement.
-_PRECEDENCE = ("fail", "error", "pass", "unsupported", "n/a", "skip")
+#: The PROGRESS.md legend line: every mark, in `_PRECEDENCE` order, labelled with
+#: the `results` value it stands for.
+_LEGEND = "Marks: " + ", ".join(f"`{_MARKS[v]}` {v}" for v in _PRECEDENCE) + "."
 
 
 def _schema() -> dict:
@@ -164,7 +174,7 @@ def render_progress(statuses: list[dict], units: dict) -> str:
     for s in statuses:
         by_group.setdefault(group_of.get(s["primitive"], "?"), []).append(s)
 
-    lines = ["# Progress", ""]
+    lines = ["# Progress", "", _LEGEND, ""]
     lines.append("| Group | Primitives | L0 pass | L1 pass | L2 pass | L3 pass |")
     lines.append("|---|---|---|---|---|---|")
     for group in sorted(by_group):
