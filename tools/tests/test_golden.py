@@ -99,19 +99,35 @@ def test_registry_imports_digit_package():
 # --- replay semantics ------------------------------------------------------------------
 
 
-def test_edges_before_gsr_release_do_not_capture():
-    # GSR holds until ROC_WIDTH (100 ns): a rising edge at 60 ns with D=0 leaves INIT.
-    text = VEC.replace("settle_ps=120000", "settle_ps=50000").replace(
-        "t=120000 sample S0\n",
-        "t=60000 edge clk0 r\nt=65000 edge clk0 f\nt=120000 sample S0\n",
-    )
-    trace, reach = replay(ToyDff, loads(text), MAP)
-    assert trace.samples["S0"]["Q"] == "1"
+def test_gsr_released_before_first_event():
+    # validate() forces settle_ps past ROC_WIDTH, so glbl.v's GSR release (100 ns) always
+    # falls before the first event: power_on, inputs driven to 0, then GSR=0.
+    calls = []
+
+    class Rec(ToyDff):
+        def power_on(self):
+            calls.append("power_on")
+            super().power_on()
+
+        def set_input(self, port, value):
+            calls.append(f"set {port}={value}")
+            super().set_input(port, value)
+
+        def glbl(self, signal, value):
+            calls.append(f"glbl {signal}={value}")
+            super().glbl(signal, value)
+
+        def clock_edge(self, port, rising):
+            calls.append(f"edge {port}")
+            super().clock_edge(port, rising)
+
+    replay(Rec, loads(VEC), MAP)
+    assert calls[:4] == ["power_on", "set D=0", "glbl GSR=0", "edge C"]
 
 
 def test_free_clock_edges_are_expanded():
     text = """\
-# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=100000 seed=0
+# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0
 clock clk0 period=10000 phase=0 duty=50 mode=free
 t=102000 set in[0]=1
 t=112000 sample S0
@@ -136,6 +152,33 @@ def test_unchanged_port_not_reached():
     assert "port:D" not in reach.bins()
 
 
+def test_invalid_stimulus_is_refused():
+    from xut.golden import InvalidStimulus
+
+    # sample 500 ps after a clock edge: closer than the 1 ns minimum sample gap
+    text = VEC.replace("t=129000 sample S2", "t=128500 sample S2")
+    with pytest.raises(InvalidStimulus, match="S2") as exc:
+        replay(ToyDff, loads(text), MAP)
+    assert "refusing to replay" in str(exc.value)
+
+
+def test_hw_unrenderable_but_valid_stimulus_replays():
+    from xut.validate import validate
+
+    # D changes 500 ps before a free-clock edge: legal for simulation, hw_renderable no.
+    text = """\
+# xut-vec 2  prim=TOYFF cfg=c nin=1 nout=1 nclk=1 settle_ps=101000 seed=0
+clock clk0 period=10000 phase=0 duty=50 mode=free
+t=109500 set in[0]=1
+t=112000 sample S0
+"""
+    vec = loads(text)
+    report = validate(vec, MAP)
+    assert report.ok and not report.hw_renderable
+    trace, _ = replay(ToyDff, vec, MAP)
+    assert trace.samples["S0"]["Q"] == "1"
+
+
 def test_trace_header():
     trace, _ = replay(ToyDff, loads(VEC), MAP)
     assert trace.header["model"] == "golden" and trace.header["prim"] == "TOYFF"
@@ -143,8 +186,16 @@ def test_trace_header():
 
 
 def test_prim_mismatch_is_loud():
-    with pytest.raises(ValueError, match="primitive mismatch"):
+    from xut.golden import InvalidStimulus
+
+    with pytest.raises(InvalidStimulus, match="prim=OTHER"):
         replay(ToyDff, loads(VEC.replace("prim=TOYFF", "prim=OTHER")), MAP)
+
+    class Other(ToyDff):
+        PRIM = "OTHER"
+
+    with pytest.raises(ValueError, match="primitive mismatch"):
+        replay(Other, loads(VEC), MAP)
 
 
 def test_model_inputs_must_match_map():
