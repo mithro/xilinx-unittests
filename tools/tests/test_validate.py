@@ -265,3 +265,82 @@ def test_mixed_line_is_accepted_inside_a_simultaneous_group(fdce_map):
 def test_header_async_sep_below_minimum(fdce_map):
     v = loads(HDR.replace("seed=0", "seed=0 async_sep_ps=500"))
     assert any("below the minimum 1000" in e for e in validate(v, fdce_map).errors)
+
+
+# --- Ruling S8: hw_renderable is order-renderable; free clocks are the exception.
+
+FREE = HDR.replace("mode=stepped", "mode=free") + "t=120000 clock_start clk0\n"
+
+
+def test_close_spacing_on_stepped_clocks_stays_hw_renderable(fdce_map):
+    # 1 ns spacing everywhere: the stepped harness re-times events, only order matters.
+    r = validate(
+        _v(
+            "t=120000 set in[2]=1\nt=121000 edge clk0 r\nt=122000 set in[1]=1\n"
+            "t=123000 glbl GSR=1\nt=124000 edge clk0 f\nt=125000 sample S0\n"
+        ),
+        fdce_map,
+    )
+    assert r.errors == [] and r.hw_renderable
+
+
+def test_data_change_near_free_clock_edge_is_sim_only(fdce_map):
+    r = validate(loads(FREE + "t=125500 set in[2]=1\nt=127000 sample S0\n"), fdce_map)
+    assert r.errors == []
+    assert r.hw_reasons == [
+        "t=125500: set in[2:2] is 500 ps from free-running clk0 edge f at t=125000 "
+        "(< async_sep_ps=1000; spec §5.1, Ruling S8)"
+    ]
+
+
+def test_data_change_clear_of_free_clock_edges_is_hw_renderable(fdce_map):
+    r = validate(loads(FREE + "t=127500 set in[2]=1\nt=129000 sample S0\n"), fdce_map)
+    assert r.errors == [] and r.hw_renderable
+
+
+def test_free_clock_separation_uses_the_recorded_async_sep(fdce_map):
+    body = "t=127000 set in[2]=1\nt=128500 sample S0\n"  # 2000 ps from 125000 f
+    assert validate(loads(FREE + body), fdce_map).hw_renderable
+    v = loads(FREE.replace("seed=0", "seed=0 async_sep_ps=2500") + body)
+    r = validate(v, fdce_map)
+    assert r.errors == [] and any("< async_sep_ps=2500" in x for x in r.hw_reasons)
+
+
+def test_gsr_near_free_clock_edge_is_error_and_sim_only(fdce_map):
+    r = validate(loads(FREE + "t=125500 glbl GSR=1\nt=127000 sample S0\n"), fdce_map)
+    assert any("GSR change 500 ps from a clock edge" in e for e in r.errors)
+    assert any("glbl GSR is 500 ps from free-running clk0" in x for x in r.hw_reasons)
+    assert not r.hw_renderable
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_gsr_is_async_for_stepped_edge_separation(fdce_map, before):
+    body = (
+        "t=121000 glbl GSR=1\nt=121500 edge clk0 r\n"
+        if before
+        else "t=121000 edge clk0 r\nt=121500 glbl GSR=1\n"
+    )
+    errors = validate(_v(body), fdce_map).errors
+    assert errors == [
+        "t=121%s: GSR change 500 ps from a clock edge (< async_sep_ps=1000)"
+        % ("000" if before else "500")
+    ]
+
+
+def test_in_memory_parser_illegal_cotiming_is_an_error(fdce_map):
+    v = _raw(
+        Event(121000, "set", "in", 0, 0, "1", simultaneous=True),
+        Event(121000, "set", "in", 2, 2, "1"),
+        Event(122000, "sample", "S0"),
+    )
+    r = validate(v, fdce_map)
+    assert any(e.startswith("structure: t=121000: mixed 'simultaneous'") for e in r.errors)
+    assert "event(s) #2" in r.errors[0]
+    assert not r.hw_renderable
+    with pytest.raises(ValueError, match="invalid stimulus"):
+        mark(v, r)
+
+
+def test_in_memory_time_order_is_checked(fdce_map):
+    v = _raw(Event(122000, "sample", "S0"), Event(121000, "set", "in", 2, 2, "1"))
+    assert any("time goes backwards" in e for e in validate(v, fdce_map).errors)

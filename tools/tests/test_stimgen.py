@@ -215,11 +215,12 @@ def test_gencontext_records_specs():
     assert ctx.rng.random() == GenContext("7series", "FDRE", seed=5).rng.random()
 
 
-@pytest.mark.parametrize("prim", ["FDCE", "FDPE", "FDRE", "BUFGCTRL"])
+@pytest.mark.parametrize("prim", ["FDCE", "FDPE", "FDRE", "BUFGCTRL", "FIFO18E1", "SRLC32E"])
 @pytest.mark.parametrize("seed", range(20))
 def test_random_builder_programs_validate(prim, seed):
     """Review Focus 3: whatever sequence of calls a generator makes, the builder's
-    output parses back unchanged and validates with no errors."""
+    output parses back unchanged and validates with no errors; and it is hardware
+    renderable exactly when no simultaneous() group was used (Ruling S8)."""
     import random
 
     rng = random.Random(seed)
@@ -228,10 +229,17 @@ def test_random_builder_programs_validate(prim, seed):
     asyncs = [p for p in m.in_ports() if m.cls_of(p) in ("async", "gate")]
     clocks = list(dict.fromkeys(bit.port for bit in m.of("clk")))
     level = dict.fromkeys(clocks, False)
+    width = {p: len(m.port_bits("in", p)) for p in m.in_ports()}
+
+    def rand(p):
+        return rng.randrange(1 << width[p])  # multi-bit data values (FIFO18E1.DI, SRLC32E.A)
+
+    b.init(**{p: rand(p) for p in rng.sample(m.in_ports(), rng.randint(0, len(m.in_ports())))})
+    used_sim = False
     for _ in range(40):
         op = rng.choice(["set", "async", "cycle", "edge", "sample", "wait", "glbl", "sim"])
         if op == "set" and data:
-            b.set(**{p: rng.randint(0, 1) for p in rng.sample(data, rng.randint(1, len(data)))})
+            b.set(**{p: rand(p) for p in rng.sample(data, rng.randint(1, len(data)))})
         elif op == "async" and asyncs:
             p = rng.choice(asyncs)
             b.async_(p, 1 - b.value(p))
@@ -252,7 +260,28 @@ def test_random_builder_programs_validate(prim, seed):
         elif op == "sim" and clocks and asyncs:
             c, p = rng.choice(clocks), rng.choice(asyncs)
             level[c] = not level[c]
+            used_sim = True
             with b.simultaneous():
                 b.edge(c, level[c])
                 b.async_(p, 1 - b.value(p))
-    _check(b, m)
+    _, r = _check(b, m)
+    assert r.hw_renderable == (not used_sim), r.hw_reasons
+
+
+def test_glbl_is_spaced_like_async():
+    b, m = _b(async_sep_ps=2500)
+    b.edge("C", True)
+    b.glbl("GSR", 1)
+    b.edge("C", False)
+    b.async_("CLR", 1)
+    b.glbl("GSR", 0)
+    v, r = _check(b, m)
+    assert r.hw_renderable
+    ts = [(e.t, e.op) for e in v.events if e.op != "end"]
+    assert ts == [
+        (120000, "edge"),
+        (122500, "glbl"),
+        (125000, "edge"),
+        (127500, "set"),
+        (130000, "glbl"),
+    ]

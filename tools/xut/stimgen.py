@@ -166,13 +166,22 @@ class VecBuilder:
             self._after(self._last_change + self.sep)
 
     def glbl(self, sig: str, value: int) -> None:
-        """Drive glbl ``sig`` (GSR is hw-renderable; GTS/GRESTORE are sim-only)."""
+        """Drive glbl ``sig`` alone (GSR is hw-renderable; GTS/GRESTORE are sim-only).
+
+        Spaced like ``async_`` (Ruling S8: GSR is an async input): at least
+        ``async_sep_ps`` from the clock edges and async changes before and after it.
+        """
         if sig not in ("GSR", "GTS", "GRESTORE") or value not in (0, 1):
             raise BuilderError(f"bad glbl event {sig}={value}")
-        self._alone_start()
+        if self._sim is None:
+            self._alone_start()
+            if self._last_edge is not None:
+                self._after(self._last_edge + self.sep)
         self._emit("glbl", sig, value=str(value))
         self._last_change = self.t
         self._alone_end()
+        if self._sim is None:
+            self._after(self._last_change + self.sep)
 
     def edge(self, port: str, rising: bool) -> None:
         """One edge on stepped clock ``port``; edges alternate from the idle 0."""

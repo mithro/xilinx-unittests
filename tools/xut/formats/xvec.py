@@ -276,11 +276,28 @@ def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: 
     raise XvecError(f"unknown op {op!r}", n)
 
 
-def _check_structure(vec: Vec, event_lines: list[int]) -> None:
+def check_structure(vec: Vec) -> None:
+    """The parser's structural rules (time order, ``end`` last, co-timing and
+    ``simultaneous`` marking) for a ``Vec`` built in memory rather than parsed.
+    Raises ``XvecError`` naming events by 1-based position (``event #N``)."""
+    _check_structure(vec, None)
+
+
+def _check_structure(vec: Vec, event_lines: list[int] | None) -> None:
     ev = vec.events
+    if event_lines is None:
+        unit, names, lines = "event", [f"#{i + 1}" for i in range(len(ev))], [None] * len(ev)
+    else:
+        unit, names, lines = "line", [str(n) for n in event_lines], list(event_lines)
+
+    def at(i: int) -> str:
+        return "" if event_lines is not None else f" ({unit} {names[i]})"
+
     for i, e in enumerate(ev):
+        if i and e.t < ev[i - 1].t:
+            raise XvecError(f"time goes backwards ({e.t} < {ev[i - 1].t}){at(i)}", lines[i])
         if e.op == "end" and i != len(ev) - 1:
-            raise XvecError("'end' must be the last event", event_lines[i])
+            raise XvecError(f"'end' must be the last event{at(i)}", lines[i])
 
     groups: dict[int, list[int]] = {}
     for i, e in enumerate(ev):
@@ -291,18 +308,17 @@ def _check_structure(vec: Vec, event_lines: list[int]) -> None:
             i = idxs[0]
             if ev[i].simultaneous:
                 raise XvecError(
-                    f"t={t}: 'simultaneous' on an event that is alone at its time",
-                    event_lines[i],
+                    f"t={t}: 'simultaneous' on an event that is alone at its time{at(i)}",
+                    lines[i],
                 )
             continue
-        unmarked = [event_lines[i] for i in idxs if not ev[i].simultaneous]
+        unmarked = [names[i] for i in idxs if not ev[i].simultaneous]
         if 0 < len(unmarked) < len(idxs):
             # Mixed marking is ambiguous (were the unmarked events meant to be at the
             # same instant or not?) and is refused for every group, disjoint sets included.
-            at = ", ".join(str(n) for n in unmarked)
             raise XvecError(
                 f"t={t}: mixed 'simultaneous' marking: mark every event at this time or "
-                f"none (unmarked at line(s) {at})",
+                f"none (unmarked at {unit}(s) {', '.join(unmarked)})",
             )
         if all(ev[i].op == "set" for i in idxs):
             # Disjoint 'set' ranges commute as one atomic input change and need no
@@ -313,17 +329,16 @@ def _check_structure(vec: Vec, event_lines: list[int]) -> None:
                     lsb_b, msb_b = ev[idxs[b]].lsb, ev[idxs[b]].msb
                     if lsb_a <= msb_b and lsb_b <= msb_a:
                         raise XvecError(
-                            f"t={t}: overlapping 'set' bit ranges at lines "
-                            f"{event_lines[idxs[a]]} and {event_lines[idxs[b]]}",
+                            f"t={t}: overlapping 'set' bit ranges at {unit}s "
+                            f"{names[idxs[a]]} and {names[idxs[b]]}",
                         )
             continue
         # A non-'set' event sharing this t with anything else (or a 'set' mixed
         # with a non-'set') requires 'simultaneous' on every event at this t.
         if unmarked:
-            at = ", ".join(str(n) for n in unmarked)
             raise XvecError(
                 f"t={t}: co-timed events require 'simultaneous' on every event at "
-                f"this time (unmarked at line(s) {at})",
+                f"this time (unmarked at {unit}(s) {', '.join(unmarked)})",
             )
 
 
