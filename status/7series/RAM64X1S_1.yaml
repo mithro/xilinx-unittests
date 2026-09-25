@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: RAM64X1S_1
+family: 7series
+work_unit: lutram
+model_library: retarget
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:A0
+  - port:A1
+  - port:A2
+  - port:A3
+  - port:A4
+  - port:A5
+  - port:D
+  - port:WCLK
+  - port:WE
+  - attr:INIT
+  - attr:IS_WCLK_INVERTED
+notes: ''

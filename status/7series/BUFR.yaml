@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BUFR
+family: 7series
+work_unit: regional_clk
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:CE
+  - port:CLR
+  - port:I
+  - attr:BUFR_DIVIDE=BYPASS
+  - attr:BUFR_DIVIDE=1
+  - attr:BUFR_DIVIDE=2
+  - attr:BUFR_DIVIDE=3
+  - attr:BUFR_DIVIDE=4
+  - attr:BUFR_DIVIDE=5
+  - attr:BUFR_DIVIDE=6
+  - attr:BUFR_DIVIDE=7
+  - attr:BUFR_DIVIDE=8
+  - attr:SIM_DEVICE=7SERIES
+notes: ''

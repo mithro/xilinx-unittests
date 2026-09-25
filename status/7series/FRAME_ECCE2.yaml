@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: FRAME_ECCE2
+family: 7series
+work_unit: config_icap
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CRCERROR
+  - port:ECCERROR
+  - port:ECCERRORSINGLE
+  - port:FAR
+  - port:SYNBIT
+  - port:SYNDROME
+  - port:SYNDROMEVALID
+  - port:SYNWORD
+  - attr:FARSRC=EFAR
+  - attr:FARSRC=FAR
+  - attr:FRAME_RBT_IN_FILENAME
+notes: ''

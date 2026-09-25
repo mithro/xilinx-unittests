@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IDELAYCTRL
+family: 7series
+work_unit: delay
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:RDY
+  - port:REFCLK
+  - port:RST
+  - attr:SIM_DEVICE
+notes: ''

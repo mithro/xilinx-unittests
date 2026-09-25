@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BUFGCE
+family: 7series
+work_unit: bufg
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:CE
+  - port:I
+  - attr:CE_TYPE=SYNC
+  - attr:CE_TYPE=ASYNC
+  - attr:CE_TYPE=HARDSYNC
+  - attr:IS_CE_INVERTED
+  - attr:IS_I_INVERTED
+  - attr:SIM_DEVICE
+  - attr:STARTUP_SYNC
+notes: ''

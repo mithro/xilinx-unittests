@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: FIFO18E1
+family: 7series
+work_unit: bram_fifo
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:ALMOSTEMPTY
+  - port:ALMOSTFULL
+  - port:DO
+  - port:DOP
+  - port:EMPTY
+  - port:FULL
+  - port:RDCOUNT
+  - port:RDERR
+  - port:WRCOUNT
+  - port:WRERR
+  - port:DI
+  - port:DIP
+  - port:RDCLK
+  - port:RDEN
+  - port:REGCE
+  - port:RST
+  - port:RSTREG
+  - port:WRCLK
+  - port:WREN
+  - attr:ALMOST_EMPTY_OFFSET
+  - attr:ALMOST_FULL_OFFSET
+  - attr:DATA_WIDTH=4
+  - attr:DATA_WIDTH=9
+  - attr:DATA_WIDTH=18
+  - attr:DATA_WIDTH=36
+  - attr:DO_REG=1
+  - attr:DO_REG=0
+  - attr:EN_SYN=FALSE
+  - attr:EN_SYN=TRUE
+  - attr:FIFO_MODE=FIFO18
+  - attr:FIFO_MODE=FIFO18_36
+  - attr:FIRST_WORD_FALL_THROUGH=FALSE
+  - attr:FIRST_WORD_FALL_THROUGH=TRUE
+  - attr:INIT
+  - attr:IS_RDCLK_INVERTED
+  - attr:IS_RDEN_INVERTED
+  - attr:IS_RSTREG_INVERTED
+  - attr:IS_RST_INVERTED
+  - attr:IS_WRCLK_INVERTED
+  - attr:IS_WREN_INVERTED
+  - attr:SIM_DEVICE=7SERIES
+  - attr:SRVAL
+notes: ''

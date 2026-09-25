@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: STARTUPE2
+family: 7series
+work_unit: config_icap
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CFGCLK
+  - port:CFGMCLK
+  - port:EOS
+  - port:PREQ
+  - port:CLK
+  - port:GSR
+  - port:GTS
+  - port:KEYCLEARB
+  - port:PACK
+  - port:USRCCLKO
+  - port:USRCCLKTS
+  - port:USRDONEO
+  - port:USRDONETS
+  - attr:PROG_USR=FALSE
+  - attr:PROG_USR=TRUE
+  - attr:SIM_CCLK_FREQ
+notes: ''

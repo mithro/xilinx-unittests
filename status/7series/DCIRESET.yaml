@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: DCIRESET
+family: 7series
+work_unit: dci
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:LOCKED
+  - port:RST
+notes: ''

@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: OSERDESE2
+family: 7series
+work_unit: serdes
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:OFB
+  - port:OQ
+  - port:SHIFTOUT1
+  - port:SHIFTOUT2
+  - port:TBYTEOUT
+  - port:TFB
+  - port:TQ
+  - port:CLK
+  - port:CLKDIV
+  - port:D1
+  - port:D2
+  - port:D3
+  - port:D4
+  - port:D5
+  - port:D6
+  - port:D7
+  - port:D8
+  - port:OCE
+  - port:RST
+  - port:SHIFTIN1
+  - port:SHIFTIN2
+  - port:T1
+  - port:T2
+  - port:T3
+  - port:T4
+  - port:TBYTEIN
+  - port:TCE
+  - attr:DATA_RATE_OQ=DDR
+  - attr:DATA_RATE_OQ=SDR
+  - attr:DATA_RATE_TQ=DDR
+  - attr:DATA_RATE_TQ=BUF
+  - attr:DATA_RATE_TQ=SDR
+  - attr:DATA_WIDTH=4
+  - attr:DATA_WIDTH=2
+  - attr:DATA_WIDTH=3
+  - attr:DATA_WIDTH=5
+  - attr:DATA_WIDTH=6
+  - attr:DATA_WIDTH=7
+  - attr:DATA_WIDTH=8
+  - attr:DATA_WIDTH=10
+  - attr:DATA_WIDTH=14
+  - attr:INIT_OQ
+  - attr:INIT_TQ
+  - attr:IS_CLKDIV_INVERTED
+  - attr:IS_CLK_INVERTED
+  - attr:IS_D1_INVERTED
+  - attr:IS_D2_INVERTED
+  - attr:IS_D3_INVERTED
+  - attr:IS_D4_INVERTED
+  - attr:IS_D5_INVERTED
+  - attr:IS_D6_INVERTED
+  - attr:IS_D7_INVERTED
+  - attr:IS_D8_INVERTED
+  - attr:IS_T1_INVERTED
+  - attr:IS_T2_INVERTED
+  - attr:IS_T3_INVERTED
+  - attr:IS_T4_INVERTED
+  - attr:SERDES_MODE=MASTER
+  - attr:SERDES_MODE=SLAVE
+  - attr:SRVAL_OQ
+  - attr:SRVAL_TQ
+  - attr:TBYTE_CTL=FALSE
+  - attr:TBYTE_CTL=TRUE
+  - attr:TBYTE_SRC=FALSE
+  - attr:TBYTE_SRC=TRUE
+  - attr:TRISTATE_WIDTH=4
+  - attr:TRISTATE_WIDTH=1
+notes: ''

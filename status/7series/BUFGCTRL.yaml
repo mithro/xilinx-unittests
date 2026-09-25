@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BUFGCTRL
+family: 7series
+work_unit: bufg
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:CE0
+  - port:CE1
+  - port:I0
+  - port:I1
+  - port:IGNORE0
+  - port:IGNORE1
+  - port:S0
+  - port:S1
+  - attr:CE_TYPE_CE0
+  - attr:CE_TYPE_CE1
+  - attr:INIT_OUT=0
+  - attr:INIT_OUT=1
+  - attr:IS_CE0_INVERTED
+  - attr:IS_CE1_INVERTED
+  - attr:IS_I0_INVERTED
+  - attr:IS_I1_INVERTED
+  - attr:IS_IGNORE0_INVERTED
+  - attr:IS_IGNORE1_INVERTED
+  - attr:IS_S0_INVERTED
+  - attr:IS_S1_INVERTED
+  - attr:PRESELECT_I0=FALSE
+  - attr:PRESELECT_I0=TRUE
+  - attr:PRESELECT_I1=FALSE
+  - attr:PRESELECT_I1=TRUE
+  - attr:SIM_DEVICE
+  - attr:STARTUP_SYNC
+notes: ''

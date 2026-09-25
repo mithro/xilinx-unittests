@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IBUFDS_DIFF_OUT_IBUFDISABLE
+family: 7series
+work_unit: ibuf
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:OB
+  - port:I
+  - port:IB
+  - port:IBUFDISABLE
+  - attr:DIFF_TERM
+  - attr:DQS_BIAS
+  - attr:IBUF_LOW_PWR
+  - attr:IOSTANDARD
+  - attr:SIM_DEVICE
+  - attr:USE_IBUFDISABLE=TRUE
+  - attr:USE_IBUFDISABLE=FALSE
+  - attr:USE_IBUFDISABLE=T_CONTROL
+notes: ''

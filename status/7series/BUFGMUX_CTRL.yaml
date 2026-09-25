@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BUFGMUX_CTRL
+family: 7series
+work_unit: bufg
+model_library: retarget
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:I0
+  - port:I1
+  - port:S
+notes: ''

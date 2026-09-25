@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BUFH
+family: 7series
+work_unit: regional_clk
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:I
+notes: ''

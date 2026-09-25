@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: CAPTUREE2
+family: 7series
+work_unit: config_jtag
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CAP
+  - port:CLK
+  - attr:ONESHOT=TRUE
+  - attr:ONESHOT=FALSE
+notes: ''

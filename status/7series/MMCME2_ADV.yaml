@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: MMCME2_ADV
+family: 7series
+work_unit: mmcm_pll
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CLKFBOUT
+  - port:CLKFBOUTB
+  - port:CLKFBSTOPPED
+  - port:CLKINSTOPPED
+  - port:CLKOUT0
+  - port:CLKOUT0B
+  - port:CLKOUT1
+  - port:CLKOUT1B
+  - port:CLKOUT2
+  - port:CLKOUT2B
+  - port:CLKOUT3
+  - port:CLKOUT3B
+  - port:CLKOUT4
+  - port:CLKOUT5
+  - port:CLKOUT6
+  - port:DO
+  - port:DRDY
+  - port:LOCKED
+  - port:PSDONE
+  - port:CLKFBIN
+  - port:CLKIN1
+  - port:CLKIN2
+  - port:CLKINSEL
+  - port:DADDR
+  - port:DCLK
+  - port:DEN
+  - port:DI
+  - port:DWE
+  - port:PSCLK
+  - port:PSEN
+  - port:PSINCDEC
+  - port:PWRDWN
+  - port:RST
+  - attr:BANDWIDTH=OPTIMIZED
+  - attr:BANDWIDTH=HIGH
+  - attr:BANDWIDTH=LOW
+  - attr:CLKFBOUT_MULT_F
+  - attr:CLKFBOUT_PHASE
+  - attr:CLKFBOUT_USE_FINE_PS=FALSE
+  - attr:CLKFBOUT_USE_FINE_PS=TRUE
+  - attr:CLKIN1_PERIOD
+  - attr:CLKIN2_PERIOD
+  - attr:CLKOUT0_DIVIDE_F
+  - attr:CLKOUT0_DUTY_CYCLE
+  - attr:CLKOUT0_PHASE
+  - attr:CLKOUT0_USE_FINE_PS=FALSE
+  - attr:CLKOUT0_USE_FINE_PS=TRUE
+  - attr:CLKOUT1_DIVIDE
+  - attr:CLKOUT1_DUTY_CYCLE
+  - attr:CLKOUT1_PHASE
+  - attr:CLKOUT1_USE_FINE_PS=FALSE
+  - attr:CLKOUT1_USE_FINE_PS=TRUE
+  - attr:CLKOUT2_DIVIDE
+  - attr:CLKOUT2_DUTY_CYCLE
+  - attr:CLKOUT2_PHASE
+  - attr:CLKOUT2_USE_FINE_PS=FALSE
+  - attr:CLKOUT2_USE_FINE_PS=TRUE
+  - attr:CLKOUT3_DIVIDE
+  - attr:CLKOUT3_DUTY_CYCLE
+  - attr:CLKOUT3_PHASE
+  - attr:CLKOUT3_USE_FINE_PS=FALSE
+  - attr:CLKOUT3_USE_FINE_PS=TRUE
+  - attr:CLKOUT4_CASCADE=FALSE
+  - attr:CLKOUT4_CASCADE=TRUE
+  - attr:CLKOUT4_DIVIDE
+  - attr:CLKOUT4_DUTY_CYCLE
+  - attr:CLKOUT4_PHASE
+  - attr:CLKOUT4_USE_FINE_PS=FALSE
+  - attr:CLKOUT4_USE_FINE_PS=TRUE
+  - attr:CLKOUT5_DIVIDE
+  - attr:CLKOUT5_DUTY_CYCLE
+  - attr:CLKOUT5_PHASE
+  - attr:CLKOUT5_USE_FINE_PS=FALSE
+  - attr:CLKOUT5_USE_FINE_PS=TRUE
+  - attr:CLKOUT6_DIVIDE
+  - attr:CLKOUT6_DUTY_CYCLE
+  - attr:CLKOUT6_PHASE
+  - attr:CLKOUT6_USE_FINE_PS=FALSE
+  - attr:CLKOUT6_USE_FINE_PS=TRUE
+  - attr:COMPENSATION=ZHOLD
+  - attr:COMPENSATION=BUF_IN
+  - attr:COMPENSATION=EXTERNAL
+  - attr:COMPENSATION=INTERNAL
+  - attr:DIVCLK_DIVIDE
+  - attr:IS_CLKINSEL_INVERTED
+  - attr:IS_PSEN_INVERTED
+  - attr:IS_PSINCDEC_INVERTED
+  - attr:IS_PWRDWN_INVERTED
+  - attr:IS_RST_INVERTED
+  - attr:REF_JITTER1
+  - attr:REF_JITTER2
+  - attr:SS_EN=FALSE
+  - attr:SS_EN=TRUE
+  - attr:SS_MODE=CENTER_HIGH
+  - attr:SS_MODE=CENTER_LOW
+  - attr:SS_MODE=DOWN_HIGH
+  - attr:SS_MODE=DOWN_LOW
+  - attr:SS_MOD_PERIOD
+  - attr:STARTUP_WAIT=FALSE
+  - attr:STARTUP_WAIT=TRUE
+notes: ''

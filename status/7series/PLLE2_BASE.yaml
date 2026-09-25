@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: PLLE2_BASE
+family: 7series
+work_unit: mmcm_pll
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CLKFBOUT
+  - port:CLKOUT0
+  - port:CLKOUT1
+  - port:CLKOUT2
+  - port:CLKOUT3
+  - port:CLKOUT4
+  - port:CLKOUT5
+  - port:LOCKED
+  - port:CLKFBIN
+  - port:CLKIN1
+  - port:PWRDWN
+  - port:RST
+  - attr:BANDWIDTH=OPTIMIZED
+  - attr:BANDWIDTH=HIGH
+  - attr:BANDWIDTH=LOW
+  - attr:CLKFBOUT_MULT
+  - attr:CLKFBOUT_PHASE
+  - attr:CLKIN1_PERIOD
+  - attr:CLKOUT0_DIVIDE
+  - attr:CLKOUT0_DUTY_CYCLE
+  - attr:CLKOUT0_PHASE
+  - attr:CLKOUT1_DIVIDE
+  - attr:CLKOUT1_DUTY_CYCLE
+  - attr:CLKOUT1_PHASE
+  - attr:CLKOUT2_DIVIDE
+  - attr:CLKOUT2_DUTY_CYCLE
+  - attr:CLKOUT2_PHASE
+  - attr:CLKOUT3_DIVIDE
+  - attr:CLKOUT3_DUTY_CYCLE
+  - attr:CLKOUT3_PHASE
+  - attr:CLKOUT4_DIVIDE
+  - attr:CLKOUT4_DUTY_CYCLE
+  - attr:CLKOUT4_PHASE
+  - attr:CLKOUT5_DIVIDE
+  - attr:CLKOUT5_DUTY_CYCLE
+  - attr:CLKOUT5_PHASE
+  - attr:DIVCLK_DIVIDE
+  - attr:REF_JITTER1
+  - attr:STARTUP_WAIT=FALSE
+  - attr:STARTUP_WAIT=TRUE
+notes: ''

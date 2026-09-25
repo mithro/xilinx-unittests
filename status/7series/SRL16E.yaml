@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: SRL16E
+family: 7series
+work_unit: srl
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:Q
+  - port:A0
+  - port:A1
+  - port:A2
+  - port:A3
+  - port:CE
+  - port:CLK
+  - port:D
+  - attr:INIT
+  - attr:IS_CLK_INVERTED
+notes: ''

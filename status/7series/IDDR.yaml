@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IDDR
+family: 7series
+work_unit: ddr_regs
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:Q1
+  - port:Q2
+  - port:C
+  - port:CE
+  - port:D
+  - port:R
+  - port:S
+  - attr:DDR_CLK_EDGE=OPPOSITE_EDGE
+  - attr:DDR_CLK_EDGE=SAME_EDGE
+  - attr:DDR_CLK_EDGE=SAME_EDGE_PIPELINED
+  - attr:INIT_Q1=0
+  - attr:INIT_Q1=1
+  - attr:INIT_Q2=0
+  - attr:INIT_Q2=1
+  - attr:IS_C_INVERTED
+  - attr:IS_D_INVERTED
+  - attr:SRTYPE=SYNC
+  - attr:SRTYPE=ASYNC
+notes: ''
