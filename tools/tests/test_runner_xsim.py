@@ -537,7 +537,7 @@ def test_cli_python_iverilog_xsim_on_the_toyff_fixture(work, toy, monkeypatch, c
     args += ["--style", "vector", "--style", "sv", "TOYFF"]  # cocotb: test_runner_cocotb
     r = CliRunner().invoke(main, args)
     assert r.exit_code == 0, r.output
-    summary = json.loads((work / "build/rtl/summary.json").read_text())
+    summary = json.loads((work / f"build/rtl/summary-{MODEL_SOURCE}.json").read_text())
     got = {(x["test_id"], x["runner"]): x["status"] for x in summary["results"]}
     t = "7series.TOYFF.L1."
     assert got == {
@@ -625,7 +625,7 @@ def test_cli_fdre_on_real_unisim(work, monkeypatch, capsys):
     monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": VIVADO_MS)
     args = ["run", "--runner", "python", "--runner", "iverilog", "--runner", "xsim", "FDRE"]
     r = CliRunner().invoke(main, args)
-    summary = json.loads((work / "build/rtl/summary.json").read_text())
+    summary = json.loads((work / f"build/rtl/summary-{MODEL_SOURCE}.json").read_text())
     got = {(x["test_id"], x["runner"]): (x["status"], x["reason"]) for x in summary["results"]}
     assert r.exit_code == 0, (r.output, got)
     tid = "7series.FDRE.L1.t10_smoke"

@@ -430,7 +430,7 @@ def test_run_tests_schedules_python_first(ctx, toy, monkeypatch, capsys):
     assert [(r.runner, r.status) for r in results] == [("python", "pass"), ("iverilog", "pass")]
     out = capsys.readouterr().out
     assert "progress: done=1 total=2" in out and "progress: done=2 total=2" in out
-    summary = json.loads((ctx.root / "build/rtl/summary.json").read_text())
+    summary = json.loads((ctx.root / "build/rtl/summary-unisim-test.json").read_text())
     assert [(r["runner"], r["status"]) for r in summary["results"]] == [
         ("python", "pass"),
         ("iverilog", "pass"),
@@ -509,7 +509,7 @@ def test_undeletable_stale_dir_is_error_result_not_crash(ctx, monkeypatch):
         # and through run_tests: the invocation completes, with a summary
         [r] = run_tests([_sv_case()], ["fake"], ctx)
         assert r.status == "error"
-        assert (ctx.root / "build/rtl/summary.json").is_file()
+        assert (ctx.root / "build/rtl/summary-unisim-test.json").is_file()
     finally:
         locked.chmod(0o700)
 
@@ -634,7 +634,7 @@ def test_keyboard_interrupt_cancels_and_writes_partial_summary(ctx, monkeypatch)
     with pytest.raises(KeyboardInterrupt):
         run_tests(cases, ["fake"], ctx)
     assert ran == ["7series.TOYFF.L1.a", "7series.TOYFF.L1.b"]  # c was cancelled
-    summary = json.loads((ctx.root / "build/rtl/summary.json").read_text())
+    summary = json.loads((ctx.root / "build/rtl/summary-unisim-test.json").read_text())
     assert summary["interrupted"] is True
     assert [r["test_id"] for r in summary["results"]] == ["7series.TOYFF.L1.a"]
 
@@ -700,3 +700,15 @@ def test_python_inferred_dont_care_is_error(ctx, toy, monkeypatch):
     res = PythonRunner().run(_case(), ctx)
     assert res.status == "error" and all(c.status == "error" for c in res.configs)
     assert "golden model bug" in res.configs[0].reason and "don't-care" in res.configs[0].reason
+
+
+def test_summary_is_keyed_by_model_source(ctx, monkeypatch):
+    """PR B gate (a) N8c: a run against another model source keeps its own summary."""
+    monkeypatch.setitem(RUNNERS, "fake", Fake)
+    other = dataclasses.replace(ctx, model_source=ModelSource("unisim-other", ctx.root / "o"))
+    run_tests([_sv_case()], ["fake"], ctx)
+    run_tests([_sv_case()], ["fake"], other)
+    for ms in ("unisim-test", "unisim-other"):
+        data = json.loads((ctx.root / f"build/rtl/summary-{ms}.json").read_text())
+        assert data["model_source"] == ms and len(data["results"]) == 1
+    assert not (ctx.root / "build/rtl/summary.json").exists()

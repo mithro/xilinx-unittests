@@ -606,7 +606,7 @@ def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(
     args = ["run", "--runner", "python", "--runner", "iverilog", "--style", "cocotb"]
     r = CliRunner().invoke(main, [*args, "--seed", "7"])
     assert r.exit_code == 0, r.output
-    summary = json.loads((work / "build/rtl/summary.json").read_text())
+    summary = json.loads((work / "build/rtl/summary-toyff-test.json").read_text())
     got = {(x["test_id"], x["runner"]): x["status"] for x in summary["results"]}
     assert got == {(CASE_ID, "python"): "skip", (CASE_ID, "iverilog"): "pass"}
     d = work / "build/rtl/iverilog/toyff-test" / CASE_ID

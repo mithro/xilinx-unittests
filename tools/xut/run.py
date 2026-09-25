@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""``xut run``: run (test, runner) pairs and write build/<flow>/summary.json.
+"""``xut run``: run (test, runner) pairs and write build/<flow>/summary-<model-source>.json.
 
 The python run is the source of truth for vector tests, so ``python`` always runs first
 (sequentially: the model is fast) for every selected vector test, whichever runners
@@ -14,6 +14,7 @@ import json
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
 from xut import runners as runner_registry
 from xut.errors import XutError
@@ -50,7 +51,7 @@ def _one(case: TestCase, name: str, ctx: RunContext) -> RunResult:
 def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -> list[RunResult]:
     """Run every selected runner on every case; the results, python runs first.
 
-    On KeyboardInterrupt, queued jobs are cancelled, running ones finish, summary.json
+    On KeyboardInterrupt, queued jobs are cancelled, running ones finish, the summary
     records what completed, and the KeyboardInterrupt propagates (the CLI exits 130)."""
     known = runner_registry.RUNNERS
     names = list(dict.fromkeys(runner_names))
@@ -107,8 +108,14 @@ def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -
     return results
 
 
+def summary_path(ctx: RunContext) -> Path:
+    """``build/<flow>/summary-<model-source>.json``: keyed by model source like every
+    result directory, so a run against another model source never overwrites it."""
+    return ctx.root / "build" / ctx.flow / f"summary-{ctx.model_source.name}.json"
+
+
 def write_summary(results: list[RunResult], ctx: RunContext, interrupted: bool = False) -> None:
-    out = ctx.root / "build" / ctx.flow / "summary.json"
+    out = summary_path(ctx)
     out.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "format": "xut-summary 1",
