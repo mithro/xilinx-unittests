@@ -220,12 +220,16 @@ def _order_mismatch(a_order: list[str], b_order: list[str]) -> Mismatch | None:
 
 
 def compare(expected: Trace, actual: Trace, *, x_observable: bool = True) -> list[Mismatch]:
-    """Expected (golden, may hold '-') against one runner's actual trace."""
+    """Expected (golden, may hold '-') against one runner's actual trace.
+
+    The expected trace defines what is compared: a port present only in the actual
+    trace is not reported (the golden model may leave an output unmodelled), while
+    every expected port and sample must be present in the actual trace."""
     out: list[Mismatch] = []
     for label, ports in expected.samples.items():
         got = actual.samples.get(label)
         if got is None:
-            out.append(Mismatch(label, "*", -1, "sample", "missing", None, "missing-sample"))
+            out.append(Mismatch(label, "*", -1, "present", "missing", None, "missing-sample"))
             continue
         for port, exp in ports.items():
             prov = expected.prov.get(label, {}).get(port)
@@ -243,7 +247,7 @@ def compare(expected: Trace, actual: Trace, *, x_observable: bool = True) -> lis
                     out.append(Mismatch(label, port, i, e, a, prov))
     for label in actual.samples:
         if label not in expected.samples:
-            out.append(Mismatch(label, "*", -1, "none", "sample", None, "extra-sample"))
+            out.append(Mismatch(label, "*", -1, "missing", "present", None, "extra-sample"))
     if m := _order_mismatch(list(expected.samples), list(actual.samples)):
         out.append(m)
     return out
