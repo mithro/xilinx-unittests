@@ -204,7 +204,7 @@ def test_split_log_without_marker_is_not_reject_evidence():
     )
     out = split_log(log, 1)
     assert "INFO" not in out.compile_text
-    r = reject_result("init_x", out, [], "FDRE")
+    r = reject_result("init_x", out, ["FDRE"])
     assert r.status == "error", r.reason
 
 
@@ -737,3 +737,29 @@ def test_sv_testbench_receives_the_recorded_seed(ctx):
         assert xtr.load(d / "cfg-default/trace.xtr").header["seed"] == str(want)
         assert xtr.load(d / "trace.xtr").header["seed"] == str(want)
         assert _result(d)["seeds"]["stimulus"] == want
+
+
+# --- ruling S13b: reject evidence is an error naming the illegal attribute ---------------
+
+
+@pytest.mark.vivado
+@pytest.mark.parametrize(
+    ("line", "why"),
+    [
+        ('$display("Warning: INIT value is invalid, using default");', "without an error/fatal"),
+        ('$display("XUT_ERROR bad op; Attribute Syntax Error: INIT");', "testbench error"),
+        ('$display("Attribute Syntax Error: IS_C_INVERTED=%b", INIT);', "naming INIT"),
+    ],
+)
+def test_reject_false_pass_paths_are_errors(ctx, work, toy, line, why):
+    """PR B gate (b) #3: each of these used to pass the INIT reject test."""
+    f = _toyff(work)
+    f.write_text(f.read_text().replace('$display("Attribute Syntax Error: INIT=%b", INIT);', line))
+    case = _case("7series.TOYFF.L0.reject")
+    _python(ctx, case)
+    res = XsimRunner(extra_files=[f]).run(case, ctx)
+    assert why in (res.configs[0].reason or ""), res.configs[0].reason
+    assert res.status == "error", (
+        res.reason,
+        (workdir(ctx, "xsim", case.id) / "run.log").read_text(),
+    )

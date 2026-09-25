@@ -298,7 +298,7 @@ class XsimRunner(Runner):
         files = ["xut_vector_tb.sv", "dut/xut_dut.v", *map(str, self.extra_files)]
         out = self._build_and_run(cd, files, "xut_vector_tb", [], {}, ctx, timeout)
         if vec.expect == "reject":
-            return reject_check(cd, out, vec.attrs, case.prim, header)
+            return reject_check(cd, out, vec.illegal, header)
         if (r := classify_run(cfg, out)) is not None:
             return r
         return vector_check(cd, m, comp.labels, exp, header, self.x_observable)

@@ -344,3 +344,11 @@ def test_builder_gap_covers_async_sep():
     b.set(CE=0)
     v, r = _check(b, m)
     assert r.hw_renderable, r.hw_reasons
+
+
+def test_reject_builder_records_its_illegal_attributes():
+    b, m = _b(expect="reject", illegal=["INIT", "IS_C_INVERTED"])
+    b.cycle(sample=False)
+    v = b.build()
+    assert v.header["illegal"] == "INIT,IS_C_INVERTED" and v.illegal == ["INIT", "IS_C_INVERTED"]
+    assert loads(dumps(v)) == v
