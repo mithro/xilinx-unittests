@@ -3,6 +3,7 @@ import pytest
 
 from xut.formats.xvec import (
     Event,
+    Vec,
     XvecError,
     decode_value,
     dumps,
@@ -265,3 +266,110 @@ def test_free_clock_edge_exactly_at_sample_time():
     v = loads(text)
     assert v.events[-1].t == 100
     assert Event(100, "edge", "clk0", value="r") in free_clock_edges(v)
+
+
+# --- quote-aware comment stripping and a writer that never silently mangles data (I1) ---
+
+
+def test_hw_reason_hash_is_data_trailing_comment_is_stripped():
+    text = (
+        H
+        + 'hw_renderable no reason="issue #5: bad"  # a real trailing comment\n'
+        + "t=100 sample A\n"
+    )
+    v = loads(text)
+    assert v.hw_renderable is False
+    assert v.hw_reason == "issue #5: bad"
+    assert loads(dumps(v)) == v
+    assert '"issue #5: bad"' in dumps(v)
+
+
+def test_attr_value_with_hash_roundtrips():
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=0 settle_ps=0 seed=0 "
+        'attr.NOTE="release #5"\n'
+        "t=0 sample A\n"
+    )
+    v = loads(text)
+    assert v.attrs == {"NOTE": "release #5"}
+    assert loads(dumps(v)) == v
+    assert 'attr.NOTE="release #5"' in dumps(v)
+
+
+def test_dumps_raises_on_unrepresentable_quote_in_hw_reason():
+    v = loads(H + "t=100 sample A\n")
+    v.hw_renderable = False
+    v.hw_reason = 'has a "quote" in it'
+    with pytest.raises(XvecError, match="cannot be represented"):
+        dumps(v)
+
+
+def test_dumps_raises_on_unrepresentable_newline_in_header_value():
+    v = loads(H + "t=100 sample A\n")
+    v.header["attr.NOTE"] = "line one\nline two"
+    with pytest.raises(XvecError, match="cannot be represented"):
+        dumps(v)
+
+
+# --- co-timed events (I2): disjoint 'set' ranges commute without 'simultaneous';
+# --- any other co-timed combination needs 'simultaneous' on every event at that t.
+
+
+def test_cotimed_disjoint_sets_allowed_without_simultaneous():
+    v = loads(H + "t=100 set in[3:2]=0b10\nt=100 set in[1:0]=0b01\n")
+    assert v.events == [
+        Event(100, "set", "in", 2, 3, "10"),
+        Event(100, "set", "in", 0, 1, "01"),
+    ]
+    assert loads(dumps(v)) == v
+
+
+def test_cotimed_overlapping_sets_rejected():
+    with pytest.raises(XvecError, match="overlapping"):
+        loads(H + "t=100 set in[3:0]=1\nt=100 set in[2:1]=1\n")
+
+
+def test_cotimed_set_and_nonset_requires_simultaneous_on_all():
+    with pytest.raises(XvecError, match="co-timed events require 'simultaneous'"):
+        loads(H + "t=100 set in[0]=1\nt=100 sample A\n")
+
+
+def test_cotimed_set_and_nonset_ok_when_all_marked():
+    v = loads(H + "t=100 simultaneous set in[0]=1\nt=100 simultaneous sample A\n")
+    assert v.events[0].simultaneous and v.events[1].simultaneous
+    assert loads(dumps(v)) == v
+
+
+def test_cotimed_two_nonsets_require_simultaneous_on_all():
+    with pytest.raises(XvecError, match="co-timed events require 'simultaneous'"):
+        loads(H + "t=100 edge clk0 r\nt=100 sample A\n")
+
+
+def test_cotimed_two_nonsets_ok_when_all_marked():
+    v = loads(H + "t=100 simultaneous edge clk0 r\nt=100 simultaneous sample A\n")
+    assert loads(dumps(v)) == v
+
+
+def test_cotimed_mixed_marking_rejected():
+    with pytest.raises(XvecError, match="unmarked at line"):
+        loads(H + "t=100 simultaneous edge clk0 r\nt=100 sample A\n")
+
+
+# --- Vec int properties raise XvecError, not a bare ValueError, on a non-numeric
+# --- header value (Vec can be built directly, bypassing loads()'s own validation).
+
+
+def test_vec_int_property_raises_xvec_error_on_non_numeric_header():
+    v = Vec(
+        header={
+            "prim": "P",
+            "cfg": "c",
+            "nin": "abc",
+            "nout": "1",
+            "nclk": "0",
+            "settle_ps": "0",
+            "seed": "0",
+        }
+    )
+    with pytest.raises(XvecError, match="not an integer"):
+        _ = v.nin
