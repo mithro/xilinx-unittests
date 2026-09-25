@@ -23,3 +23,12 @@ def test_vivado_root_literal_defined_once():
     hits = [f for f in xut_dir.rglob("*.py") if "/opt/xilinx" in f.read_text()]
     assert hits == [xut_dir / "paths.py"]
     assert (xut_dir / "paths.py").read_text().count("/opt/xilinx") == 1
+
+
+def test_vivado_src_and_submodule_src():
+    assert paths.VIVADO_SRC == paths.VIVADO_ROOT / "data/verilog/src"
+    assert paths.VIVADO_UNISIM == paths.VIVADO_SRC / "unisims"
+    assert (
+        paths.submodule_src() == paths.repo_root() / "third_party/XilinxUnisimLibrary/verilog/src"
+    )
+    assert paths.submodule_unisim() == paths.submodule_src() / "unisims"

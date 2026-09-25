@@ -41,3 +41,7 @@ class GitError(XutError, RuntimeError):
 
 class FetchError(XutError, ValueError):
     """A documentation download did not produce the expected PDF."""
+
+
+class ModelSourceError(XutError, LookupError):
+    """No UNISIM model source is available, or the requested one is not."""
