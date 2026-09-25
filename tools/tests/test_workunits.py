@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import fnmatch
 
 import pytest
+from xut.lint import check_branch_paths
 from xut.paths import repo_root
-from xut.workunits import INFRA_PATHS, branch_slug, load_units, owned_paths, unit_for_branch
+from xut.workunits import branch_slug, load_family, load_units, owned_paths, unit_for_branch
 
 
 def test_every_catalog_primitive_in_exactly_one_unit():
@@ -37,22 +37,22 @@ def _concrete(pattern: str) -> str:
 
 
 def test_ownership_is_exclusive():
-    """No path is both a work unit's and infra's, and no two units share a path.
+    """No two units share a path, and no unit-owned path is writable from infra.
 
-    Regression for the fnmatch trap: `*` matches `.`, so a naive
-    `catalog/7series/*.yaml` INFRA_PATHS entry would also match
-    `<PRIM>.overrides.yaml`, which `owned_paths` assigns to a unit.
+    Regression for the fnmatch trap: `*` matches `.`, so a naive infra pattern
+    `catalog/7series/*.yaml` would also match `<PRIM>.overrides.yaml`, which
+    `owned_paths` assigns to a unit. Status stubs are the one deliberate exception
+    (infra may add them; see test_lint).
     """
     units = load_units(repo_root())
     owner_of: dict[str, str] = {}
     for name, u in units.items():
         for pattern in owned_paths(u):
             concrete = _concrete(pattern)
-            matched_infra = [p for p in INFRA_PATHS if fnmatch.fnmatch(concrete, p)]
-            assert not matched_infra, (
-                f"{concrete!r} (owned by unit {name!r}) also matches "
-                f"INFRA_PATHS pattern(s) {matched_infra!r}"
-            )
+            if not concrete.startswith("status/"):
+                assert check_branch_paths("infra/x", [concrete], units), (
+                    f"{concrete!r} (owned by unit {name!r}) is writable from infra"
+                )
             if concrete in owner_of:
                 assert owner_of[concrete] == name, (
                     f"{concrete!r} owned by both {owner_of[concrete]!r} and {name!r}"
@@ -61,16 +61,34 @@ def test_ownership_is_exclusive():
 
 
 def test_generated_catalog_files_are_infra_owned():
+    """Repo invariant (reads the live checkout on purpose): every generated
+    catalog/<family>/<PRIM>.yaml, including the longest name, is infra's, never a
+    unit's."""
     root = repo_root()
-    assert any(fnmatch.fnmatch("catalog/7series/FDRE.yaml", p) for p in INFRA_PATHS)
-    prims = {
+    units = load_units(root)
+    family = load_family(root)
+    prims = sorted(
         f.stem
-        for f in (root / "catalog/7series").glob("*.yaml")
+        for f in (root / "catalog" / family).glob("*.yaml")
         if not f.name.endswith(".overrides.yaml")
-    }
-    longest = max(prims, key=len)
-    path = f"catalog/7series/{longest}.yaml"
-    assert any(fnmatch.fnmatch(path, p) for p in INFRA_PATHS), path
+    )
+    paths = [f"catalog/{family}/{p}.yaml" for p in prims]
+    assert check_branch_paths("infra/x", paths, units) == []
+    assert check_branch_paths("unit/7series/flops", paths[:1], units)
+
+
+def test_load_family_reads_work_units(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/work-units.yaml").write_text("family: fam9\nunits: {}\n")
+    assert load_family(tmp_path) == "fam9"
+
+
+def test_family_literal_lives_only_in_work_units_yaml():
+    """docs/work-units.yaml `family` is the one source of truth: no tools/xut module
+    hard-codes the family name."""
+    xut_dir = repo_root() / "tools/xut"
+    hits = [str(f) for f in sorted(xut_dir.rglob("*.py")) if "7series" in f.read_text()]
+    assert hits == []
 
 
 @pytest.mark.parametrize(
