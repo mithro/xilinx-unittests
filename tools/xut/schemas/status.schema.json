@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/f4pga/xilinx-unittests/tools/xut/schemas/status.schema.json",
+  "title": "xut status entry (status/<family>/<PRIM>.yaml, spec §11)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["primitive", "family", "work_unit", "model_library", "measured", "results",
+               "findings", "coverage", "notes"],
+  "properties": {
+    "primitive": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "family": {"type": "string"},
+    "work_unit": {"type": "string"},
+    "model_library": {"enum": ["unisims", "retarget", "none"]},
+    "measured": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tree_hash", "tools"],
+      "properties": {
+        "tree_hash": {"type": ["string", "null"]},
+        "tools": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^L[0-3]/[a-z]+/[a-z0-9-]+$": {
+          "enum": ["pass", "fail", "error", "skip", "not-run", "unsupported", "n/a"]
+        }
+      }
+    },
+    "findings": {"type": "array", "items": {"type": "string"}},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["covered", "uncovered"],
+      "properties": {
+        "covered": {"type": "array", "items": {"type": "string"}},
+        "uncovered": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

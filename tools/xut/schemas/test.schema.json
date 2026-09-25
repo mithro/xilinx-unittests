@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/f4pga/xilinx-unittests/tools/xut/schemas/test.schema.json",
+  "title": "xut test.yaml (tests/<family>/<group>/<PRIM>/test.yaml, spec §11)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["primitive", "family", "work_unit", "doc_refs", "tests"],
+  "properties": {
+    "primitive": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "family": {"type": "string"},
+    "work_unit": {"type": "string"},
+    "doc_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["guide", "version", "section", "page"],
+        "properties": {
+          "guide": {"type": "string"},
+          "version": {"type": "string"},
+          "section": {"type": "string"},
+          "page": {"type": ["integer", "null"]}
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "level", "style", "exercises", "attr_sampling", "runners", "flows"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^7series\\.[A-Z0-9_]+\\.L[0-3]\\.[a-z0-9_]+$"
+          },
+          "level": {"enum": ["L0", "L1", "L2", "L3"]},
+          "style": {"enum": ["vector", "sv", "cocotb"]},
+          "exercises": {"type": "array", "items": {"type": "string"}},
+          "attr_sampling": {
+            "type": "object",
+            "additionalProperties": {"type": "array"}
+          },
+          "runners": {
+            "type": "object",
+            "additionalProperties": {"enum": [true, false, "unsupported"]},
+            "$comment": "YAML 1.1 (PyYAML) parses bare yes/no as booleans, so test.yaml's yes|no|unsupported becomes true|false|\"unsupported\" once loaded"
+          },
+          "flows": {"type": "array", "items": {"type": "string"}},
+          "related": {"type": "array", "items": {"type": "string"}},
+          "gaps": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

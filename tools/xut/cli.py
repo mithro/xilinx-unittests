@@ -61,3 +61,37 @@ def catalog_build_cmd() -> None:
     click.echo(
         f"wrote {len(names)} entries to {out}; {len(report)} report lines ({only_in} only-in)"
     )
+
+
+@main.group("status")
+def status_grp() -> None:
+    """Per-primitive status (status/<family>/<PRIM>.yaml, spec §11)."""
+
+
+@status_grp.command("init")
+def status_init_cmd() -> None:
+    """Write a status stub for every catalog entry that has none yet.
+
+    Never overwrites an existing status/<family>/<PRIM>.yaml.
+    """
+    from xut.catalog.build import FAMILY
+    from xut.catalog.model import load_entry
+    from xut.paths import repo_root
+    from xut.status import dump_stub
+    from xut.workunits import load_units
+
+    root = repo_root()
+    unit_of = {p: name for name, u in load_units(root).items() for p in u.primitives}
+    cat_dir = root / "catalog" / FAMILY
+    out_dir = root / "status" / FAMILY
+    out_dir.mkdir(parents=True, exist_ok=True)
+    names = sorted(f.stem for f in cat_dir.glob("*.yaml") if not f.name.endswith(".overrides.yaml"))
+    written = 0
+    for name in names:
+        dest = out_dir / f"{name}.yaml"
+        if dest.exists():
+            continue
+        entry = load_entry(FAMILY, name, root)
+        dest.write_text(dump_stub(entry, unit_of[name]))
+        written += 1
+    click.echo(f"wrote {written} new stub(s); {len(names)} catalog entries, {out_dir}")
