@@ -11,6 +11,9 @@
   `X__ovr_sel != 0`, wrapped in `begin ... end` so that no `else` can dangle.
   It also states in §8 that an `expected_divergence` never masks a
   disagreement: it is reported as `known-divergence`.
+  Step-1 review wording fixes: the shared model is `_common/<unit>.py`, one
+  per work unit (§10, §13.1), and `test.yaml` runner values are the quoted
+  strings `"yes"`, `"no"` or `"unsupported"` (§11).
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -520,7 +523,7 @@ docs/work-units.yaml                                  (infra-owned; §13)
 docs/review/                                          reviewer prompts (infra-owned)
 catalog/7series/<PRIM>.yaml                           generated (infra)
 catalog/7series/<PRIM>.overrides.yaml                 work unit
-models/xut_models/7series/_common/<family>.py         work unit (shared family model)
+models/xut_models/7series/_common/<unit>.py           work unit (shared model per work unit)
 models/xut_models/7series/<prim>.py                   work unit
 tests/7series/<group>/<PRIM>/{test.yaml,README.md,vectors/,sv/,cocotb/}
 tests/7series/integration/<name>/                     integ/* branches
@@ -554,11 +557,15 @@ tests:
     style: vector                  # vector | sv | cocotb
     exercises: [port:R, port:CE, claim:FDRE.C3]
     attr_sampling: {INIT: [0, 1]}
-    runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: yes}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}
     flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
     gaps: ["setup/hold timing out of scope"]
 ```
+
+Runner values are always the quoted strings `"yes"`, `"no"` or
+`"unsupported"`. A bare `yes`/`no` is a YAML 1.1 boolean, which the
+`test.yaml` schema rejects and `xut lint` reports as an error.
 
 `status/7series/<PRIM>.yaml` records:
 
@@ -614,7 +621,7 @@ it owns. Examples:
 - `mmcm_pll`: MMCME2_*, PLLE2_*
 
 A unit owns its primitives' test directories, overrides, models (including
-`_common/<family>.py`), status files and findings.
+`_common/<unit>.py`), status files and findings.
 
 ### 13.2 Branch types
 
