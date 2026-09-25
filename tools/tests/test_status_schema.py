@@ -18,6 +18,7 @@ TEMPLATE = Path(__file__).parents[2] / "docs/templates/test.yaml"
 
 
 def _fdre():
+    """The live catalog/7series/FDRE.yaml (read from the checkout on purpose)."""
     return load_entry("7series", "FDRE", repo_root())
 
 
@@ -126,6 +127,8 @@ def test_unquoted_yaml_boolean_runner_value_fails_validation():
 
 
 def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
+    """Repo invariant (reads the live checkout on purpose): every committed status stub
+    matches its catalog entry's coverage bins and its docs/work-units.yaml unit."""
     root = repo_root()
     units = load_units(root)
     unit_of = {p: name for name, u in units.items() for p in u.primitives}

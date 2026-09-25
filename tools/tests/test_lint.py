@@ -617,6 +617,8 @@ def test_unit_branch_deleting_another_units_file_is_error(tmp_path):
 
 
 def test_lint_passes_base_through_to_changed_files(monkeypatch):
+    """Runs the whole-tree rules on the live checkout (only the base is asserted); the
+    diff and branch are faked, so it does not depend on which refs exist locally."""
     from xut import lint as lint_mod
     from xut.paths import repo_root
 
@@ -641,14 +643,38 @@ def test_lint_cli_base_option_is_registered():
 
 
 def test_lint_cli_runs_without_branch_flag():
+    """Repo invariant (reads the live checkout on purpose): the checked-in tree lints
+    clean. Fails whenever a commit introduces a lint error — that is the point."""
     result = CliRunner().invoke(main, ["lint"])
     assert "issue(s):" in result.output
     assert result.exit_code == 0, result.output
 
 
-def test_lint_cli_branch_flag_runs_on_this_repo():
-    result = CliRunner().invoke(main, ["lint", "--branch"])
-    assert "issue(s):" in result.output
+def test_lint_cli_branch_flag_runs_end_to_end(tmp_path, monkeypatch):
+    """`xut lint --branch` on a hermetic throwaway repo: an infra branch adding an
+    infra-owned file off `main` lints clean."""
+    spdx = "# SPDX-License-Identifier: Apache-2.0\n"
+    _git(["init", "-q", "-b", "main"], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    (tmp_path / "pyproject.toml").write_text(spdx + '[project]\nname = "xilinx-unittests"\n')
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "work-units.yaml").write_text(
+        spdx + "family: 7series\nunits:\n  flops: {group: register, primitives: [FDRE]}\n"
+    )
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: initial"], tmp_path)
+    _git(["checkout", "-q", "-b", "infra/x"], tmp_path)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "a.py").write_text(spdx)
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: add a.py"], tmp_path)
+
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
+    monkeypatch.delenv("XUT_BRANCH", raising=False)
+    result = CliRunner().invoke(main, ["lint", "--branch", "--base", "main"])
+    assert result.exit_code == 0, result.output
+    assert "0 issue(s)" in result.output
 
 
 def test_lint_cli_exit_code_nonzero_on_error(tmp_path, monkeypatch):

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from xut.catalog.unisim import HdlParam, HdlPort, find_model, parse_module
-from xut.paths import VIVADO_UNISIM, repo_root
+from xut.paths import VIVADO_UNISIM
 
 FIX = Path(__file__).parent / "fixtures" / "unisim"
 
@@ -85,7 +85,7 @@ def test_real_models_sanity():
 
 
 @pytest.mark.skipif(not VIVADO_UNISIM.is_dir(), reason="Vivado not installed")
-def test_all_unisims_parse():
+def test_all_unisims_parse(tmp_path):
     """Every UNISIM model's header must extract without raising."""
     ok, failures = 0, []
     for f in sorted(VIVADO_UNISIM.glob("*.v")):
@@ -94,8 +94,7 @@ def test_all_unisims_parse():
             ok += 1
         except Exception as e:  # collect every failure for the log
             failures.append(f"{f.name}: {type(e).__name__}: {e}")
-    log = repo_root() / ".cache" / "unisim_parse_all.log"
-    log.parent.mkdir(exist_ok=True)
+    log = tmp_path / "unisim_parse_all.log"
     log.write_text(f"parsed {ok} failed {len(failures)}\n" + "".join(x + "\n" for x in failures))
     print(f"parsed {ok} failed {len(failures)} (log: {log})")
     assert not failures, failures[:10]
