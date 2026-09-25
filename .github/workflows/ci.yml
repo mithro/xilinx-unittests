@@ -14,4 +14,3 @@ jobs:
       - run: uv run ruff format --check tools
       - run: uv run pytest -v
       - run: uv run xut lint
-        continue-on-error: true
