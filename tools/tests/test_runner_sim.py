@@ -6,7 +6,7 @@ from pathlib import Path
 from xut.formats import xtr
 from xut.runners.reject import SimOutcome
 from xut.runners.sim import classify_run, vector_check
-from xut.wrap import DutMap
+from xut.wrap import Bit, DutMap
 
 HDR = {"runner": "iverilog", "flow": "rtl", "model": "m", "prim": "TOYFF", "cfg": "c", "seed": "0"}
 
@@ -100,3 +100,42 @@ def test_sv_seed_define():
     for bad in (-1, 2**64):
         with pytest.raises(ParamError, match="seed"):
             sv_seed_define(bad)
+
+
+# --- runtime model diagnostics are never silently ignored --------------------------------
+
+
+def _vec_ok(tmp_path: Path, run_text: str, raw: str = "S 0 1\n"):
+    cd = tmp_path / "cfg-c"
+    cd.mkdir(exist_ok=True)
+    (cd / "stim.xvec").write_text("stim\n")
+    (cd / "raw.txt").write_text(raw)
+    m = DutMap("TOYFF", "7series", "c", {}, 1, 1, 1, [Bit("out", 0, "Q", 0, "data")])
+    exp = xtr.Trace(dict(HDR))
+    exp.add("S0", {"Q": "1"})
+    return vector_check(cd, m, ["S0"], exp, HDR, True, run_text)
+
+
+def test_model_errors_fail_a_matching_vector_run(tmp_path):
+    """PR B gate (b) #7: the trace matches, but the model reported an error."""
+    assert _vec_ok(tmp_path, "XUT_DONE t=5\n").status == "pass"
+    for line in (
+        "Error: [Unisim FDRE-1] something the model disliked",
+        "ERROR: tb.sv:3: $error from the model",
+        "Fatal: model gave up",
+        "Attribute Syntax Error : The attribute INIT on FDRE is odd",
+    ):
+        r = _vec_ok(tmp_path, f"{line}\nXUT_DONE t=5\n")
+        assert r.status == "fail" and r.reason.startswith("model reported errors: "), line
+        assert line in r.reason
+
+
+def test_model_warnings_and_info_are_not_errors(tmp_path):
+    for line in ("WARNING: [Unisim FDRE-2] odd", "INFO: nothing is an error here", "Note: x"):
+        assert _vec_ok(tmp_path, f"{line}\nXUT_DONE t=5\n").status == "pass", line
+
+
+def test_model_errors_and_mismatches_are_both_reported(tmp_path):
+    r = _vec_ok(tmp_path, "Error: odd\nXUT_DONE\n", raw="S 0 0\n")
+    assert r.status == "fail" and r.mismatches == 1
+    assert r.reason.startswith("model reported errors: Error: odd; ") and "Q" in r.reason

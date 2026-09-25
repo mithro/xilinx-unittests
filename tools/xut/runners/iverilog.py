@@ -13,17 +13,21 @@ stimulus (``write_stim``), then compile and run the generic testbench against UN
 - compile failure: ``error: compile failed``; ``vvp`` exit code non-zero: ``error``;
   no ``XUT_DONE``: ``error: simulation ended early``;
 - ``expect=reject``: ``xut.runners.reject.reject_check`` decides instead (shared with
-  xsim and verilator; a rejection passes only on positive evidence, ruling S13);
+  xsim and verilator; a rejection passes only on positive evidence, rulings S13-S13b);
 - otherwise ``raw.txt`` -> ``trace.xtr`` -> ``compare`` with the python run's
-  ``expected.xtr`` (``vector_check``, shared by every simulator runner: ``xut.runners.sim``).
+  ``expected.xtr`` (``vector_check``, shared by every simulator runner: ``xut.runners.sim``);
+  an error/fatal line from the model in the run output fails the configuration
+  ("model reported errors: ...") even when the traces match.
 
 cocotb configuration (spec §4.3; cocotb is a style, not a runner): ``write_dut`` writes
 ``dut/`` with ``xut_cocotb_top.v`` from the catalog entry and the configuration's
 attributes, then ``tools/xut/hdl/cocotb_run.py --sim icarus`` runs in the container
 (``cocotb_command``: PYTHONPATH = tools, models, the test's ``cocotb/`` and shared dirs;
 ``XUT_MAP``, ``XUT_TRACE``, ``XUT_SEED``, ``XUT_RUNNER``, ``XUT_MODEL``, ``XUT_FLOW``).
-cocotb's ``RANDOM_SEED`` is the test's stimulus seed (``seed_for``), recorded in
-result.json ``seeds.stimulus``. ``cocotb_check`` classifies the run from ``results.xml``.
+cocotb's ``RANDOM_SEED`` is the test's stimulus seed (``seed_for``: ``--seed``, default
+crc32 of the test id), recorded in result.json ``seeds.stimulus`` and named in every
+fail/error reason (``[seed N]``). ``cocotb_check`` classifies the run from
+``results.xml`` and ``run.log`` (model errors).
 
 sv configuration: the testbench ``sv/<stem>.sv`` (top module ``<stem>``) includes
 ``hdl/xut_trace.svh``, which writes ``trace.body`` and prints ``XUT_PASS``/``XUT_FAIL``
@@ -48,6 +52,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import traceback
 from pathlib import Path
 from typing import ClassVar
 
@@ -57,6 +62,7 @@ from xut.runners.base import (
     ConfigResult,
     RunContext,
     Runner,
+    error_reason,
     prepare_vector,
     seed_for,
     timeout_for,
@@ -74,6 +80,7 @@ from xut.runners.sim import (
     sv_seed_define,
     tool_versions,
     vector_check,
+    with_seed,
 )
 from xut.testspec import TestCase
 from xut.wrap import spec_from_catalog, write_dut
@@ -223,7 +230,7 @@ class IverilogRunner(Runner):
             return reject_check(cd, out, vec.illegal, header)
         if (r := classify_run(cfg, out)) is not None:
             return r
-        return vector_check(cd, m, comp.labels, exp, header, self.x_observable)
+        return vector_check(cd, m, comp.labels, exp, header, self.x_observable, out.run_text)
 
     def _run_sv(
         self,
@@ -278,6 +285,26 @@ class IverilogRunner(Runner):
         ex: Executor,
         timeout: int,
     ) -> ConfigResult:
+        """One cocotb configuration; every fail/error reason names the seed
+        (``with_seed``), including an exception before the simulator ran."""
+        seed = seed_for(case, ctx)
+        try:
+            return self._cocotb(case, cfg, cd, ctx, ex, timeout, seed)
+        except Exception as e:
+            with (cd / "run.log").open("a") as f:
+                f.write(traceback.format_exc())
+            return with_seed(ConfigResult(cfg, "error", error_reason(e)), seed)
+
+    def _cocotb(
+        self,
+        case: TestCase,
+        cfg: str,
+        cd: Path,
+        ctx: RunContext,
+        ex: Executor,
+        timeout: int,
+        seed: int,
+    ) -> ConfigResult:
         from xut.catalog import model as catalog_model
 
         source = case.test_dir / str(case.source)
@@ -288,7 +315,6 @@ class IverilogRunner(Runner):
             )
         entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
         write_dut(spec_from_catalog(entry, cfg, cfg_attrs(case, cfg)), cd / "dut", cocotb_top=True)
-        seed = seed_for(case, ctx)
         header = {**trace_header(self.name, case, cfg, ctx), "seed": str(seed)}
         argv, env = cocotb_command(
             ex, "icarus", case, cd, ctx, self.name, seed, self.lib_first(case, cfg, ctx)

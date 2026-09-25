@@ -91,19 +91,18 @@ def _lines(text: str, pattern: re.Pattern[str]) -> list[str]:
 _SEVERITY = re.compile(r"\b(error|fatal|sorry|warning|note|info)\b", re.IGNORECASE)
 
 
-def _is_error(scrubbed: str) -> bool:
-    """``scrubbed`` has error/fatal severity: its FIRST severity word is error, fatal or
-    sorry (so ``file:3: warning: ... invalid`` and ``WARNING: ... error`` are not)."""
-    m = _SEVERITY.search(scrubbed)
+def is_error_line(line: str) -> bool:
+    """``line`` has error/fatal severity: outside file paths and INFO/NOTE lines, its
+    FIRST severity word is error, fatal or sorry (so ``file:3: warning: ... invalid``
+    and ``WARNING: ... error`` are not). Shared with ``xut.runners.sim.model_errors``."""
+    m = _SEVERITY.search(_scrubbed(line))
     return m is not None and m.group(1).lower() in ("error", "fatal", "sorry")
 
 
 def _evidence(text: str, named: re.Pattern[str]) -> list[str]:
     """Error/fatal lines that name an illegal attribute, outside paths and INFO lines."""
     return [
-        ln.strip()
-        for ln in text.splitlines()
-        if _is_error(_scrubbed(ln)) and named.search(_scrubbed(ln))
+        ln.strip() for ln in text.splitlines() if is_error_line(ln) and named.search(_scrubbed(ln))
     ]
 
 
