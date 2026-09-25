@@ -8,7 +8,7 @@
   cocotb 2.0.1 needs Verilator 5.036 or later. The apt 5.032 is too old.
   cocotb-on-Verilator is required.
   Rev 3.1 also guards the `deassign` rewrite of §6.2 step 2 with
-  `X__ovr_sel != 0`.
+  `X__ovr_sel != 0`, wrapped in `begin ... end` so that no `else` can dangle.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -325,11 +325,13 @@ procedurally-forced reg `X`:
      exactly, so scheduling order is unchanged.
 2. Each `assign X = e_k;` is replaced by `X__ovr_sel = k;`, and each
    `deassign X;` by
-   `if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end`. The second
-   form preserves the Verilog rule that a reg keeps its forced value after
-   `deassign`. The guard keeps a `deassign` of a reg that is not forced a no-op,
-   as Verilog requires. Without it, a not-yet-propagated `X` could overwrite an
-   `X__base` written earlier in the same time step.
+   `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`.
+   The second form preserves the Verilog rule that a reg keeps its forced value
+   after `deassign`. The guard keeps a `deassign` of a reg that is not forced a
+   no-op, as Verilog requires. Without it, a not-yet-propagated `X` could
+   overwrite an `X__base` written earlier in the same time step. The outer
+   `begin ... end` makes the replacement a single statement, so an `else` that
+   followed the original `deassign` still binds to its own `if`.
 3. `X` becomes a net:
    `assign X = (X__ovr_sel == 0) ? X__base : (X__ovr_sel == 1) ? e_1 : ...`.
    Because the `e_k` are evaluated continuously, this preserves the
