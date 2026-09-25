@@ -17,7 +17,7 @@ from xut.formats.xtr import Trace
 from xut.formats.xvec import Event, Vec, free_clock_edges
 from xut.validate import ROC_WIDTH_PS, validate
 from xut.wrap import DutMap
-from xut_models.base import Model, ModelUnsupported, Out
+from xut_models.base import Model, ModelContractError, ModelUnsupported, Out
 
 
 class InvalidStimulus(XutError, ValueError):
@@ -79,13 +79,13 @@ def bit_prov(token: str, bit: int) -> str:
 def _check_outputs(model_cls: type[Model], outs: dict[str, Out], label: str) -> None:
     """A model must report exactly its OUTPUTS, each at its declared width."""
     if set(outs) != set(model_cls.OUTPUTS):
-        raise ValueError(
+        raise ModelContractError(
             f"{model_cls.PRIM} model at sample {label}: outputs {sorted(outs)} "
             f"!= declared OUTPUTS {sorted(model_cls.OUTPUTS)}"
         )
     for p, o in outs.items():
         if len(o.bits) != model_cls.OUTPUTS[p]:
-            raise ValueError(
+            raise ModelContractError(
                 f"{model_cls.PRIM} model at sample {label}: {p} has {len(o.bits)} bits, "
                 f"declared width {model_cls.OUTPUTS[p]}"
             )
@@ -93,18 +93,18 @@ def _check_outputs(model_cls: type[Model], outs: dict[str, Out], label: str) -> 
 
 def _check_inputs(model_cls: type[Model], vec: Vec, m: DutMap) -> None:
     if not (model_cls.PRIM == vec.prim == m.prim):
-        raise ValueError(
+        raise ModelContractError(
             f"primitive mismatch: model {model_cls.PRIM}, vec {vec.prim}, map {m.prim}"
         )
     if (vec.nin, vec.nclk) != (m.nin, m.nclk):
-        raise ValueError(
+        raise ModelContractError(
             f"{vec.prim}: vec nin={vec.nin} nclk={vec.nclk} does not match the map "
             f"(nin={m.nin} nclk={m.nclk})"
         )
     widths = {p: len(m.port_bits("in", p)) for p in m.in_ports()}
     widths |= {b.port: 1 for b in m.of("clk")}
     if widths != model_cls.inputs():
-        raise ValueError(
+        raise ModelContractError(
             f"{vec.prim}: model inputs {model_cls.inputs()} do not match the map's "
             f"input ports {widths}"
         )
