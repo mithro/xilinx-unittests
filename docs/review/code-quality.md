@@ -21,6 +21,18 @@ also happens to be a correctness issue.
    gh pr diff <N>
    ```
 
+   `gh pr diff` fails on large PRs ("diff exceeded the maximum number of
+   lines (20000)"). Then diff the branches locally instead:
+
+   ```bash
+   git fetch origin
+   git diff origin/<base-branch>...origin/<head-branch>
+   ```
+
+   (`gh pr view <N> --json baseRefName,headRefName` names both branches;
+   the base is usually `main`.) Redirect the output to a file under
+   `.cache/` and read it from there.
+
 ## Checklist
 
 Go through the diff against every item below. Note a finding for each
