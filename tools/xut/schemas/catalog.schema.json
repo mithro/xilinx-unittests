@@ -77,6 +77,11 @@
         }
       }
     },
-    "status_undocumented": {"type": "boolean"}
+    "status_undocumented": {"type": "boolean"},
+    "min_event_gap_ps": {
+      "description": "Optional (overrides only). The minimum gap between distinct event times for stepped hardware rendering to preserve behaviour: must exceed every model-internal delay of the primitive. Absent: xut.validate.MIN_SEP_PS.",
+      "type": "integer",
+      "minimum": 1
+    }
   }
 }
