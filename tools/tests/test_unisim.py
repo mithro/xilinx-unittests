@@ -41,6 +41,26 @@ def test_find_model_prefers_first_dir(tmp_path):
     assert find_model("Y", [tmp_path / "a"]) is None
 
 
+def test_non_functional_params_dropped_and_glbl_ref_tolerated():
+    # LOC/MSGON/XON declared without an XIL_TIMING guard are still dropped, and the
+    # unresolved glbl.GSR hierarchical reference does not make parsing fail.
+    m = parse_module(FIX / "TOYLOC.v", "TOYLOC")
+    assert [p.name for p in m.params] == ["MODE"]
+    assert [p.name for p in m.ports] == ["O", "I"]
+
+
+def test_syntax_error_raises():
+    with pytest.raises(ValueError, match=r"TOYBAD\.v(.|\n)*ExpectedExpression"):
+        parse_module(FIX / "TOYBAD.v", "TOYBAD")
+
+
+def test_non_glbl_undeclared_identifier_raises(tmp_path):
+    f = tmp_path / "U.v"
+    f.write_text("module U (output O);\n  assign O = nothere.GSR;\nendmodule\n")
+    with pytest.raises(ValueError, match="nothere"):
+        parse_module(f, "U")
+
+
 @pytest.mark.skipif(not VIVADO_UNISIM.is_dir(), reason="Vivado not installed")
 def test_real_iobuf_strings():
     m = parse_module(VIVADO_UNISIM / "IOBUF.v", "IOBUF")
@@ -59,6 +79,8 @@ def test_real_models_sanity():
     mm = {p.name: p for p in parse_module(VIVADO_UNISIM / "MMCME2_ADV.v", "MMCME2_ADV").params}
     assert mm["CLKIN1_PERIOD"].kind == "real"
     assert mm["BANDWIDTH"].default == "OPTIMIZED"
+    dcm = parse_module(VIVADO_UNISIM / "DCM_ADV.v", "DCM_ADV")  # declares LOC unguarded
+    assert "LOC" not in {p.name for p in dcm.params}
 
 
 @pytest.mark.skipif(not VIVADO_UNISIM.is_dir(), reason="Vivado not installed")
