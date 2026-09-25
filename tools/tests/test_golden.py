@@ -308,3 +308,210 @@ def test_models_are_stdlib_only():
             for n in names:
                 top = n.split(".")[0]
                 assert top == "xut_models" or top in sys.stdlib_module_names, (f, n)
+
+
+# --- co-timed input changes (Ruling S6) -------------------------------------------------
+#
+# Invariant: the only unmarked events that may share a time are `set`s on disjoint bits,
+# which Ruling S6 makes ONE atomic input change (e.g. VecBuilder.set(D=1, CE=1)); validate's
+# lonely rule keeps every edge, glbl and async/gate set alone at its time, and no sample
+# shares its time with a change. replay therefore applies all of a time step's sets before
+# calling set_input, so no edge or sample can observe an intermediate state and the file
+# order of the sets cannot change the trace.
+
+
+class ToyDffCe(Model):
+    PRIM = "TOYFFCE"
+    CLOCKS = ("C",)
+    OUTPUTS = {"Q": 1}
+
+    @classmethod
+    def inputs(cls):
+        return {"C": 1, "CE": 1, "D": 1}
+
+    def __init__(self, attrs):
+        super().__init__(attrs)
+        self.log = []
+        type(self).last = self
+
+    def power_on(self):
+        self.q, self.gsr, self.ce, self.d = 0, 1, 0, 0
+
+    def set_input(self, port, value):
+        setattr(self, port.lower(), value)
+        self.log.append(("set", port, value))
+
+    def clock_edge(self, port, rising):
+        self.log.append(("edge", rising, self.ce, self.d))
+        if rising and not self.gsr and self.ce:
+            self.q = self.d
+
+    def glbl(self, signal, value):
+        self.gsr = value
+
+    def outputs(self):
+        self.log.append(("sample", self.ce, self.d))
+        return {"Q": Out(str(self.q), "doc:1")}
+
+
+MAP_CE = build_map(
+    spec_from_hdl(
+        HdlModule(
+            "TOYFFCE",
+            Path("x"),
+            [
+                HdlPort("Q", "output", 1),
+                HdlPort("C", "input", 1),
+                HdlPort("CE", "input", 1),
+                HdlPort("D", "input", 1),
+            ],
+            [],
+        ),
+        "c",
+        {},
+    )
+)
+VEC_CE = """\
+# xut-vec 2  prim=TOYFFCE cfg=c nin=2 nout=1 nclk=1 settle_ps=120000 seed=0
+clock clk0 period=10000 phase=0 duty=50 mode=stepped
+t=120000 sample S0
+{sets}
+t=128000 edge clk0 r
+t=129000 sample S1
+t=133000 edge clk0 f
+t=134000 sample S2
+"""
+CE, D = "t={t} set in[0]=1", "t={t} set in[1]=1"  # in[0]=CE, in[1]=D (map order)
+
+
+def _run_ce(sets):
+    trace, _ = replay(ToyDffCe, loads(VEC_CE.format(sets="\n".join(sets))), MAP_CE)
+    return trace, ToyDffCe.last.log
+
+
+def test_cotimed_disjoint_sets_are_one_atomic_change():
+    assert [b.port for b in MAP_CE.of("in")] == ["CE", "D"]
+    trace, log = _run_ce([CE.format(t=127000), D.format(t=127000)])
+    assert trace.samples["S1"]["Q"] == "1"
+    # both inputs reach the model back to back, before the edge
+    i = log.index(("set", "CE", 1))
+    assert log[i : i + 3] == [("set", "CE", 1), ("set", "D", 1), ("edge", True, 1, 1)]
+    # no edge or sample ever observed CE=1 with D=0 (or CE=0 with D=1)
+    observed = [entry[-2:] for entry in log if entry[0] in ("edge", "sample")]
+    assert (1, 0) not in observed and (0, 1) not in observed
+
+
+def test_cotimed_sets_are_order_independent():
+    a, log_a = _run_ce([CE.format(t=127000), D.format(t=127000)])
+    b, log_b = _run_ce([D.format(t=127000), CE.format(t=127000)])
+    split, _ = _run_ce([CE.format(t=126000), D.format(t=127000)])
+    assert a.samples == b.samples == split.samples
+    assert a.prov == b.prov == split.prov
+    assert log_a == log_b  # set_input calls follow map order, not file order
+
+
+def test_cotimed_sets_via_builder():
+    from xut.stimgen import VecBuilder
+
+    vb = VecBuilder(MAP_CE, seed=0)
+    vb.sample("S0")
+    vb.set(D=1, CE=1)
+    vb.cycle()
+    vec = vb.build()
+    changes = [e for e in vec.events if e.op == "set"]
+    assert len({e.t for e in changes}) == 1 and len(changes) == 2  # co-timed, unmarked
+    assert not any(e.simultaneous for e in changes)
+    trace, _ = replay(ToyDffCe, vec, MAP_CE)
+    assert trace.samples["S0"]["Q"] == "0" and "1" in {v["Q"] for v in trace.samples.values()}
+    assert ("edge", True, 1, 1) in ToyDffCe.last.log
+
+
+def test_cotimed_sets_on_one_wide_port_arrive_as_one_value():
+    # Two co-timed disjoint sets on bits of ONE port: the model gets a single set_input
+    # with the final value, never the intermediate 0b01 or 0b10.
+    calls = []
+
+    class Wide(Model):
+        PRIM = "TOYW"
+        OUTPUTS = {"Q": 1}
+
+        @classmethod
+        def inputs(cls):
+            return {"D": 2}
+
+        def power_on(self):
+            pass
+
+        def set_input(self, port, value):
+            calls.append((port, value))
+
+        def clock_edge(self, port, rising):
+            pass
+
+        def glbl(self, signal, value):
+            pass
+
+        def outputs(self):
+            return {"Q": Out("0", "doc:1")}
+
+    m = build_map(
+        spec_from_hdl(
+            HdlModule("TOYW", Path("x"), [HdlPort("Q", "output", 1), HdlPort("D", "input", 2)], []),
+            "c",
+            {},
+        )
+    )
+    text = """\
+# xut-vec 2  prim=TOYW cfg=c nin=2 nout=1 nclk=0 settle_ps=120000 seed=0
+t=121000 set in[1]=1
+t=121000 set in[0]=1
+t=122000 sample S0
+"""
+    replay(Wide, loads(text), m)
+    assert calls == [("D", 0), ("D", 3)]
+
+
+# --- per-bit provenance ------------------------------------------------------------------
+
+
+def test_per_bit_provenance_written_to_trace():
+    from xut.formats.xtr import dumps
+    from xut.formats.xtr import loads as xtr_loads
+    from xut.golden import bit_prov
+
+    class Mixed(ToyDff):
+        OUTPUTS = {"Q": 1, "W": 3}
+
+        def outputs(self):
+            # W[2] undefined (-), W[1:0] documented; Q documented
+            w = Out("-" + "0" + str(self.q), ("doc:7", "doc:8", "inferred:doc_silent"))
+            return {"Q": Out(str(self.q), "doc:1"), "W": w}
+
+    trace, _ = replay(Mixed, loads(VEC), MAP)
+    token = trace.prov["S2"]["W"]
+    assert trace.samples["S2"]["W"] == "-01"
+    assert [bit_prov(token, i) for i in range(3)] == ["doc:7", "doc:8", "inferred:doc_silent"]
+    assert bit_prov(trace.prov["S2"]["Q"], 0) == "doc:1"
+    assert xtr_loads(dumps(trace)).prov == trace.prov  # round-trips through .xtr
+
+
+def test_uniform_per_bit_provenance_collapses():
+    class Same(ToyDff):
+        def outputs(self):
+            return {"Q": Out(str(self.q), ("doc:1",))}
+
+    trace, _ = replay(Same, loads(VEC), MAP)
+    assert trace.prov["S2"]["Q"] == "doc:1"
+
+
+def test_per_bit_provenance_validated():
+    with pytest.raises(ValueError, match="2 tags for 3 bits"):
+        Out("01-", ("doc:1", "doc:2"))
+    with pytest.raises(ValueError):
+        Out("01", ("doc:1", "because"))
+    with pytest.raises(ValueError):
+        Out("0", ["doc:1"])
+    with pytest.raises(ValueError):
+        Out("0", "inferred:a,b")  # ',' separates per-bit tags in .xtr
+    with pytest.raises(ValueError):
+        Out("0", "inferred:has space")
