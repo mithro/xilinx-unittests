@@ -16,6 +16,11 @@ look like a rejection):
   ``XUT_DONE`` and a diagnostic line names a rejected attribute -> ``pass``;
 - anything else -> ``error``, with the diagnostic lines in the reason.
 
+Evidence (a diagnostic word and a name on one line) is matched only outside INFO/NOTE
+lines and outside file paths (quoted strings holding a "/" and any token containing
+"/"), ruling S13a: a path such as ``.../7series.FDRE.L0.illegal_init/...`` is never
+evidence.
+
 The names searched for are the configuration's attribute names (``attr.<NAME>`` of the
 stimulus), case-insensitively as whole words; only a configuration without attributes
 falls back to the primitive's name. A *diagnostic* line is one that says error,
@@ -57,8 +62,35 @@ class SimOutcome:
     run_text: str
 
 
+#: An informational line: never a diagnostic, never evidence (ruling S13a).
+_INFO = re.compile(r"^\s*(INFO|NOTE)\b", re.IGNORECASE)
+#: A double-quoted string holding a path, then any other token containing "/".
+_QUOTED_PATH = re.compile(r'"[^"]*/[^"]*"')
+_PATH_TOKEN = re.compile(r"\S*/\S*")
+
+
+def _scrubbed(line: str) -> str:
+    """``line`` without file paths (quoted or bare: anything containing "/"), or ""
+    for an INFO/NOTE line. Evidence is matched on this only (ruling S13a): a test
+    directory such as ``7series.FDRE.L0.illegal_init/`` must never count as a
+    diagnostic naming the attribute."""
+    if _INFO.match(line):
+        return ""
+    return _PATH_TOKEN.sub(" ", _QUOTED_PATH.sub(" ", line))
+
+
 def _lines(text: str, pattern: re.Pattern[str]) -> list[str]:
-    return [ln.strip() for ln in text.splitlines() if pattern.search(ln)]
+    """The lines of ``text`` whose scrubbed form matches ``pattern``."""
+    return [ln.strip() for ln in text.splitlines() if pattern.search(_scrubbed(ln))]
+
+
+def _evidence(text: str, named: re.Pattern[str]) -> list[str]:
+    """Diagnostic lines that name a rejected attribute, outside paths and INFO lines."""
+    return [
+        ln.strip()
+        for ln in text.splitlines()
+        if DIAGNOSTIC.search(_scrubbed(ln)) and named.search(_scrubbed(ln))
+    ]
 
 
 def _show(lines: list[str]) -> str:
@@ -77,13 +109,14 @@ def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) ->
         return ConfigResult(
             cfg, "fail", f"expected rejection, got acceptance: the run reached XUT_DONE ({what})"
         )
-    infra = _lines(both, INFRA)
+    # INFRA is matched on whole lines, paths included: erring towards error is safe.
+    infra = [ln.strip() for ln in both.splitlines() if INFRA.search(ln)]
     if infra:
         return ConfigResult(
             cfg, "error", f"infrastructure failure, not a rejection: {_show(infra)}"
         )
     if not out.compiled_ok:
-        ev = [ln for ln in _lines(out.compile_text, DIAGNOSTIC) if named.search(ln)]
+        ev = _evidence(out.compile_text, named)
         if ev:
             return ConfigResult(
                 cfg, "pass", f"rejected at compile/elaboration: {ev[0][:_MAX_LINE]}"
@@ -101,7 +134,7 @@ def reject_result(cfg: str, out: SimOutcome, attrs: Iterable[str], prim: str) ->
             f"simulator exited with rc {out.run_rc} (not a clean rejection): "
             f"{_show(_lines(out.run_text, DIAGNOSTIC))}",
         )
-    ev = [ln for ln in _lines(out.run_text, DIAGNOSTIC) if named.search(ln)]
+    ev = _evidence(out.run_text, named)
     if ev:
         return ConfigResult(cfg, "pass", f"rejected at runtime: {ev[0][:_MAX_LINE]}")
     return ConfigResult(
