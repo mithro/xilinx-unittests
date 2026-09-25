@@ -73,7 +73,7 @@ def _is_benign(d: pyslang.Diagnostic) -> bool:
     return d.code == _D.UndeclaredIdentifier and list(d.args) == ["glbl"]
 
 
-def _is_string_literal(p) -> bool:
+def _is_string_literal(p: pyslang.ast.ParameterSymbol) -> bool:
     """True if the parameter's default is a string literal (through implicit conversions)."""
     e = p.declaredType.initializer
     while e is not None and e.kind == _EK.Conversion:
@@ -87,7 +87,7 @@ def _render_bits(v: pyslang.SVInt) -> str:
     return v.toString(base, True)
 
 
-def _param(p) -> HdlParam:
+def _param(p: pyslang.ast.ParameterSymbol) -> HdlParam:
     t, cv = p.type, p.value
     if t.isString or _is_string_literal(p):
         # Untyped string parameters become logic[8N-1:0]; decode back to text.

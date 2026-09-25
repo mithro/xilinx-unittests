@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
+
 from xut.docs_fetch import UG953, DocSpec, fetch
 
 

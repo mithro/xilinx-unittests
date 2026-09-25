@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import pytest
+
 from xut.catalog.unisim import HdlParam, HdlPort, find_model, parse_module
 from xut.paths import VIVADO_UNISIM, repo_root
 

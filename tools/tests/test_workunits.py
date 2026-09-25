@@ -2,6 +2,7 @@
 
 
 import pytest
+
 from xut.lint import check_branch_paths
 from xut.paths import repo_root
 from xut.workunits import branch_slug, load_family, load_units, owned_paths, unit_for_branch

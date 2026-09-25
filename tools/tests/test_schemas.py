@@ -3,6 +3,7 @@
 
 import jsonschema
 import pytest
+
 from xut import schemas, status
 from xut.catalog import model
 
