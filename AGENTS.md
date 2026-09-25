@@ -46,6 +46,20 @@ Branch types (spec §13.2):
 | `integ/<name>` | one L3 design, its own `tests/7series/integration/<name>/` |
 | `docs/<topic>` | specs and plans (`docs/superpowers/**` only) |
 
+Branches and PRs:
+
+- One PR per branch, always. Never push work for a later PR onto a branch
+  whose PR is open.
+- A stacked branch is created from its parent branch, and its PR's base is
+  the parent (`gh pr create --base <parent>`) until the parent merges.
+- After a parent merges, only the orchestrator rebases the child onto
+  `main`, re-runs its tests, pushes with `git push --force-with-lease`
+  (only on its own feature branches; never on `main`, never over someone
+  else's branch), and retargets the PR with `gh pr edit <N> --base main`.
+  This is the only sanctioned force-push; the rule against force-pushing
+  reviewed history still applies to everyone else.
+- Reviewers run sequentially under the two-agent limit.
+
 ## 3. Only touch owned paths
 
 `docs/work-units.yaml` maps each work unit to its primitives;
