@@ -146,15 +146,18 @@ def _check_fpgas_online(probe: Probe) -> tuple[bool, str]:
 
 
 def run_checks(probe: Probe | None = None) -> list[Check]:
-    """Run every preflight check, in the order of the task-9 brief's table."""
+    """Run every preflight check, in the order of the task-9 brief's table.
+
+    `docker` only enables `iverilog` and `verilator` — spec rev 3.1's runner
+    vocabulary (controller ruling). cocotb is a test *style* run inside those
+    runners, not a runner itself; yosys/nextpnr-xilinx/vpr containers don't exist
+    yet and later steps add their own checks once they do (the F4PGA/VPR flow is
+    named `openxc7`, not `nextpnr-xilinx`).
+    """
     p = probe or Probe()
     return [
         _safe("vivado", ("xsim", "vivado"), lambda: _check_vivado(p)),
-        _safe(
-            "docker",
-            ("iverilog", "verilator", "cocotb", "yosys", "nextpnr-xilinx", "vpr"),
-            lambda: _check_docker(p),
-        ),
+        _safe("docker", ("iverilog", "verilator"), lambda: _check_docker(p)),
         _safe("gh", (), lambda: _check_gh(p)),
         _safe("submodule", ("CI UNISIM",), lambda: _check_submodule(p)),
         _safe("docs", ("catalog",), lambda: _check_docs(p)),
