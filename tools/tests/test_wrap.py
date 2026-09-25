@@ -2,6 +2,7 @@
 """Tests for xut.wrap: the xut_dut wrapper, its map.json and the `xut wrap` CLI (spec §5.2)."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pyslang
@@ -11,6 +12,7 @@ from click.testing import CliRunner
 from xut.catalog.model import load_entry
 from xut.catalog.unisim import HdlModule, HdlParam, HdlPort
 from xut.cli import main
+from xut.container import SIM_IMAGE, image_digest
 from xut.errors import XutError
 from xut.paths import repo_root
 from xut.wrap import (
@@ -437,3 +439,122 @@ def test_cli_wrap_raw_clock_out(tmp_path):
     r = CliRunner().invoke(main, ["wrap", "BUFGCTRL", "--raw-clock-out", "--out", str(tmp_path)])
     assert r.exit_code == 0, r.output
     assert DutMap.load(tmp_path / "xut_dut.map.json").cls_of("O") == "clock_out"
+
+
+# --- UNISIM elaboration in the xut-sim container (Icarus) -----------------------------
+
+needs_image = pytest.mark.skipif(
+    shutil.which("docker") is None or image_digest(SIM_IMAGE) is None,
+    reason=f"{SIM_IMAGE} not built (run: uv run xut container build)",
+)
+
+_TB = """// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+`include "xut_cfg.vh"
+module tb;
+  reg [`XUT_NCLK-1:0] clk = 0;
+  reg [`XUT_NIN-1:0] in_vec;
+  wire [`XUT_NOUT-1:0] out_vec;
+  xut_dut dut (.clk(clk), .in_vec(in_vec), .out_vec(out_vec));
+  // UNISIM's combinational models react to input *changes*: drive after t=0,
+  // and sample after glbl's 100 ns GSR pulse.
+  initial begin #1000 in_vec = @IN@; #200000 $display("XUT_OUT=%b", out_vec); $finish; end
+endmodule
+"""
+
+# (primitive, attributes, in_vec value, expected out_vec or None: only check it runs)
+_ELAB_CASES = [
+    ("FDRE", {"INIT": "1'b1"}, "0", "1"),  # INIT reaches the primitive: Q=1 with no clock
+    ("FDRE", {"INIT": 0}, "0", "0"),
+    ("LUT6", {"INIT": "64'h8000000000000001"}, "6'h00", "1"),
+    ("LUT6", {"INIT": "64'h8000000000000001"}, "6'h3f", "1"),
+    ("LUT6", {"INIT": "64'h8000000000000001"}, "6'h01", "0"),
+    # in_vec = {T, I, IO.drive_val, IO.drive_en}; out_vec = {IO.obs, O}
+    ("IOBUF", {"DRIVE": 8, "SLEW": "FAST"}, "4'b1011", "11"),  # testbench drives the pad
+    ("IOBUF", {"DRIVE": 8, "SLEW": "FAST"}, "4'b0100", "11"),  # the IOBUF drives the pad
+    ("IOBUF", {}, "4'b0000", "00"),
+    ("BUFGCTRL", {"INIT_OUT": 1, "IS_S0_INVERTED": "1'b1"}, "0", None),
+    (
+        "RAMB18E1",
+        {
+            "DOA_REG": 1,
+            "INIT_00": "256'h5",
+            "WRITE_MODE_A": "READ_FIRST",
+            **{f"{rw}_WIDTH_{p}": 18 for rw in ("READ", "WRITE") for p in "AB"},
+        },
+        "0",
+        None,
+    ),
+    (
+        "MMCME2_ADV",
+        {
+            "BANDWIDTH": "HIGH",
+            "CLKFBOUT_MULT_F": "10.0",
+            "CLKIN1_PERIOD": 10.0,
+            "CLKIN2_PERIOD": "10.000",
+            "CLKOUT1_DIVIDE": 4,
+        },
+        "0",
+        None,
+    ),
+]
+
+
+def _model_sources():
+    """Every model source on this machine: the wrapper must work with each (spec §6.2)."""
+    from xut.modelsrc import model_sources
+
+    have = list(model_sources().values())
+    if not have:
+        pytest.skip("no UNISIM model source (install Vivado 2025.2 or init the submodule)")
+    return have
+
+
+@pytest.mark.container
+@needs_image
+@pytest.mark.parametrize(("prim", "attrs", "stim", "expect"), _ELAB_CASES)
+def test_wrapper_elaborates_and_runs_with_unisim(prim, attrs, stim, expect):
+    """Icarus elaborates the wrapper against real UNISIM (glbl as a second top) and the
+    attribute values reach the instance (spec §5.2)."""
+    from xut.container import executor_for
+
+    i = _ELAB_CASES.index((prim, attrs, stim, expect))
+    for src in _model_sources():
+        ex = executor_for(src)
+        work = repo_root() / "build" / "test-wrap-elab" / src.name / f"{prim}-{i}"
+        shutil.rmtree(work, ignore_errors=True)
+        spec = spec_from_catalog(_entry(prim), f"case{i}", attrs, raw_clock_out=True)
+        write_dut(spec, work)
+        (work / "tb.v").write_text(_TB.replace("@IN@", stim))
+        lib = [a for d in src.search for a in ("-y", ex.guest(d))]
+        log = work / "run.log"
+        argv = ["iverilog", "-g2012", "-o", "tb.vvp", "-s", "tb", "-s", "glbl", "-I", "."]
+        rc = ex.run([*argv, *lib, ex.guest(src.glbl), "xut_dut.v", "tb.v"], work, log, 300)
+        assert rc == 0, log.read_text()
+        rc = ex.run(["vvp", "-n", "tb.vvp"], work, log, 300)
+        text = log.read_text()
+        assert rc == 0, text
+        assert "Error" not in text, text  # UNISIM attribute DRCs report "Error: ..." at t=0
+        outs = [ln.split("=", 1)[1] for ln in text.splitlines() if ln.startswith("XUT_OUT=")]
+        assert len(outs) == 1, text
+        if expect is not None:
+            assert outs[0] == expect, (src.name, text)
+
+
+@pytest.mark.container
+@needs_image
+def test_cocotb_top_resolves_glbl_upward():
+    """xut_cocotb_top instantiates glbl itself; UNISIM's glbl.GSR must resolve to it."""
+    from xut.container import executor_for
+
+    for src in _model_sources():
+        ex = executor_for(src)
+        work = repo_root() / "build" / "test-wrap-elab" / src.name / "cocotb-top"
+        shutil.rmtree(work, ignore_errors=True)
+        write_dut(spec_from_catalog(_fdre(), "init1", {"INIT": "1'b1"}), work, cocotb_top=True)
+        lib = [a for d in src.search for a in ("-y", ex.guest(d))]
+        log = work / "build.log"
+        argv = ["iverilog", "-g2012", "-o", "top.vvp", "-s", "xut_cocotb_top", "-I", "."]
+        files = [ex.guest(src.glbl), "xut_dut.v", "xut_cocotb_top.v"]
+        rc = ex.run([*argv, *lib, *files], work, log, 300)
+        assert rc == 0, log.read_text()
