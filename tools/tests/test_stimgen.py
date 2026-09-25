@@ -72,9 +72,6 @@ def test_hw_recipe_is_hw_renderable():
     b.async_("CLR", 0)
     b.set(D=0)
     b.cycle()
-    b.glbl("GSR", 1)
-    b.sample()
-    b.glbl("GSR", 0)
     b.wait(3000)
     b.sample("final")
     _, r = _check(b, m)
@@ -82,14 +79,14 @@ def test_hw_recipe_is_hw_renderable():
 
 
 def test_async_right_after_an_edge_keeps_its_separation():
-    b, m = _b(async_sep_ps=2500)
+    b, m = _b(async_sep_ps=2500, period_ps=20000)
     b.cycle(sample=False)
     b.edge("C", True)
     b.async_("CLR", 1)
     b.edge("C", False)
     v, _ = _check(b, m)
     ts = [(e.t, e.op) for e in v.events if e.op in ("edge", "set")]
-    assert ts[-3:] == [(130000, "edge"), (132500, "set"), (135000, "edge")]
+    assert ts[-3:] == [(140000, "edge"), (142500, "set"), (145000, "edge")]
 
 
 def test_set_refuses_async_ports():
@@ -185,7 +182,7 @@ def test_separation_is_recorded_and_used_by_validate():
 
     from xut.validate import MIN_SEP_PS
 
-    b, m = _b(async_sep_ps=2500)
+    b, m = _b(async_sep_ps=2500, period_ps=20000)
     b.edge("C", True)
     b.async_("CLR", 1)
     v, _ = _check(b, m)
@@ -220,7 +217,8 @@ def test_gencontext_records_specs():
 def test_random_builder_programs_validate(prim, seed):
     """Review Focus 3: whatever sequence of calls a generator makes, the builder's
     output parses back unchanged and validates with no errors; and it is hardware
-    renderable exactly when no simultaneous() group was used (Ruling S8)."""
+    renderable exactly when no simultaneous() group and no glbl GSR was used (Ruling
+    S8-prime): never an event-gap reason, since the builder uses validate's gap."""
     import random
 
     rng = random.Random(seed)
@@ -235,7 +233,7 @@ def test_random_builder_programs_validate(prim, seed):
         return rng.randrange(1 << width[p])  # multi-bit data values (FIFO18E1.DI, SRLC32E.A)
 
     b.init(**{p: rand(p) for p in rng.sample(m.in_ports(), rng.randint(0, len(m.in_ports())))})
-    used_sim = False
+    used_sim = used_gsr = False
     for _ in range(40):
         op = rng.choice(["set", "async", "cycle", "edge", "sample", "wait", "glbl", "sim"])
         if op == "set" and data:
@@ -256,6 +254,7 @@ def test_random_builder_programs_validate(prim, seed):
         elif op == "wait":
             b.wait(rng.randint(0, 3000))
         elif op == "glbl":
+            used_gsr = True
             b.glbl("GSR", rng.randint(0, 1))
         elif op == "sim" and clocks and asyncs:
             c, p = rng.choice(clocks), rng.choice(asyncs)
@@ -265,18 +264,19 @@ def test_random_builder_programs_validate(prim, seed):
                 b.edge(c, level[c])
                 b.async_(p, 1 - b.value(p))
     _, r = _check(b, m)
-    assert r.hw_renderable == (not used_sim), r.hw_reasons
+    assert r.hw_renderable == (not used_sim and not used_gsr), r.hw_reasons
+    assert all("GSR-immune" in x or "simultaneous" in x for x in r.hw_reasons), r.hw_reasons
 
 
 def test_glbl_is_spaced_like_async():
-    b, m = _b(async_sep_ps=2500)
+    b, m = _b(async_sep_ps=2500, period_ps=20000)
     b.edge("C", True)
     b.glbl("GSR", 1)
     b.edge("C", False)
     b.async_("CLR", 1)
     b.glbl("GSR", 0)
     v, r = _check(b, m)
-    assert r.hw_renderable
+    assert r.hw_reasons and all("GSR-immune harness" in x for x in r.hw_reasons)
     ts = [(e.t, e.op) for e in v.events if e.op != "end"]
     assert ts == [
         (120000, "edge"),
@@ -307,3 +307,36 @@ def test_sample_refuses_duplicate_labels():
     with pytest.raises(BuilderError, match="duplicate"):  # the auto label S1 is taken
         b2.sample()
         b2.sample()
+
+
+# --- B2: the builder's gap is the validator's minimum event gap
+
+
+def test_builder_gap_follows_primitive_min_event_gap():
+    import dataclasses
+
+    b0, m0 = _b("FDRE")
+    m = dataclasses.replace(m0, min_event_gap_ps=2000)
+    with pytest.raises(BuilderError, match="event gap of 2000 ps"):
+        VecBuilder(m, seed=1)  # the default 10 ns period is too short for a 2 ns gap
+    b = VecBuilder(m, seed=1, period_ps=12000)
+    b.set(CE=1, D=1)
+    b.cycle()
+    b.set(D=0)
+    b.wait(10)
+    b.set(CE=0)
+    v, r = _check(b, m)
+    assert r.hw_renderable, r.hw_reasons
+    ts = sorted({e.t for e in v.events})
+    assert all(y - x >= 2000 for x, y in zip(ts, ts[1:], strict=False))
+
+
+def test_builder_gap_covers_async_sep():
+    b, m = _b("FDRE", async_sep_ps=2500, period_ps=20000)
+    b.set(CE=1)
+    b.cycle()
+    b.set(D=1)
+    b.wait(10)
+    b.set(CE=0)
+    v, r = _check(b, m)
+    assert r.hw_renderable, r.hw_reasons
