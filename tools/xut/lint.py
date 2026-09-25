@@ -14,6 +14,7 @@ from pathlib import Path
 import jsonschema
 import yaml
 
+from xut.schemas import validate as validate_schema
 from xut.status import load_status
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
 
@@ -178,10 +179,19 @@ def check_generated_not_committed(changed_files: list[str], branch: str) -> list
 # --- tests-documented ---------------------------------------------------------------
 
 
+def _schema_message(e: jsonschema.ValidationError) -> str:
+    """`<json path>: <message>` for one schema failure — enough to find and fix it."""
+    return f"{e.json_path}: {e.message}"
+
+
 def check_tests_documented(root: Path) -> list[LintIssue]:
-    """Every `tests/**/test.yaml` test id appears (verbatim) in the sibling README.md; a
-    `related:` id that doesn't exist anywhere under `tests/**` is a warning, not an
-    error — a stale cross-reference is a documentation nit, not a broken build."""
+    """Every `tests/**/test.yaml` validates against `test.schema.json` (rule
+    `test-schema`: unparseable YAML, a non-mapping document, a missing `id`, a bare YAML
+    `yes`/`no` runner value that PyYAML reads as a boolean — Ruling 14), and every test
+    id of a valid file appears (verbatim) in the sibling README.md. A file that fails the
+    schema is reported once and skipped for the README checks. A `related:` id that
+    doesn't exist anywhere under `tests/**` is a warning, not an error — a stale
+    cross-reference is a documentation nit, not a broken build."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -191,12 +201,17 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     for f in test_files:
         rel = str(f.relative_to(root))
         try:
-            data = yaml.safe_load(f.read_text()) or {}
+            data = yaml.safe_load(f.read_text())
         except yaml.YAMLError as e:
-            issues.append(LintIssue(rel, "tests-documented", f"invalid YAML: {e}", "error"))
+            issues.append(LintIssue(rel, "test-schema", f"invalid YAML: {e}", "error"))
+            continue
+        try:
+            validate_schema(data, "test")
+        except jsonschema.ValidationError as e:
+            issues.append(LintIssue(rel, "test-schema", _schema_message(e), "error"))
             continue
         loaded[f] = data
-        all_ids.update(t["id"] for t in data.get("tests", []))
+        all_ids.update(t["id"] for t in data["tests"])
 
     for f, data in loaded.items():
         rel = str(f.relative_to(root))
@@ -207,7 +222,7 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
         else:
             issues.append(LintIssue(rel, "tests-documented", "no sibling README.md", "error"))
 
-        for t in data.get("tests", []):
+        for t in data["tests"]:
             tid = t["id"]
             if readme_text is not None and tid not in readme_text:
                 issues.append(
