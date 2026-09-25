@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from itertools import groupby
 
 from xut.errors import XutError
-from xut.formats.xtr import Trace
+from xut.formats.xtr import Trace, prov_token
 from xut.formats.xvec import Event, Vec, free_clock_edges
 from xut.validate import ROC_WIDTH_PS, validate
 from xut.wrap import DutMap
@@ -56,14 +56,6 @@ def _port_value(m: DutMap, bits: list[str], port: str) -> int:
     if set(s) - {"0", "1"}:
         raise ModelUnsupported(f"{port}={s}: x/z stimulus is covered by sv tests, not the model")
     return int(s, 2)
-
-
-def _prov_token(o: Out) -> str:
-    """The .xtr provenance token of one output: its tag, or -- when the bits differ --
-    the per-bit tags comma-joined LSB first (``bit_prov`` reads it back)."""
-    if isinstance(o.prov, str):
-        return o.prov
-    return o.prov[0] if len(set(o.prov)) == 1 else ",".join(o.prov)
 
 
 def bit_prov(token: str, bit: int) -> str:
@@ -184,7 +176,7 @@ def replay(model_cls: type[Model], vec: Vec, m: DutMap) -> tuple[Trace, Reach]:
                 trace.add(
                     e.target,
                     {p: o.bits for p, o in outs.items()},
-                    {p: _prov_token(o) for p, o in outs.items()},
+                    {p: prov_token(o.prov) for p, o in outs.items()},
                 )
                 reach.ports |= set(outs)
     reach.ports |= {p for p, vals in seen.items() if len(vals) > 1 or vals != {0}}
