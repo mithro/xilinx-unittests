@@ -259,6 +259,14 @@ def test_sample_and_close_write_an_xtr(cocotb_dut, tmp_path, monkeypatch):
     assert t.prov["S0"] == {"Q": "doc:1,inferred:x"} and t.prov["S1"] == {"Q": "doc:2"}
 
 
+def test_default_header_needs_the_runner_environment(cocotb_dut, tmp_path, monkeypatch):
+    monkeypatch.delenv("XUT_MODEL", raising=False)
+    monkeypatch.setenv("XUT_RUNNER", "iverilog")
+    monkeypatch.setenv("XUT_SEED", "1")
+    with pytest.raises(KeyError, match="XUT_MODEL"):
+        cocotb_dut.XutDut(_fake_dut(), _map(tmp_path), tmp_path / "t.xtr")
+
+
 def test_rejects_a_foreign_map(cocotb_dut, tmp_path):
     p = tmp_path / "m.json"
     p.write_text('{"format": "other"}')

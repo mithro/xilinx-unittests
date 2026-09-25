@@ -85,10 +85,11 @@ class XutDut:
             header
             if header is not None
             else {
-                "runner": os.environ.get("XUT_RUNNER", "cocotb"),
+                # set by the runner; missing ones raise rather than record a guess
+                "runner": os.environ["XUT_RUNNER"],
                 "flow": os.environ.get("XUT_FLOW", "rtl"),
-                "model": os.environ.get("XUT_MODEL", "unknown"),
-                "seed": os.environ.get("XUT_SEED", "0"),
+                "model": os.environ["XUT_MODEL"],
+                "seed": os.environ["XUT_SEED"],
                 "prim": self.prim,
                 "cfg": self.cfg,
             }
