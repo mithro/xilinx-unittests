@@ -26,7 +26,11 @@ def _toy_models(tmp_path):
 def test_build_writes_yaml_and_reports_mismatch(tmp_path):
     out = tmp_path / "catalog"
     report = build_all(
-        FIX / "ug953_toy.txt", ["TOYFF", "TOYLUT", "GHOST"], out, _toy_models(tmp_path)
+        FIX / "ug953_toy.txt",
+        ["TOYFF", "TOYLUT", "GHOST"],
+        out,
+        _toy_models(tmp_path),
+        family="7series",
     )
     ff = yaml.safe_load((out / "TOYFF.yaml").read_text())
     assert ff["group"] == "REGISTER"
@@ -42,7 +46,7 @@ def test_build_writes_yaml_and_reports_mismatch(tmp_path):
 
 def test_overrides_merge(tmp_path):
     out = tmp_path / "catalog" / "7series"
-    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path))
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
     (out / "TOYFF.overrides.yaml").write_text(
         yaml.safe_dump(
             {
@@ -74,7 +78,7 @@ def test_default_port_classes():
 
 def test_allowed_values_unquoted_like_defaults(tmp_path):
     out = tmp_path / "catalog"
-    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path))
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
     ff = yaml.safe_load((out / "TOYFF.yaml").read_text())
     mode = {a["name"]: a for a in ff["attributes"]}["MODE"]
     assert mode["allowed"] == ["FAST", "SLOW"] and mode["default"] in mode["allowed"]
@@ -88,12 +92,18 @@ def test_allowed_values_unquoted_like_defaults(tmp_path):
     )
 
 
+def test_build_takes_family_from_caller(tmp_path):
+    out = tmp_path / "catalog" / "fam9"
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="fam9")
+    assert yaml.safe_load((out / "TOYFF.yaml").read_text())["family"] == "fam9"
+
+
 def test_rebuild_is_deterministic(tmp_path):
     out = tmp_path / "catalog"
     models = _toy_models(tmp_path)
-    build_all(FIX / "ug953_toy.txt", ["TOYFF", "TOYLUT"], out, models)
+    build_all(FIX / "ug953_toy.txt", ["TOYFF", "TOYLUT"], out, models, family="7series")
     first = {p.name: p.read_text() for p in out.iterdir()}
-    build_all(FIX / "ug953_toy.txt", ["TOYFF", "TOYLUT"], out, models)
+    build_all(FIX / "ug953_toy.txt", ["TOYFF", "TOYLUT"], out, models, family="7series")
     assert first == {p.name: p.read_text() for p in out.iterdir()}
 
 
@@ -117,7 +127,7 @@ def test_overrides_are_validated(tmp_path):
     import pytest
 
     out = tmp_path / "catalog" / "7series"
-    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path))
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
     ov = out / "TOYFF.overrides.yaml"
     ov.write_text(yaml.safe_dump({"ports": {"D": {"cls": "bogus"}}}))
     with pytest.raises(jsonschema.ValidationError):
@@ -193,6 +203,6 @@ def test_function_review_and_class_notes_reach_the_report(tmp_path):
         "module TOYSER(input TSLIP, TCE1, TCE2, TCLK, TDIV, TSEL, TODD); endmodule\n"
     )
     (u / "IDDR.v").write_text("module IDDR(output Q1, input C, S, R); endmodule\n")
-    report = build_all(FIX / "ug953_layouts.txt", ["TOYSER", "IDDR"], out, [u])
+    report = build_all(FIX / "ug953_layouts.txt", ["TOYSER", "IDDR"], out, [u], family="7series")
     assert "TOYSER: port TODD UG953 function needs review" in report
     assert any(x.startswith("IDDR: port S class depends on SRTYPE") for x in report)

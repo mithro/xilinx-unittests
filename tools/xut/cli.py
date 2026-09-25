@@ -63,11 +63,12 @@ EXPECTED_PRIMITIVES = 103
 
 @catalog_grp.command("build")
 def catalog_build_cmd() -> None:
-    """Regenerate catalog/7series/*.yaml and catalog/EXTRACTION_REPORT.md."""
-    from xut.catalog.build import FAMILY, build_all, render_report
+    """Regenerate catalog/<family>/*.yaml and catalog/EXTRACTION_REPORT.md."""
+    from xut.catalog.build import build_all, render_report
     from xut.catalog.ug953 import names_from_text
     from xut.docs_fetch import UG953, fetch, pdf_to_text
     from xut.paths import VIVADO_RETARGET, VIVADO_UNISIM, cache_dir, repo_root, submodule_unisim
+    from xut.workunits import load_family
 
     text = pdf_to_text(fetch(UG953, cache_dir() / "docs"))
     names = names_from_text(text.read_text())
@@ -81,8 +82,9 @@ def catalog_build_cmd() -> None:
         search = [submodule_unisim()]
         click.echo(f"warning: {VIVADO_UNISIM} not found, using {search[0]}", err=True)
     root = repo_root()
-    out = root / "catalog" / FAMILY
-    report = build_all(text, names, out, search)
+    family = load_family(root)
+    out = root / "catalog" / family
+    report = build_all(text, names, out, search, family=family)
     sources = "the UNISIM models in " + ", ".join(f"`{s.name}/`" for s in search)
     (root / "catalog" / "EXTRACTION_REPORT.md").write_text(render_report(report, names, sources))
     only_in = sum(" only in " in line for line in report)
@@ -102,16 +104,16 @@ def status_init_cmd() -> None:
 
     Never overwrites an existing status/<family>/<PRIM>.yaml.
     """
-    from xut.catalog.build import FAMILY
     from xut.catalog.model import load_entry
     from xut.paths import repo_root
     from xut.status import dump_stub
-    from xut.workunits import load_units
+    from xut.workunits import load_family, load_units
 
     root = repo_root()
+    family = load_family(root)
     unit_of = {p: name for name, u in load_units(root).items() for p in u.primitives}
-    cat_dir = root / "catalog" / FAMILY
-    out_dir = root / "status" / FAMILY
+    cat_dir = root / "catalog" / family
+    out_dir = root / "status" / family
     out_dir.mkdir(parents=True, exist_ok=True)
     names = sorted(f.stem for f in cat_dir.glob("*.yaml") if not f.name.endswith(".overrides.yaml"))
     orphans = [n for n in names if n not in unit_of]
@@ -124,7 +126,7 @@ def status_init_cmd() -> None:
         dest = out_dir / f"{name}.yaml"
         if dest.exists():
             continue
-        entry = load_entry(FAMILY, name, root)
+        entry = load_entry(family, name, root)
         dest.write_text(dump_stub(entry, unit_of[name]))
         written += 1
     click.echo(f"wrote {written} new stub(s); {len(names)} catalog entries, {out_dir}")
@@ -150,10 +152,9 @@ def status_generate_cmd(force: bool) -> None:
     Refuses unless the current branch is `main`, since branches never commit these
     generated files (spec §11, global constraints Review Focus item 5).
     """
-    from xut.catalog.build import FAMILY
     from xut.paths import repo_root
     from xut.status import current_branch, load_status, render_log, render_progress, render_todo
-    from xut.workunits import load_units
+    from xut.workunits import load_family, load_units
 
     branch = current_branch()
     if branch != "main" and not force:
@@ -164,7 +165,7 @@ def status_generate_cmd(force: bool) -> None:
 
     root = repo_root()
     units = load_units(root)
-    status_dir = root / "status" / FAMILY
+    status_dir = root / "status" / load_family(root)
     statuses = []
     for p in sorted(status_dir.glob("*.yaml")):
         try:

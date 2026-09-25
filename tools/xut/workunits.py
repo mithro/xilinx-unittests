@@ -16,36 +16,6 @@ import yaml
 
 from xut.errors import ConfigError
 
-#: A generated catalog file's basename (before `.yaml`) is exactly a
-#: primitive name: uppercase letters, digits and `_` only, never a `.`.
-#: `<PRIM>.overrides.yaml` is a work unit's, never infra's, but a naive
-#: `catalog/7series/*.yaml` glob also matches it, because fnmatch's `*`
-#: matches `.` too. Matching the primitive-name charset one character at a
-#: time (no `*`) excludes any name containing a `.` or a lowercase letter,
-#: which rules out `*.overrides.yaml` for every length up to the bound
-#: below (27 is the longest current 7-series name).
-_MAX_PRIM_NAME_LEN = 40
-_PRIM_NAME_CHAR = "[A-Z0-9_]"
-
-#: Paths that belong to no work unit: shared tooling, generated catalog
-#: entries, docs infra, etc. (spec §10). A static constant, independent of
-#: any particular `docs/work-units.yaml`.
-INFRA_PATHS: list[str] = [
-    "tools/**",
-    "hw/**",
-    "containers/**",
-    ".github/**",
-    "third_party/**",
-    *(f"catalog/7series/{_PRIM_NAME_CHAR * n}.yaml" for n in range(1, _MAX_PRIM_NAME_LEN + 1)),
-    "docs/work-units.yaml",
-    "docs/review/**",
-    "docs/templates/**",
-    "AGENTS.md",
-    "README.md",
-    "LICENSE",
-    "pyproject.toml",
-]
-
 
 @dataclass(frozen=True)
 class WorkUnit:
@@ -55,12 +25,22 @@ class WorkUnit:
     group_dirs: tuple[str, ...]
 
 
+def _load(root: Path) -> dict:
+    return yaml.safe_load((Path(root) / "docs/work-units.yaml").read_text())
+
+
+def load_family(root: Path) -> str:
+    """The device family name from `docs/work-units.yaml` — the single
+    source of truth for the family name; no module hard-codes it."""
+    return _load(root)["family"]
+
+
 def load_units(root: Path) -> dict[str, WorkUnit]:
     """Load `docs/work-units.yaml` from `root` into a name -> WorkUnit map.
 
     Raises `ConfigError` (a ValueError) naming any primitive listed in more than one unit.
     """
-    data = yaml.safe_load((root / "docs/work-units.yaml").read_text())
+    data = _load(root)
     family = data["family"]
     seen: dict[str, str] = {}
     units: dict[str, WorkUnit] = {}

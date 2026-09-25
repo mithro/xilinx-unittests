@@ -141,7 +141,8 @@ def check_branch_paths(
         rest = branch.removeprefix("integ/")
         if not rest or "/" in rest:
             return _branch_error(branch, changed_files, "not a valid integ/<name> branch")
-        allowed = [f"tests/7series/integration/{rest}/**", own_log]
+        families = sorted({u.family for u in units.values()})
+        allowed = [*(f"tests/{fam}/integration/{rest}/**" for fam in families), own_log]
         return _not_owned(changed_files, allowed, branch)
 
     if branch.startswith("docs/"):
