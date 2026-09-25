@@ -3404,7 +3404,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
 - Consumes: Tasks 2–7
 - Produces:
   - `xut.testspec.TestCase` (frozen):
-    - `id, family, prim, level, style, source, test_dir, runners, flows, exercises, attr_sampling, related, gaps, expected_divergence, configs, timeout_s, sv_deviations`;
+    - `id, family, prim, level, style, source, test_dir, runners, unsupported_reasons, config_exclusions, flows, exercises, attr_sampling, related, gaps, expected_divergence, configs, timeout_s, sv_deviations`;
     - `source` is the string from test.yaml, relative to `test_dir`;
     - properties `group` and `shared_dirs`.
   - `discover(root) -> list[TestCase]`
@@ -3434,7 +3434,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
 - `runners` values stay exactly as step 1's `test.schema.json` defines them: the **strings** `"yes"`, `"no"` or `"unsupported"`, always quoted in YAML. The schema's `$comment` explains why: PyYAML turns a bare `yes` into the boolean `true`, which the schema rejects.
 - `unsupported_reasons` (new, optional): a map `{<runner>: "<reason>"}`. Every runner whose value is `"no"` or `"unsupported"` must have an entry, and lint (`runner-reasons`, error) enforces it. `"unsupported"` means the runner cannot run this test; `"no"` means the test is deliberately not run there, e.g. python for a self-checking sv testbench.
 - A runner missing from `runners` is treated as `"no"` with the reason `not declared`, which lint flags.
-- **Infra task (this task, on `infra/sim-runners`):** amend step 1's `tools/xut/schemas/test.schema.json` to add the optional keys `source`, `configs`, `unsupported_reasons`, `expected_divergence`, `timeout_s` and `sv_deviations`, keeping `runners` as the string enum and keeping its `$comment`. Update `docs/templates/test.yaml` to match. Add a schema test that bare `yes` still fails and that `unsupported_reasons` validates.
+- **Infra task (this task, on `infra/sim-runners`):** amend step 1's `tools/xut/schemas/test.schema.json` to add the optional keys `source`, `configs`, `unsupported_reasons`, `config_exclusions` (`{<runner>: {<cfg glob>: "<reason>"}}`, strings only), `expected_divergence`, `timeout_s` and `sv_deviations`, keeping `runners` as the string enum and keeping its `$comment`. The test objects keep `additionalProperties: false`, so every key a generator writes must be listed here. Update `docs/templates/test.yaml` to match (including a commented `config_exclusions` example). Add schema tests: bare `yes` still fails; `unsupported_reasons` and `config_exclusions` validate; a `config_exclusions` reason that is not a string fails.
 - `expected_divergence`: a list of `{finding: findings/<PRIM>-<slug>.md, cls: <finding class>, runners: [..]}`.
 - `timeout_s` (optional; when absent, `--timeout`, otherwise 600).
 - `config_exclusions` (new, optional): `{<runner>: {<cfg glob>: "<reason>"}}`. The runner is declared `"yes"` for the test, but configurations whose name matches a glob get a `skip` `ConfigResult` with that reason (never silent), and the test's status is the worst of the rest. This keeps e.g. the non-`IS_D_INVERTED` configurations of L0/L2 hardware-eligible (review (b) nit).
@@ -3548,6 +3548,7 @@ def test_declared():
 - An unsupported runner writes `result.json` with `status: skip` and the declared reason. It validates against `result.schema.json`.
 - A runner whose `run_config` raises produces `status: error` whose reason contains the exception text, and `run.log` exists.
 - A runner whose `tools()` or `finish()` raises, or whose config writes a malformed `trace.xtr`, still leaves an `error` `result.json` (review #9).
+- `config_exclusions`: with `{fake: {"*_d1_*": "reason"}}` on a two-config test (`i0_d0_r0`, `i0_d1_r0`), a fake runner's `run_config` is called only for `i0_d0_r0`; `result.json` lists `i0_d1_r0` as `skip` with reason `excluded: reason`, and the test status is that of `i0_d0_r0`.
 - If the python runner errors on one of two configurations, the iverilog result has both configurations, the missing one as `error` "no expected trace" (review #10).
 - `sim_tool_versions` called from 16 threads at once returns identical, non-"unknown" values (container test).
 - `worst(["pass", "fail", "error"]) == "fail"`, `worst(["pass", "error"]) == "error"`, `worst(["skip", "pass"]) == "pass"` and `worst([]) == "skip"`.
@@ -3567,6 +3568,7 @@ def test_declared():
 from __future__ import annotations
 
 import datetime as dt
+import fnmatch
 import hashlib
 import json
 import shutil
@@ -3730,9 +3732,14 @@ class Runner(ABC):
         cfgs = self.configs(case, ctx)
         if not cfgs:
             res.status, res.reason = "error", "no configurations (did the python runner fail?)"
+        excluded = case.config_exclusions.get(self.name, {})
         for cfg in cfgs:
             cd = d / f"cfg-{cfg}"
             cd.mkdir()
+            pat = next((g for g in excluded if fnmatch.fnmatchcase(cfg, g)), None)
+            if pat is not None:  # declared per-configuration exclusion: skip, with reason
+                res.configs.append(ConfigResult(cfg, "skip", f"excluded: {excluded[pat]}"))
+                continue
             try:
                 cr = self.run_config(case, cfg, cd, ctx)
             except Exception as e:  # recorded as error with the traceback in the log
@@ -3812,6 +3819,7 @@ git add tools && git commit -m "runners: add runner base, result.json, python go
   - `IverilogVzRunner` (`name="iverilog-vz"`): the same, but with the transformed-model directory first on the library path. The class stub exists here, but it is **not** added to `RUNNERS` until Task 15, so no run before then can select it and fail with `NotImplementedError`.
   - `vector_check(cfgdir, m, labels, expected, actual_header, x_observable) -> ConfigResult`, which is shared by all simulator runners
   - `sv_check(cfgdir, log_text, header) -> ConfigResult`
+  - `reject_result(cfg, compiled_ok, log_text) -> ConfigResult`, the single `expect=reject` rule; xsim (Task 10) and verilator (Task 15) call it too, so an elaboration-time rejection is handled the same everywhere
 
 **Vector config run** (`cfgdir` = `build/rtl/iverilog/<model-source>/<id>/cfg-<cfg>/`):
 
@@ -3821,7 +3829,8 @@ git add tools && git commit -m "runners: add runner base, result.json, python go
 3. Run: `vvp -n sim.vvp`.
 4. Judge the result:
    - compile exit ≠ 0 → `error: compile failed`;
-   - `XUT_DONE` absent → `error: simulation ended early`, except that `expect=reject` in the `.xvec` turns this case into `pass` and `XUT_DONE` present into `fail`;
+   - `XUT_DONE` absent → `error: simulation ended early`;
+   - `expect=reject` in the `.xvec` → `reject_result(...)` decides instead: a compile/elaboration failure or no `XUT_DONE` is `pass`, `XUT_DONE` present is `fail`;
    - otherwise `raw.txt` → `trace.xtr` → `compare` with `expected.xtr` → `pass` or `fail`. `mismatches.txt` holds each mismatch line, and `reason` has the first three.
 
 The paths above are container paths from `executor.guest(...)`. `ctx.defines` become `-D` flags. By default none are set (spec §6.2 pins XIL_TIMING, XIL_XECLIB, XIL_DR and XIL_ATTR_TEST undefined), and they are recorded in `result.json`.
@@ -3925,6 +3934,17 @@ def vector_check(cd: Path, m: DutMap, labels: list[str], expected: xtr.Trace, he
                         sha256_file(cd / "trace.xtr"), len(mm))
 
 
+def reject_result(cfg: str, compiled_ok: bool, log_text: str) -> ConfigResult:
+    """Shared by every simulator runner (iverilog, xsim, verilator) for expect=reject: a
+    compile/elaboration failure or a run without XUT_DONE is a rejection (pass); a run
+    that reaches XUT_DONE accepted the illegal value (fail)."""
+    if not compiled_ok:
+        return ConfigResult(cfg, "pass", "rejected at compile/elaboration")
+    if "XUT_DONE" not in log_text:
+        return ConfigResult(cfg, "pass", "rejected at runtime")
+    return ConfigResult(cfg, "fail", "illegal attribute was accepted")
+
+
 def sv_check(cd: Path, log_text: str, header: dict) -> ConfigResult:
     cfg = cd.name[4:]
     body = cd / "trace.body"
@@ -3991,16 +4011,14 @@ class IverilogRunner(Runner):
             argv = ["iverilog", "-g2012", "-o", "sim.vvp", "-s", "xut_vector_tb", "-s", "glbl",
                     "-I", ".", "-I", "dut", *self._libs(ex, ctx, first), *self._defs(ctx),
                     "xut_vector_tb.sv", "dut/xut_dut.v", glbl]
-            if ex.run(argv, cwd=cd, log=log, timeout_s=timeout) != 0:
-                if vec.expect == "reject":  # elaboration-time rejection also counts
-                    return ConfigResult(cfg, "pass", "rejected at compile/elaboration")
-                return ConfigResult(cfg, "error", "compile failed")
-            ex.run(["vvp", "-n", "sim.vvp"], cwd=cd, log=log, timeout_s=timeout)
+            compiled_ok = ex.run(argv, cwd=cd, log=log, timeout_s=timeout) == 0
+            if compiled_ok:
+                ex.run(["vvp", "-n", "sim.vvp"], cwd=cd, log=log, timeout_s=timeout)
             text = log.read_text()
             if vec.expect == "reject":
-                ok = "XUT_DONE" not in text
-                return ConfigResult(cfg, "pass" if ok else "fail",
-                                    None if ok else "illegal attribute was accepted")
+                return reject_result(cfg, compiled_ok, text)
+            if not compiled_ok:
+                return ConfigResult(cfg, "error", "compile failed")
             if "XUT_DONE" not in text:
                 return ConfigResult(cfg, "error", "simulation ended early (no XUT_DONE)")
             header["seed"] = str(vec.seed)
@@ -4090,7 +4108,7 @@ bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && \
   - `render_script` output contains `source /opt/xilinx/Vivado/2025.2/settings64.sh` **only inside** `bash -c '...'`. Assert that the text before the first `bash -c` does not contain `settings64`.
   - With the model source `unisim-gh-2020.1`, `available()` is false with the reason above.
 
-- [ ] **Step 2: Implement.** Reuse the copying, stim writing and checking code from `IverilogRunner.run_config` by moving its shared part into a helper `prepare_vector(cd, case, cfg, ctx) -> (vec, m, compiled, expected, header)` in `runners/base.py`. Refactor `IverilogRunner` to use it in the same commit.
+- [ ] **Step 2: Implement.** Reuse the copying, stim writing and checking code from `IverilogRunner.run_config` by moving its shared part into a helper `prepare_vector(cd, case, cfg, ctx) -> (vec, m, compiled, expected, header)` in `runners/base.py`. Refactor `IverilogRunner` to use it in the same commit. For `expect=reject` configs, xsim returns `reject_result(cfg, compiled_ok, log_text)`, where `compiled_ok` is false when `xvlog`/`xelab` failed (no `INFO: [XSIM` line in the log). Add a test: the TOYFF reject fixture (Task 9) passes on xsim.
 
 - [ ] **Step 3: Run the tests** (`uv run pytest tools/tests -m "vivado or not vivado" -v > .cache/pytest.log 2>&1; tail -n 20 .cache/pytest.log`). Expected: all pass on the host.
 
@@ -5328,7 +5346,7 @@ Per config:
 1. `ensure_model(ctx.model_source, case.prim, attrs)`, where `attrs` is the configuration's attributes (the `.xvec` `attr.*` header, or the sv/cocotb `configs` entry):
    - status `unsupported` → `error "verilatorize cannot transform <PRIM>: <reason>"`;
    - status `transformed` with `equiv[config_key(attrs)] != "pass"` → `error "transform-bug: Icarus equivalence <status> for <PRIM> <config> blocks Verilator results (spec §6.2)"`.
-2. Prepare exactly as iverilog does (`prepare_vector`).
+2. Prepare exactly as iverilog does (`prepare_vector`). An `expect=reject` configuration is judged by the shared `reject_result` (build failure or no `XUT_DONE` → `pass`) and skips the X-seed comparison.
 3. Build once:
 
 ```
@@ -5496,7 +5514,7 @@ cd ../xilinx-unittests-worktrees/infra-crosscheck && mkdir -p .cache && uv venv 
   - `gather(root, test_id) -> dict[str, dict[tuple[str, str], View]]`: per model source (the `<model-source>` path component), the views keyed `(flow, runner)`; `classify` runs once per model source, so traces are only ever compared like-for-like. The golden (`python`) expectation is taken from the same model-source directory; it is model-independent, so either copy serves.
   - `classify(test_id, views, expected_divergence=()) -> list[Finding]`
   - `matrix(views) -> str` (markdown)
-  - `write_finding(root, prim, f) -> Path | None`, which never overwrites
+  - `write_finding(root, prim, f) -> Path | None`, which never overwrites, and returns `None` without writing for a `known-divergence` (its finding already exists, named by `f.finding`), so `--write-findings` never creates a duplicate stub
   - CLI `xut crosscheck SELECT... [--write-findings]`. It writes `build/crosscheck/<test-id>.json`, prints the matrix and findings, and exits 1 if any finding is not covered by `expected_divergence`.
   - **`expected_divergence` never masks** (controller ruling on review (b) #4, spec §8 rev 3.1). Expected bits stay defined, and every disagreement is still computed and reported. A finding matched by an `expected_divergence` entry is reported with class **`known-divergence`** plus `of: <original class>` and `finding: <finding id>` (the file stem). It is listed in the crosscheck output, recorded in the status file's `findings`, and so appears in PROGRESS.md/TODO.md. Only unlisted findings make the exit code 1.
 
@@ -5546,7 +5564,8 @@ entry to test.yaml pointing here. Never weaken the test (spec §8).
   - two model sources are never cross-compared;
   - an `expected_divergence` entry turns the finding into `known-divergence` (with `of` and `finding` set), it is still printed and written to `build/crosscheck/<test-id>.json`, and the CLI exits 0;
   - the expected trace is unchanged by `expected_divergence` (no bit becomes `-`);
-  - `write_finding` twice → the second call returns `None` and the file is unchanged.
+  - `write_finding` twice → the second call returns `None` and the file is unchanged;
+  - `write_finding` on a `known-divergence` returns `None` and creates no file.
 
 - [ ] **Step 2: Implement `tools/xut/crosscheck.py`** (core shown; `gather`, `matrix` and the CLI are straightforward reads and formatting):
 
@@ -5714,7 +5733,7 @@ def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
   - `catalog/<family>/<PRIM>.overrides.yaml` (the claims).
 
   It is `sha256` over the sorted lines `"<path> <git rev-parse HEAD:<path>>"` for those paths that exist, stored as `"sha256:<hex>"` (one string, as the status schema allows). `record` refuses (with a `ClickException` naming the files) when `git status --porcelain -- <all of those paths>` is not empty, because a hash of uncommitted inputs would be a lie.
-- **`measured.tools`** is the union of the `tools` of the recorded results, plus `container` (digest) and `model_source`.
+- **`measured.tools`** is the union of the `tools` of the recorded results, plus `container` (the image digest). The model source is **not** a `tools` entry: it is recorded only in `measured.model_sources` (see "Model source in status").
 - **`coverage.covered`** is:
   - (the declared `exercises` of vector tests) ∩ (the python runner's `bins_reached`) — the golden model confirms reach, spec §9;
   - ∪ the declared `exercises` of sv and cocotb tests that passed on at least one simulator runner.
@@ -5764,7 +5783,7 @@ git add tools/xut/lint.py tools/tests/test_lint.py pyproject.toml docs/templates
 
 Until the flops unit merges, `xut run` selects nothing and exits 0 with `no tests selected`; the step becomes live with PR E. Commit it with `infra: CI runs flops L0/L1 vector tests on iverilog against the UNISIM submodule`. `xut crosscheck` gains `--model-source` to restrict the report to one source.
 
-Update `docs/templates/test.yaml` with the Task 8 keys (`source`, `configs`, `expected_divergence`, `timeout_s`, `sv_deviations`). Write the log entry, push (`git push -u origin infra/crosscheck`), and open **PR D** with `gh pr create --base infra/sim-runners --title "infra: crosscheck, status record, shared unit test paths"`. Merge order: A, B, then C and D (either order; the second one resolves the Task 16/18 rebase conflict). After each merge the orchestrator regenerates status on `main` (`uv run xut status generate`, and after C also `uv run xut portability --write`) and commits `status: regenerate`.
+Check that `docs/templates/test.yaml` carries all the Task 8 keys (`source`, `configs`, `unsupported_reasons`, `config_exclusions`, `expected_divergence`, `timeout_s`, `sv_deviations`). Write the log entry, push (`git push -u origin infra/crosscheck`), and open **PR D** with `gh pr create --base infra/sim-runners --title "infra: crosscheck, status record, shared unit test paths"`. Merge order: A, B, then C and D (either order; the second one resolves the Task 16/18 rebase conflict). After each merge the orchestrator regenerates status on `main` (`uv run xut status generate`, and after C also `uv run xut portability --write`) and commits `status: regenerate`.
 
 ---
 
