@@ -3,19 +3,26 @@
 
 The status file is the source of truth for a primitive's measured results and
 functional-coverage bins. ``xut status generate`` (Task 7) renders it into
-`status/PROGRESS.md` and friends; this module only defines the schema, loads
+`status/PROGRESS.md` and friends; ``xut status record`` (``record``) fills it from
+the ``result.json`` files of ``xut run``. This module also defines the schema, loads
 and validates a status file, and builds a fresh stub.
 """
 
+import hashlib
+import json
 import os
+import re
 import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
+import jsonschema
 import yaml
 
 from xut import schemas
 from xut.catalog.model import CatalogEntry, is_enumerated
-from xut.errors import GitError
+from xut.errors import ConfigError, GitError, XutError
 
 #: Valid values for a `results` entry (spec §11).
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
@@ -54,6 +61,12 @@ _NOT_RUN_MARK = _MARKS["not-run"]
 #: The PROGRESS.md legend line: every mark, in `_PRECEDENCE` order, labelled with
 #: the `results` value it stands for.
 _LEGEND = "Marks: " + ", ".join(f"`{_MARKS[v]}` {v}" for v in _PRECEDENCE) + "."
+#: The marks are the reference model source's (unisim-2025.2); a suffix flags a cell
+#: another source disagrees on.
+_SOURCE_LEGEND = (
+    "Marks are for unisim-2025.2; `+gh` flags a level where unisim-gh-2020.1 passes "
+    "what 2025.2 fails (or errors), or the reverse."
+)
 
 
 def validate(data: dict) -> None:
@@ -189,9 +202,33 @@ def _unit_of_map(units: dict) -> dict[str, str]:
     return {p: name for name, u in units.items() for p in u.primitives}
 
 
+def _source_tag(name: str) -> str:
+    """``unisim-gh-2020.1`` -> ``gh``: the suffix marking a cell another source disagrees on."""
+    return name.removeprefix("unisim-").split("-")[0]
+
+
+def _disagrees(a: str | None, b: str | None) -> bool:
+    """Pass on one model source, fail or error on the other."""
+    bad = ("fail", "error")
+    return (a == "pass" and b in bad) or (b == "pass" and a in bad)
+
+
+def _source_suffix(status: dict, level: str) -> str:
+    """``+gh`` (one per disagreeing source) when a non-reference model source disagrees
+    in pass/fail with the reference ``results`` for any key of ``level``."""
+    ref = status["results"]
+    tags = []
+    for name, other in sorted(status.get("results_by_model_source", {}).items()):
+        if any(k.startswith(level + "/") and _disagrees(ref.get(k), v) for k, v in other.items()):
+            tags.append("+" + _source_tag(name))
+    return "".join(tags)
+
+
 def _primitive_table_row(status: dict, unit: str) -> str:
     prim = status["primitive"]
-    cells = " | ".join(_level_cell(status["results"], level) for level in LEVELS)
+    cells = " | ".join(
+        _level_cell(status["results"], level) + _source_suffix(status, level) for level in LEVELS
+    )
     return (
         f"| {prim} | {unit} | {status['model_library']} | {cells} | "
         f"{_coverage_pct(status['coverage'])} | {len(status['coverage']['uncovered'])} | "
@@ -220,7 +257,7 @@ def render_progress(statuses: list[dict], units: dict) -> str:
         # doesn't take down the whole report.
         by_group.setdefault(group_of.get(s["primitive"], "?"), []).append(s)
 
-    lines = ["# Progress", "", _LEGEND, "", "## Summary", ""]
+    lines = ["# Progress", "", _LEGEND, _SOURCE_LEGEND, "", "## Summary", ""]
     lines.append("| Group | Primitives | L0 pass | L1 pass | L2 pass | L3 pass |")
     lines.append("|---|---|---|---|---|---|")
     for group in sorted(by_group):
@@ -295,3 +332,307 @@ def render_log(log_dir: Path) -> str:
         title = entry_lines[0].lstrip("#").strip() if entry_lines else f.stem
         lines.append(f"- [{title}](../log/{f.name})")
     return "\n".join(lines) + "\n"
+
+
+# --- xut status record (spec §9, §11) ---------------------------------------------------
+
+#: The reference model source: its results fill ``results``; every other source fills
+#: ``results_by_model_source.<source>`` (review (b) round 2, N2).
+REFERENCE_MODEL_SOURCE = "unisim-2025.2"
+
+#: The runners ``record`` writes keys for. ``iverilog-vz`` is not recorded: it only
+#: guards the Verilator results and feeds ``transform-bug`` findings.
+RECORDED_RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
+
+#: The UNISIM simulators: an sv/cocotb test's bins count as covered once it passed on one.
+SIMULATORS = ("xsim", "iverilog", "verilator")
+
+#: Worst-first precedence for aggregating one ``<level>/<runner>/<flow>`` cell over a
+#: primitive's tests (Task 18 brief). A deliberate ``skip`` (every configuration
+#: excluded) ranks last: it says nothing about the primitive.
+RECORD_PRECEDENCE = ("fail", "error", "pass", "not-run", "unsupported", "n/a", "skip")
+
+_STATUS_LINE = re.compile(r"^\s*(?:[-*]\s*)?Status:\s*(\S+)", re.IGNORECASE)
+
+
+class DirtyTreeError(XutError, RuntimeError):
+    """``xut status record`` refuses to hash uncommitted inputs."""
+
+
+class RecordError(XutError, LookupError):
+    """``xut status record`` has nothing (valid) to record."""
+
+
+def _warn_stderr(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def flows_for(runner: str, flows: list[str]) -> list[str]:
+    """The flows ``runner`` has a result key for, given a test's declared ``flows``:
+    the golden model (``python``) only runs ``rtl``; ``hw`` never runs ``rtl`` (its keys
+    use the declared netlist flows); a simulator runs ``rtl`` plus every declared flow.
+    The same rule as ``xut crosscheck``'s declared runners."""
+    if runner == "python":
+        return ["rtl"]
+    if runner == "hw":
+        return [f for f in dict.fromkeys(flows) if f != "rtl"]
+    return list(dict.fromkeys(["rtl", *flows]))
+
+
+def worst_result(values: list[str]) -> str:
+    """The aggregate of several ``results`` values, by ``RECORD_PRECEDENCE``."""
+    return min(values, key=RECORD_PRECEDENCE.index)
+
+
+def tree_paths(family: str, group: str, prim: str, unit: str) -> list[str]:
+    """Every repository path ``prim``'s results depend on (review (b) #2): its tests, its
+    unit's shared test code, its golden model (per primitive and the unit's ``_common``)
+    and its catalog overrides (the claims)."""
+    return [
+        f"tests/{family}/{group}/{prim}",
+        f"tests/{family}/{group}/_shared/{unit}",
+        f"models/xut_models/{family}/{prim.lower()}.py",
+        f"models/xut_models/{family}/_common/{unit}.py",
+        f"catalog/{family}/{prim}.overrides.yaml",
+    ]
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise GitError("git: command not found") from e
+
+
+def tree_hash(root: Path, paths: list[str]) -> str:
+    """``"sha256:<hex>"`` over the sorted lines ``"<path> <git rev-parse HEAD:<path>>"``
+    of the ``paths`` that exist in HEAD. Raises ``DirtyTreeError`` naming the files
+    when ``git status --porcelain -- <paths>`` is not empty: a hash of uncommitted
+    inputs would be a lie."""
+    root = Path(root)
+    st = _git(root, "status", "--porcelain", "--", *paths)
+    if st.returncode != 0:
+        raise GitError(f"git status failed: {st.stderr.strip() or st.returncode}")
+    dirty = [line for line in st.stdout.splitlines() if line.strip()]
+    if dirty:
+        raise DirtyTreeError(
+            "refusing to record: uncommitted changes to files the results depend on "
+            "(commit them first): " + "; ".join(line.strip() for line in dirty)
+        )
+    lines = []
+    for p in paths:
+        r = _git(root, "rev-parse", "--verify", "--quiet", f"HEAD:{p}")
+        if r.returncode == 0 and r.stdout.strip():
+            lines.append(f"{p} {r.stdout.strip()}")
+    text = "".join(f"{line}\n" for line in sorted(lines))
+    return "sha256:" + hashlib.sha256(text.encode()).hexdigest()
+
+
+def open_findings(root: Path, prim: str) -> list[str]:
+    """The stems of ``findings/<PRIM>-*.md`` whose ``Status:`` line is ``open``."""
+    out = []
+    for f in sorted((Path(root) / "findings").glob(f"{prim}-*.md")):
+        for line in f.read_text().splitlines():
+            m = _STATUS_LINE.match(line)
+            if m:
+                if m.group(1).lower() == "open":
+                    out.append(f.stem)
+                break
+    return out
+
+
+def _load_result(
+    root: Path, flow: str, runner: str, ms: str, test_id: str, warn: Callable[[str], None]
+) -> dict | None:
+    """``build/<flow>/<runner>/<ms>/<test_id>/result.json``, validated; ``None`` if absent.
+    An unreadable, invalid or misplaced one is an ``error`` result (with a warning)."""
+    p = Path(root) / "build" / flow / runner / ms / test_id / "result.json"
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text())
+        schemas.validate(data, "result")
+    except (OSError, ValueError, jsonschema.ValidationError) as e:
+        warn(f"{p}: unusable result.json, recorded as error: {str(e).splitlines()[0]}")
+        return {"status": "error", "reason": "unusable result.json", "tools": {}}
+    got = (data["flow"], data["runner"], data["model_source"], data["test_id"])
+    if got != (flow, runner, ms, test_id):
+        warn(f"{p}: result.json names {got}, not its path; recorded as error")
+        return {"status": "error", "reason": "misplaced result.json", "tools": {}}
+    return data
+
+
+def _cell(declared_as: str | None, res: dict | None) -> str:
+    """One test's ``results`` value for one (runner, flow) (Task 18 brief)."""
+    if declared_as == "unsupported":
+        return "unsupported"
+    if declared_as == "no":
+        return "n/a"
+    if res is None:
+        return "not-run"  # declared (or undeclared: lint warns) but never run
+    if res["status"] != "skip":
+        return res["status"]
+    reason = res.get("reason") or ""
+    if reason.startswith("runner unavailable"):
+        return "not-run"
+    if reason.startswith("runner ") and " does not run " in reason:
+        return "n/a"  # the runner cannot run this style at all
+    if reason.startswith("declared unsupported"):
+        return "not-run"  # a stale result from before the declaration changed
+    return "skip"  # e.g. every configuration excluded, with a reason
+
+
+def _merge_tools(into: dict[str, set[str]], res: dict) -> None:
+    for k, v in (res.get("tools") or {}).items():
+        into.setdefault(k, set()).add(str(v))
+    c = res.get("container")
+    if c:
+        into.setdefault("container", set()).add(c.get("digest") or c["image"])
+
+
+def _coverage(
+    root: Path, ms: str, entry: CatalogEntry, cases: list, warn: Callable[[str], None]
+) -> dict:
+    """``covered`` = (vector ``exercises`` ∩ the python run's ``bins_reached``) ∪ (sv/cocotb
+    ``exercises`` of tests that passed on a simulator); ``uncovered`` = the rest of
+    ``coverage_bins(entry)`` (spec §9)."""
+    bins = coverage_bins(entry)
+    known = set(bins)
+    covered: set[str] = set()
+    for c in cases:
+        for b in c.exercises:
+            if b not in known:
+                warn(f"{c.id}: exercises {b}, which is not a coverage bin of {c.prim}")
+        if c.style == "vector":
+            py = _load_result(root, "rtl", "python", ms, c.id, warn)
+            reached = py.get("bins_reached") if py else None
+            if reached is None:
+                if c.exercises:
+                    warn(
+                        f"{c.id}: no python result with bins_reached ({ms}); its exercises "
+                        "stay uncovered"
+                    )
+                continue
+            for b in c.exercises:
+                if b in reached:
+                    covered.add(b)
+                else:
+                    warn(f"{c.id}: declares {b} but the golden model did not reach it")
+        else:
+            passed = any(
+                (r := _load_result(root, flow, sim, ms, c.id, warn)) is not None
+                and r["status"] == "pass"
+                for sim in SIMULATORS
+                for flow in flows_for(sim, c.flows)
+            )
+            if passed:
+                covered |= set(c.exercises)
+    return {
+        "covered": [b for b in bins if b in covered],
+        "uncovered": [b for b in bins if b not in covered],
+    }
+
+
+_KEY_ORDER = (
+    "primitive",
+    "family",
+    "work_unit",
+    "model_library",
+    "measured",
+    "results",
+    "results_by_model_source",
+    "findings",
+    "coverage",
+    "notes",
+)
+
+
+def _in_schema_order(status: dict) -> dict:
+    """``status`` with its keys in the documented order (unknown keys last), so a
+    recorded file diffs cleanly against the stub it replaces."""
+    rank = {k: i for i, k in enumerate(_KEY_ORDER)}
+    return dict(sorted(status.items(), key=lambda kv: rank.get(kv[0], len(rank))))
+
+
+def record(
+    root: Path,
+    prim: str,
+    family: str = "7series",
+    model_source: str = REFERENCE_MODEL_SOURCE,
+    warn: Callable[[str], None] | None = None,
+) -> dict:
+    """Record ``prim``'s results against ``model_source`` into
+    ``status/<family>/<PRIM>.yaml``; write it and return it (spec §9, §11; Task 18).
+
+    The reference source fills ``results``, ``coverage`` and ``measured.tools``; any
+    other fills only ``results_by_model_source.<source>`` (and adds its tools). Both add
+    the source to ``measured.model_sources`` and refresh ``measured.tree_hash`` and
+    ``findings``; recording one source never touches another's results. ``warn`` gets
+    every warning (default: stderr)."""
+    from xut.catalog.model import load_entry
+    from xut.testspec import discover
+
+    warn = warn or _warn_stderr
+    root = Path(root)
+    cases = [c for c in discover(root) if c.prim == prim and c.family == family]
+    if not cases:
+        raise RecordError(f"no tests for {prim} under tests/{family}/")
+    unit, group = cases[0].work_unit, cases[0].group
+    entry = load_entry(family, prim, root)
+    thash = tree_hash(root, tree_paths(family, group, prim, unit))
+
+    cells: dict[str, list[str]] = {}
+    tools: dict[str, set[str]] = {}
+    found = 0
+    for c in cases:
+        for runner in RECORDED_RUNNERS:
+            for flow in flows_for(runner, c.flows):
+                res = _load_result(root, flow, runner, model_source, c.id, warn)
+                if res is not None:
+                    found += 1
+                    _merge_tools(tools, res)
+                key = f"{c.level}/{runner}/{flow}"
+                cells.setdefault(key, []).append(_cell(c.runners.get(runner), res))
+    if not found:
+        raise RecordError(
+            f"no result.json for any {prim} test under build/*/*/{model_source}/: "
+            f"run `xut run {prim} --model-source {model_source}` first"
+        )
+    results = {k: worst_result(v) for k, v in sorted(cells.items())}
+
+    path = root / "status" / family / f"{prim}.yaml"
+    if path.is_file():
+        try:
+            status = load_status(path)
+        except (yaml.YAMLError, jsonschema.ValidationError) as e:
+            raise ConfigError(f"{path.relative_to(root)}: {str(e).splitlines()[0]}") from e
+    else:
+        status = new_stub(entry, unit)
+    measured = status["measured"]
+    others = [s for s in measured.get("model_sources", []) if s != model_source]
+    if measured["tree_hash"] not in (None, thash) and others:
+        warn(
+            f"{prim}: the results of {', '.join(others)} were recorded at tree hash "
+            f"{measured['tree_hash']}, not {thash}: re-record them"
+        )
+    status["work_unit"] = unit
+    status["model_library"] = entry.model["library"]
+    measured["tree_hash"] = thash
+    measured["tools"] = {
+        **measured["tools"],
+        **{k: ", ".join(sorted(v)) for k, v in sorted(tools.items())},
+    }
+    measured["model_sources"] = sorted({*measured.get("model_sources", []), model_source})
+    if model_source == REFERENCE_MODEL_SOURCE:
+        status["results"] = results
+        status["coverage"] = _coverage(root, model_source, entry, cases, warn)
+    else:
+        by = status.setdefault("results_by_model_source", {})
+        by[model_source] = results
+        status["results_by_model_source"] = dict(sorted(by.items()))
+    status["findings"] = open_findings(root, prim)
+    status = _in_schema_order(status)
+    validate(status)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(HEADER + yaml.safe_dump(status, sort_keys=False, default_flow_style=False))
+    return status
