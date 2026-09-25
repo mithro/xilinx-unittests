@@ -48,7 +48,7 @@ from xut.testspec import TestCase
 from xut.validate import mark, validate
 from xut.wrap import DutSpec, spec_from_catalog, write_dut
 from xut_models import registry
-from xut_models.base import ModelUnsupported
+from xut_models.base import ModelContractError, ModelUnsupported
 
 
 class SourceError(XutError, ValueError):
@@ -227,6 +227,8 @@ class PythonRunner(Runner):
                     return ConfigResult(cfg, "skip", f"model unsupported: {e}", stim_sha)
                 except InvalidStimulus as e:
                     return ConfigResult(cfg, "error", str(e), stim_sha)
+                except ModelContractError as e:
+                    return ConfigResult(cfg, "error", f"golden model bug: {e}", stim_sha)
                 if not trace.samples:  # validate refuses this; zero evidence never passes
                     return ConfigResult(cfg, "error", "golden replay has no samples", stim_sha)
                 trace.header["flow"] = ctx.flow

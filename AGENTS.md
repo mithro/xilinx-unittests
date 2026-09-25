@@ -150,6 +150,12 @@ Tag every modelled behaviour with its provenance:
 - `inferred:<reason>` — the documentation is silent and the behaviour was
   inferred (state the reasoning in `<reason>`).
 
+A don't-care (`-`) output bit is allowed only where UG953 *declares* the
+value undefined, so its provenance is always `doc:<page>` (spec §5.3). Where
+UG953 is silent, give a definite `inferred:` value: a disagreement then
+becomes a `doc-gap` finding in crosscheck, never a mask. The model API
+(`Out`) refuses a `-` bit with an `inferred:` tag.
+
 ## 9. Never weaken a test to hide a divergence
 
 If a test disagrees with an oracle, classify and record it — don't touch
