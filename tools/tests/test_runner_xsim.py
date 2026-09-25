@@ -2,7 +2,8 @@
 """The xsim runner (Vivado 2025.2, native; vector and sv styles; spec §4.3, §6).
 
 Tests marked ``vivado`` need /opt/xilinx/Vivado/2025.2 and skip, with the reason,
-without it. They run in ``build/pytest-xsim/<test>/`` under the repository. xsim uses
+without it. They run in pytest's ``tmp_path`` (xsim is native; the iverilog runs of the
+CLI demos mount it at /xut-root). xsim uses
 Vivado's precompiled ``unisims_ver``, which has no toy TOYFF, so the toy model is
 compiled into ``work`` with ``XsimRunner(extra_files=[...])`` (tests only).
 """
@@ -10,7 +11,6 @@ compiled into ``work`` with ``XsimRunner(extra_files=[...])`` (tests only).
 import dataclasses
 import json
 import shlex
-import shutil
 import subprocess
 import textwrap
 import time
@@ -59,13 +59,9 @@ def toy(monkeypatch):
 
 
 @pytest.fixture
-def work(request):
-    """A fresh directory under the repository's build/."""
-    d = repo_root() / "build" / "pytest-xsim" / request.node.name
-    if d.exists():
-        shutil.rmtree(d)
-    d.mkdir(parents=True)
-    return d
+def work(tmp_path):
+    """A fresh run root outside the worktree."""
+    return tmp_path
 
 
 @pytest.fixture

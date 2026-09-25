@@ -260,15 +260,13 @@ needs_sim = [
 
 @needs_sim[0]
 @needs_sim[1]
-def test_tb_replays_on_iverilog():
-    work = repo_root() / "build" / "tbtest"
-    shutil.rmtree(work, ignore_errors=True)
-    work.mkdir(parents=True)
+def test_tb_replays_on_iverilog(tmp_path):
+    work = tmp_path
     write_stim(VEC, M, work)
     (work / "xut_cfg.vh").write_text("`define XUT_NCLK 1\n`define XUT_NIN 3\n`define XUT_NOUT 1\n")
     shutil.copy(Path(__file__).parent / "fixtures/tb/toy_dut.v", work / "toy_dut.v")
     shutil.copy(TB, work / "tb.sv")
-    ex, log = DockerExecutor(), work / "run.log"
+    ex, log = DockerExecutor(root=work), work / "run.log"
     assert (
         ex.run(
             [
