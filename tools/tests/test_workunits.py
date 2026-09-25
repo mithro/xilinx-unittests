@@ -9,6 +9,8 @@ from xut.workunits import branch_slug, load_family, load_units, owned_paths, uni
 
 
 def test_every_catalog_primitive_in_exactly_one_unit():
+    """Repo invariant (reads the live checkout on purpose): docs/work-units.yaml lists
+    every generated catalog primitive exactly once."""
     root = repo_root()
     units = load_units(root)
     listed = [p for u in units.values() for p in u.primitives]
@@ -22,6 +24,7 @@ def test_every_catalog_primitive_in_exactly_one_unit():
 
 
 def test_owned_paths_for_flops():
+    """Reads the live docs/work-units.yaml on purpose (the real `flops` unit)."""
     u = load_units(repo_root())["flops"]
     paths = owned_paths(u)
     assert "tests/7series/register/FDRE/**" in paths
@@ -38,7 +41,8 @@ def _concrete(pattern: str) -> str:
 
 
 def test_ownership_is_exclusive():
-    """No two units share a path, and no unit-owned path is writable from infra.
+    """Repo invariant (reads the live docs/work-units.yaml on purpose): no two units
+    share a path, and no unit-owned path is writable from infra.
 
     Regression for the fnmatch trap: `*` matches `.`, so a naive infra pattern
     `catalog/7series/*.yaml` would also match `<PRIM>.overrides.yaml`, which
