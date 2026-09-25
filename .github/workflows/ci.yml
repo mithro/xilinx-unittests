@@ -46,3 +46,8 @@ jobs:
           cache-to: type=gha,mode=max
       - run: uv run xut container versions
       - run: uv run pytest -v -n auto --dist loadfile -m container
+      # The flops L0/L1 vector tests on iverilog against the open-source UNISIM submodule
+      # (review (b) #5). Until the flops unit has tests, `unit:flops` selects nothing and
+      # both steps exit 0 with "no tests selected".
+      - run: uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4
+      - run: uv run xut crosscheck 'unit:flops' --model-source unisim-gh-2020.1
