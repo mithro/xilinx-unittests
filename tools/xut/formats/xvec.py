@@ -26,6 +26,23 @@ Times are integer picoseconds and never decrease. Before ``settle_ps`` only
 ``t=0 set`` initialisation lines may appear. ``in[msb:lsb]`` values are stored
 MSB-first as characters of ``01xz``. Class rules (spec §5.1) are checked by
 ``xut.validate``, not here: this module is syntax and self-consistency only.
+
+A ``#`` starts a comment everywhere it appears outside a double-quoted
+string on a body line; a ``#`` inside ``reason="..."`` (or any other quoted
+token) is data, not a comment. The writer never silently alters a value to
+make it fit the format: a header value or ``hw_renderable`` reason that
+contains a literal ``"`` or a newline cannot be represented and raises
+``XvecError`` instead of being mangled.
+
+Co-timed events (events sharing a ``t``): multiple ``set`` events at the
+same time are allowed *without* ``simultaneous`` exactly when their
+``in[msb:lsb]`` bit ranges are disjoint — they commute as one atomic input
+change. Overlapping ``set`` ranges at the same time are always an error,
+``simultaneous`` or not. Any other co-timed combination — a non-``set``
+event sharing a ``t`` with anything, or two ``set``s whose ranges overlap —
+requires ``simultaneous`` on *every* event at that ``t``; a mix of marked
+and unmarked events, or an unmarked non-``set`` group, is an error. A lone
+event marked ``simultaneous`` (nothing else at its ``t``) is also an error.
 """
 
 from __future__ import annotations
@@ -99,25 +116,32 @@ class Vec:
     def cfg(self) -> str:
         return self.header["cfg"]
 
+    def _int(self, key: str) -> int:
+        raw = self.header[key]
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise XvecError(f"header {key}={raw!r} is not an integer") from exc
+
     @property
     def nin(self) -> int:
-        return int(self.header["nin"])
+        return self._int("nin")
 
     @property
     def nout(self) -> int:
-        return int(self.header["nout"])
+        return self._int("nout")
 
     @property
     def nclk(self) -> int:
-        return int(self.header["nclk"])
+        return self._int("nclk")
 
     @property
     def settle_ps(self) -> int:
-        return int(self.header["settle_ps"])
+        return self._int("settle_ps")
 
     @property
     def seed(self) -> int:
-        return int(self.header["seed"])
+        return self._int("seed")
 
     @property
     def expect(self) -> str | None:
@@ -173,10 +197,39 @@ def _unquote(v: str) -> str:
     return v
 
 
-def _quote(v: str) -> str:
+def _strip_comment(raw: str) -> str:
+    """Return ``raw`` with a trailing ``#`` comment removed, honouring
+    double-quoted strings: a ``#`` inside an (optionally backslash-escaped)
+    quoted token is data, not the start of a comment."""
+    in_quotes = False
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\" and in_quotes:
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+        elif c == "#" and not in_quotes:
+            return raw[:i]
+        i += 1
+    return raw
+
+
+def _escape_quoted(v: str, what: str) -> str:
+    """Escape ``v`` for embedding inside a double-quoted token, or raise if it
+    cannot be represented: this format has no way to encode a literal quote
+    inside a bare/quoted token or a newline within a single line, and the
+    writer never silently mangles data to work around that."""
+    if '"' in v or "\n" in v or "\r" in v:
+        raise XvecError(f"{what} {v!r} cannot be represented (contains a quote or newline)")
+    return v.replace("\\", "\\\\")
+
+
+def _quote(v: str, what: str = "value") -> str:
     if v and not re.search(r'[\s"#]', v):
         return v
-    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return f'"{_escape_quoted(v, what)}"'
 
 
 def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: int) -> Event:
@@ -222,13 +275,47 @@ def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: 
     raise XvecError(f"unknown op {op!r}", n)
 
 
-def _check_structure(vec: Vec) -> None:
+def _check_structure(vec: Vec, event_lines: list[int]) -> None:
     ev = vec.events
     for i, e in enumerate(ev):
         if e.op == "end" and i != len(ev) - 1:
-            raise XvecError("'end' must be the last event")
-        if e.simultaneous and sum(1 for o in ev if o.t == e.t) < 2:
-            raise XvecError(f"t={e.t}: 'simultaneous' on an event that is alone at its time")
+            raise XvecError("'end' must be the last event", event_lines[i])
+
+    groups: dict[int, list[int]] = {}
+    for i, e in enumerate(ev):
+        groups.setdefault(e.t, []).append(i)
+
+    for t, idxs in groups.items():
+        if len(idxs) == 1:
+            i = idxs[0]
+            if ev[i].simultaneous:
+                raise XvecError(
+                    f"t={t}: 'simultaneous' on an event that is alone at its time",
+                    event_lines[i],
+                )
+            continue
+        if all(ev[i].op == "set" for i in idxs):
+            # Disjoint 'set' ranges commute as one atomic input change and need no
+            # 'simultaneous' marking; overlapping ranges are always an error.
+            for a in range(len(idxs)):
+                lsb_a, msb_a = ev[idxs[a]].lsb, ev[idxs[a]].msb
+                for b in range(a + 1, len(idxs)):
+                    lsb_b, msb_b = ev[idxs[b]].lsb, ev[idxs[b]].msb
+                    if lsb_a <= msb_b and lsb_b <= msb_a:
+                        raise XvecError(
+                            f"t={t}: overlapping 'set' bit ranges at lines "
+                            f"{event_lines[idxs[a]]} and {event_lines[idxs[b]]}",
+                        )
+            continue
+        # A non-'set' event sharing this t with anything else (or a 'set' mixed
+        # with a non-'set') requires 'simultaneous' on every event at this t.
+        unmarked = [event_lines[i] for i in idxs if not ev[i].simultaneous]
+        if unmarked:
+            at = ", ".join(str(n) for n in unmarked)
+            raise XvecError(
+                f"t={t}: co-timed events require 'simultaneous' on every event at "
+                f"this time (unmarked at line(s) {at})",
+            )
 
 
 def loads(text: str) -> Vec:
@@ -250,8 +337,9 @@ def loads(text: str) -> Vec:
     vec = Vec(header)
     labels: set[str] = set()
     last_t = 0
+    event_lines: list[int] = []
     for n, raw in enumerate(lines[1:], start=2):
-        line = raw.split("#", 1)[0].strip()
+        line = _strip_comment(raw).strip()
         if not line:
             continue
         if c := _CLOCK.match(line):
@@ -278,7 +366,8 @@ def loads(text: str) -> Vec:
             )
         last_t = t
         vec.events.append(_event(vec, t, op, arg, sim, labels, n))
-    _check_structure(vec)
+        event_lines.append(n)
+    _check_structure(vec, event_lines)
     return vec
 
 
@@ -299,12 +388,16 @@ def _fmt(e: Event) -> str:
 def dumps(vec: Vec) -> str:
     keys = [k for k in HEADER_ORDER if k in vec.header]
     keys += sorted(k for k in vec.header if k not in HEADER_ORDER)
-    out = [f"# {MAGIC} {VERSION}  " + " ".join(f"{k}={_quote(vec.header[k])}" for k in keys)]
+    out = [
+        f"# {MAGIC} {VERSION}  "
+        + " ".join(f"{k}={_quote(vec.header[k], f'header {k}')}" for k in keys)
+    ]
     if vec.hw_renderable is not None:
-        reason = vec.hw_reason.replace("#", "no.").replace('"', "'")
-        out.append(
-            "hw_renderable yes" if vec.hw_renderable else f'hw_renderable no reason="{reason}"'
-        )
+        if vec.hw_renderable:
+            out.append("hw_renderable yes")
+        else:
+            reason = _escape_quoted(vec.hw_reason, "hw_reason")
+            out.append(f'hw_renderable no reason="{reason}"')
     for c in vec.clocks:
         out.append(f"clock {c.name} period={c.period} phase={c.phase} duty={c.duty} mode={c.mode}")
     out += [_fmt(e) for e in vec.events]
