@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: TOYFF
+family: 7series
+work_unit: toy
+doc_refs: [{guide: UG953, version: "2026.1", section: TOYFF, page: 1}]
+tests:
+  - id: 7series.TOYFF.L1.capture
+    level: L1
+    style: vector
+    source: vectors/gen.py:l1_capture
+    exercises: [port:D, claim:TOYFF.C1]
+    attr_sampling: {INIT: [0, 1]}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {hw: "toy"}
+    flows: [rtl]
+    related: []
+    gaps: []

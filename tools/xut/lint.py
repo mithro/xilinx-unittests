@@ -214,7 +214,9 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     id of a valid file appears (verbatim) in the sibling README.md. A file that fails the
     schema is reported once and skipped for the README checks. A `related:` id that
     doesn't exist anywhere under `tests/**` is a warning, not an error — a stale
-    cross-reference is a documentation nit, not a broken build."""
+    cross-reference is a documentation nit, not a broken build. Every runner declared
+    `"no"` or `"unsupported"` must have an `unsupported_reasons` entry (rule
+    `runner-reasons`, error): a skip always carries a reason (spec §14)."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -247,6 +249,18 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
 
         for t in data["tests"]:
             tid = t["id"]
+            reasons = t.get("unsupported_reasons", {})
+            for runner, value in t["runners"].items():
+                if value != "yes" and runner not in reasons:
+                    issues.append(
+                        LintIssue(
+                            rel,
+                            "runner-reasons",
+                            f"{tid}: runner {runner} is declared {value!r} without an "
+                            f"unsupported_reasons.{runner} entry",
+                            "error",
+                        )
+                    )
             if readme_text is not None and tid not in readme_text:
                 issues.append(
                     LintIssue(
