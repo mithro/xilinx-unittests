@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: DNA_PORT
+family: 7series
+work_unit: config_id
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:DOUT
+  - port:CLK
+  - port:DIN
+  - port:READ
+  - port:SHIFT
+  - attr:SIM_DNA_VALUE
+notes: ''

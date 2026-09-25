@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: OBUFT
+family: 7series
+work_unit: obuf
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:I
+  - port:T
+  - attr:CAPACITANCE
+  - attr:DRIVE
+  - attr:IOSTANDARD
+  - attr:SLEW
+notes: ''

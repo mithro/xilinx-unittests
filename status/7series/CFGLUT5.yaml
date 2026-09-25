@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: CFGLUT5
+family: 7series
+work_unit: luts
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CDO
+  - port:O5
+  - port:O6
+  - port:CDI
+  - port:CE
+  - port:CLK
+  - port:I0
+  - port:I1
+  - port:I2
+  - port:I3
+  - port:I4
+  - attr:INIT
+  - attr:IS_CLK_INVERTED
+notes: ''

@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IDELAYE2
+family: 7series
+work_unit: delay
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CNTVALUEOUT
+  - port:DATAOUT
+  - port:C
+  - port:CE
+  - port:CINVCTRL
+  - port:CNTVALUEIN
+  - port:DATAIN
+  - port:IDATAIN
+  - port:INC
+  - port:LD
+  - port:LDPIPEEN
+  - port:REGRST
+  - attr:CINVCTRL_SEL=FALSE
+  - attr:CINVCTRL_SEL=TRUE
+  - attr:DELAY_SRC=IDATAIN
+  - attr:DELAY_SRC=DATAIN
+  - attr:HIGH_PERFORMANCE_MODE=FALSE
+  - attr:HIGH_PERFORMANCE_MODE=TRUE
+  - attr:IDELAY_TYPE=FIXED
+  - attr:IDELAY_TYPE=VARIABLE
+  - attr:IDELAY_TYPE=VAR_LOAD
+  - attr:IDELAY_TYPE=VAR_LOAD_PIPE
+  - attr:IDELAY_VALUE=0
+  - attr:IDELAY_VALUE=1
+  - attr:IDELAY_VALUE=2
+  - attr:IDELAY_VALUE=3
+  - attr:IDELAY_VALUE=4
+  - attr:IDELAY_VALUE=5
+  - attr:IDELAY_VALUE=6
+  - attr:IDELAY_VALUE=7
+  - attr:IDELAY_VALUE=8
+  - attr:IDELAY_VALUE=9
+  - attr:IDELAY_VALUE=10
+  - attr:IDELAY_VALUE=11
+  - attr:IDELAY_VALUE=12
+  - attr:IDELAY_VALUE=13
+  - attr:IDELAY_VALUE=14
+  - attr:IDELAY_VALUE=15
+  - attr:IDELAY_VALUE=16
+  - attr:IDELAY_VALUE=17
+  - attr:IDELAY_VALUE=18
+  - attr:IDELAY_VALUE=19
+  - attr:IDELAY_VALUE=20
+  - attr:IDELAY_VALUE=21
+  - attr:IDELAY_VALUE=22
+  - attr:IDELAY_VALUE=23
+  - attr:IDELAY_VALUE=24
+  - attr:IDELAY_VALUE=25
+  - attr:IDELAY_VALUE=26
+  - attr:IDELAY_VALUE=27
+  - attr:IDELAY_VALUE=28
+  - attr:IDELAY_VALUE=29
+  - attr:IDELAY_VALUE=30
+  - attr:IDELAY_VALUE=31
+  - attr:IS_C_INVERTED
+  - attr:IS_DATAIN_INVERTED
+  - attr:IS_IDATAIN_INVERTED
+  - attr:PIPE_SEL=FALSE
+  - attr:PIPE_SEL=TRUE
+  - attr:REFCLK_FREQUENCY
+  - attr:SIGNAL_PATTERN=DATA
+  - attr:SIGNAL_PATTERN=CLOCK
+notes: ''

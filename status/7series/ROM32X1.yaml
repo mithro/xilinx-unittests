@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: ROM32X1
+family: 7series
+work_unit: rom
+model_library: retarget
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:A0
+  - port:A1
+  - port:A2
+  - port:A3
+  - port:A4
+  - attr:INIT
+notes: ''

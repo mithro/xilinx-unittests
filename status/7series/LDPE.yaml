@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: LDPE
+family: 7series
+work_unit: latches
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:Q
+  - port:D
+  - port:G
+  - port:GE
+  - port:PRE
+  - attr:INIT=1'b1
+  - attr:INIT=1'b0
+  - attr:IS_G_INVERTED
+  - attr:IS_PRE_INVERTED
+notes: ''

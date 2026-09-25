@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: OUT_FIFO
+family: 7series
+work_unit: phy_fifo
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:ALMOSTEMPTY
+  - port:ALMOSTFULL
+  - port:EMPTY
+  - port:FULL
+  - port:Q0
+  - port:Q1
+  - port:Q2
+  - port:Q3
+  - port:Q4
+  - port:Q5
+  - port:Q6
+  - port:Q7
+  - port:Q8
+  - port:Q9
+  - port:D0
+  - port:D1
+  - port:D2
+  - port:D3
+  - port:D4
+  - port:D5
+  - port:D6
+  - port:D7
+  - port:D8
+  - port:D9
+  - port:RDCLK
+  - port:RDEN
+  - port:RESET
+  - port:WRCLK
+  - port:WREN
+  - attr:ALMOST_EMPTY_VALUE=1
+  - attr:ALMOST_EMPTY_VALUE=2
+  - attr:ALMOST_FULL_VALUE=1
+  - attr:ALMOST_FULL_VALUE=2
+  - attr:ARRAY_MODE=ARRAY_MODE_8_X_4
+  - attr:ARRAY_MODE=ARRAY_MODE_4_X_4
+  - attr:OUTPUT_DISABLE=FALSE
+  - attr:OUTPUT_DISABLE=TRUE
+  - attr:SYNCHRONOUS_MODE=FALSE
+notes: ''

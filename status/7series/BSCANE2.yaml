@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: BSCANE2
+family: 7series
+work_unit: config_jtag
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CAPTURE
+  - port:DRCK
+  - port:RESET
+  - port:RUNTEST
+  - port:SEL
+  - port:SHIFT
+  - port:TCK
+  - port:TDI
+  - port:TMS
+  - port:UPDATE
+  - port:TDO
+  - attr:DISABLE_JTAG
+  - attr:JTAG_CHAIN=1
+  - attr:JTAG_CHAIN=2
+  - attr:JTAG_CHAIN=3
+  - attr:JTAG_CHAIN=4
+notes: ''

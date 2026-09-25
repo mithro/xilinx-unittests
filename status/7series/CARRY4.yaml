@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: CARRY4
+family: 7series
+work_unit: carry
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CO
+  - port:O
+  - port:CI
+  - port:CYINIT
+  - port:DI
+  - port:S
+notes: ''

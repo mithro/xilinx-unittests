@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: EFUSE_USR
+family: 7series
+work_unit: config_id
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:EFUSEUSR
+  - attr:SIM_EFUSE_VALUE
+notes: ''

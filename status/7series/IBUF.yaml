@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IBUF
+family: 7series
+work_unit: ibuf
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:I
+  - attr:CAPACITANCE
+  - attr:IBUF_DELAY_VALUE
+  - attr:IBUF_LOW_PWR
+  - attr:IFD_DELAY_VALUE
+  - attr:IOSTANDARD
+notes: ''

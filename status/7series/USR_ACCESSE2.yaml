@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: USR_ACCESSE2
+family: 7series
+work_unit: config_id
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CFGCLK
+  - port:DATA
+  - port:DATAVALID
+notes: ''

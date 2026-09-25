@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: FDRE
+family: 7series
+work_unit: flops
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:Q
+  - port:C
+  - port:CE
+  - port:D
+  - port:R
+  - attr:INIT=1'b0
+  - attr:INIT=1'b1
+  - attr:IS_C_INVERTED
+  - attr:IS_D_INVERTED
+  - attr:IS_R_INVERTED
+notes: ''

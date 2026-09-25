@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: XADC
+family: 7series
+work_unit: xadc
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:ALM
+  - port:BUSY
+  - port:CHANNEL
+  - port:DO
+  - port:DRDY
+  - port:EOC
+  - port:EOS
+  - port:JTAGBUSY
+  - port:JTAGLOCKED
+  - port:JTAGMODIFIED
+  - port:MUXADDR
+  - port:OT
+  - port:CONVST
+  - port:CONVSTCLK
+  - port:DADDR
+  - port:DCLK
+  - port:DEN
+  - port:DI
+  - port:DWE
+  - port:RESET
+  - port:VAUXN
+  - port:VAUXP
+  - port:VN
+  - port:VP
+  - attr:INIT_40
+  - attr:INIT_41
+  - attr:INIT_42
+  - attr:INIT_43
+  - attr:INIT_44
+  - attr:INIT_45
+  - attr:INIT_46
+  - attr:INIT_47
+  - attr:INIT_48
+  - attr:INIT_49
+  - attr:INIT_4A
+  - attr:INIT_4B
+  - attr:INIT_4C
+  - attr:INIT_4D
+  - attr:INIT_4E
+  - attr:INIT_4F
+  - attr:INIT_50
+  - attr:INIT_51
+  - attr:INIT_52
+  - attr:INIT_53
+  - attr:INIT_54
+  - attr:INIT_55
+  - attr:INIT_56
+  - attr:INIT_57
+  - attr:INIT_58
+  - attr:INIT_59
+  - attr:INIT_5A
+  - attr:INIT_5B
+  - attr:INIT_5C
+  - attr:INIT_5D
+  - attr:INIT_5E
+  - attr:INIT_5F
+  - attr:IS_CONVSTCLK_INVERTED
+  - attr:IS_DCLK_INVERTED
+  - attr:SIM_DEVICE=7SERIES
+  - attr:SIM_DEVICE=ZYNQ
+  - attr:SIM_MONITOR_FILE
+notes: ''

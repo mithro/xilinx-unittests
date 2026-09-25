@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: ODELAYE2
+family: 7series
+work_unit: delay
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:CNTVALUEOUT
+  - port:DATAOUT
+  - port:C
+  - port:CE
+  - port:CINVCTRL
+  - port:CLKIN
+  - port:CNTVALUEIN
+  - port:INC
+  - port:LD
+  - port:LDPIPEEN
+  - port:ODATAIN
+  - port:REGRST
+  - attr:CINVCTRL_SEL=FALSE
+  - attr:CINVCTRL_SEL=TRUE
+  - attr:DELAY_SRC=ODATAIN
+  - attr:DELAY_SRC=CLKIN
+  - attr:HIGH_PERFORMANCE_MODE=FALSE
+  - attr:HIGH_PERFORMANCE_MODE=TRUE
+  - attr:IS_C_INVERTED
+  - attr:IS_ODATAIN_INVERTED
+  - attr:ODELAY_TYPE=FIXED
+  - attr:ODELAY_TYPE=VARIABLE
+  - attr:ODELAY_TYPE=VAR_LOAD
+  - attr:ODELAY_TYPE=VAR_LOAD_PIPE
+  - attr:ODELAY_VALUE=0
+  - attr:ODELAY_VALUE=1
+  - attr:ODELAY_VALUE=2
+  - attr:ODELAY_VALUE=3
+  - attr:ODELAY_VALUE=4
+  - attr:ODELAY_VALUE=5
+  - attr:ODELAY_VALUE=6
+  - attr:ODELAY_VALUE=7
+  - attr:ODELAY_VALUE=8
+  - attr:ODELAY_VALUE=9
+  - attr:ODELAY_VALUE=10
+  - attr:ODELAY_VALUE=11
+  - attr:ODELAY_VALUE=12
+  - attr:ODELAY_VALUE=13
+  - attr:ODELAY_VALUE=14
+  - attr:ODELAY_VALUE=15
+  - attr:ODELAY_VALUE=16
+  - attr:ODELAY_VALUE=17
+  - attr:ODELAY_VALUE=18
+  - attr:ODELAY_VALUE=19
+  - attr:ODELAY_VALUE=20
+  - attr:ODELAY_VALUE=21
+  - attr:ODELAY_VALUE=22
+  - attr:ODELAY_VALUE=23
+  - attr:ODELAY_VALUE=24
+  - attr:ODELAY_VALUE=25
+  - attr:ODELAY_VALUE=26
+  - attr:ODELAY_VALUE=27
+  - attr:ODELAY_VALUE=28
+  - attr:ODELAY_VALUE=29
+  - attr:ODELAY_VALUE=30
+  - attr:ODELAY_VALUE=31
+  - attr:PIPE_SEL=FALSE
+  - attr:PIPE_SEL=TRUE
+  - attr:REFCLK_FREQUENCY
+  - attr:SIGNAL_PATTERN=DATA
+  - attr:SIGNAL_PATTERN=CLOCK
+notes: ''

@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: ICAPE2
+family: 7series
+work_unit: config_icap
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:CLK
+  - port:CSIB
+  - port:I
+  - port:RDWRB
+  - attr:DEVICE_ID=32'h03651093
+  - attr:DEVICE_ID=32'h036A2093
+  - attr:DEVICE_ID=32'h036A4093
+  - attr:DEVICE_ID=32'h036A6093
+  - attr:DEVICE_ID=32'h036BF093
+  - attr:DEVICE_ID=32'h036B1093
+  - attr:DEVICE_ID=32'h036B3093
+  - attr:DEVICE_ID=32'h036C2093
+  - attr:DEVICE_ID=32'h036C
+  - attr:ICAP_WIDTH=X32
+  - attr:ICAP_WIDTH=X8
+  - attr:ICAP_WIDTH=X16
+  - attr:SIM_CFG_FILE_NAME
+notes: ''

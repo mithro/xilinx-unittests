@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: IOBUFDS_DIFF_OUT
+family: 7series
+work_unit: iobuf
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:OB
+  - port:IO
+  - port:IOB
+  - port:I
+  - port:TM
+  - port:TS
+  - attr:DIFF_TERM
+  - attr:DQS_BIAS
+  - attr:IBUF_LOW_PWR
+  - attr:IOSTANDARD
+notes: ''

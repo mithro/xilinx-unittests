@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: ISERDESE2
+family: 7series
+work_unit: serdes
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:O
+  - port:Q1
+  - port:Q2
+  - port:Q3
+  - port:Q4
+  - port:Q5
+  - port:Q6
+  - port:Q7
+  - port:Q8
+  - port:SHIFTOUT1
+  - port:SHIFTOUT2
+  - port:BITSLIP
+  - port:CE1
+  - port:CE2
+  - port:CLK
+  - port:CLKB
+  - port:CLKDIV
+  - port:CLKDIVP
+  - port:D
+  - port:DDLY
+  - port:DYNCLKDIVSEL
+  - port:DYNCLKSEL
+  - port:OCLK
+  - port:OCLKB
+  - port:OFB
+  - port:RST
+  - port:SHIFTIN1
+  - port:SHIFTIN2
+  - attr:DATA_RATE=DDR
+  - attr:DATA_RATE=SDR
+  - attr:DATA_WIDTH=4
+  - attr:DATA_WIDTH=2
+  - attr:DATA_WIDTH=3
+  - attr:DATA_WIDTH=5
+  - attr:DATA_WIDTH=6
+  - attr:DATA_WIDTH=7
+  - attr:DATA_WIDTH=8
+  - attr:DATA_WIDTH=10
+  - attr:DATA_WIDTH=14
+  - attr:DYN_CLKDIV_INV_EN=FALSE
+  - attr:DYN_CLKDIV_INV_EN=TRUE
+  - attr:DYN_CLK_INV_EN=FALSE
+  - attr:DYN_CLK_INV_EN=TRUE
+  - attr:INIT_Q1
+  - attr:INIT_Q2
+  - attr:INIT_Q3
+  - attr:INIT_Q4
+  - attr:INTERFACE_TYPE=MEMORY
+  - attr:INTERFACE_TYPE=MEMORY_DDR3
+  - attr:INTERFACE_TYPE=MEMORY_QDR
+  - attr:INTERFACE_TYPE=NETWORKING
+  - attr:INTERFACE_TYPE=OVERSAMPLE
+  - attr:IOBDELAY=NONE
+  - attr:IOBDELAY=BOTH
+  - attr:IOBDELAY=IBUF
+  - attr:IOBDELAY=IFD
+  - attr:IS_CLKB_INVERTED
+  - attr:IS_CLKDIVP_INVERTED
+  - attr:IS_CLKDIV_INVERTED
+  - attr:IS_CLK_INVERTED
+  - attr:IS_D_INVERTED
+  - attr:IS_OCLKB_INVERTED
+  - attr:IS_OCLK_INVERTED
+  - attr:NUM_CE=2
+  - attr:NUM_CE=1
+  - attr:OFB_USED=FALSE
+  - attr:OFB_USED=TRUE
+  - attr:SERDES_MODE=MASTER
+  - attr:SERDES_MODE=SLAVE
+  - attr:SRVAL_Q1
+  - attr:SRVAL_Q2
+  - attr:SRVAL_Q3
+  - attr:SRVAL_Q4
+notes: ''

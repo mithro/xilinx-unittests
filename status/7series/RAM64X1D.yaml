@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: RAM64X1D
+family: 7series
+work_unit: lutram
+model_library: unisims
+measured:
+  tree_hash: null
+  tools: {}
+results: {}
+findings: []
+coverage:
+  covered: []
+  uncovered:
+  - port:DPO
+  - port:SPO
+  - port:A0
+  - port:A1
+  - port:A2
+  - port:A3
+  - port:A4
+  - port:A5
+  - port:D
+  - port:DPRA0
+  - port:DPRA1
+  - port:DPRA2
+  - port:DPRA3
+  - port:DPRA4
+  - port:DPRA5
+  - port:WCLK
+  - port:WE
+  - attr:INIT
+  - attr:IS_WCLK_INVERTED
+notes: ''
