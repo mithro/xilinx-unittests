@@ -25,7 +25,7 @@ After this step, fan-out work units can write tests against a working runner mat
   - `stim.memh`, the compiled stimulus.
 - The generic testbench `tools/xut/hdl/xut_vector_tb.sv` is identical for every primitive. It replays a word-per-operation memory image and writes raw samples. Python turns the raw samples into `.xtr` using the map.
 - Expected traces come from the `python` runner, which replays the same `.xvec` through a clean-room golden model. Every expected bit carries a provenance tag, which `crosscheck` uses to tell `doc-vs-model` from `doc-gap`.
-- Runners share one `Runner` base. Each writes `build/<flow>/<runner>/<test-id>/{trace.xtr,result.json,run.log}` and never skips silently.
+- Runners share one `Runner` base. Each writes `build/<flow>/<runner>/<model-source>/<test-id>/{trace.xtr,result.json,run.log}` and never skips silently.
 - `iverilog` and `verilator` run inside the `xut-sim` container via an `Executor`. `xsim` runs on the host in a `bash` subshell that sources Vivado.
 - `xut verilatorize` analyses UNISIM models with pyslang. It rewrites each procedural `assign`/`deassign` with the shadow-register transform by splicing text at AST source ranges (never regex). A generated equivalence stimulus then compares original and transformed models on Icarus.
 
@@ -40,7 +40,7 @@ After this step, fan-out work units can write tests against a working runner mat
 
 **Spec:** `docs/superpowers/specs/2026-09-25-xilinx-primitive-test-suite-design.md` (rev 3.1). Read §§4, 5, 6 (especially 6.2), 8, 9, 11, 12, 13 and 16 step 2.
 
-**Prerequisite:** both step-1 PRs (bootstrap parts A and B) are merged into `main`. This plan consumes these step-1 interfaces:
+**Prerequisite:** the step-1 PR (#2, "bootstrap") is merged into `main`. This plan consumes these step-1 interfaces:
 
 - `xut.paths`: `repo_root`, `cache_dir`, `VIVADO_UNISIM`, `VIVADO_RETARGET`, `submodule_unisim`;
 - `xut.catalog.model`: `CatalogEntry`, `load_entry`;
@@ -52,7 +52,20 @@ After this step, fan-out work units can write tests against a working runner mat
 - `xut.doctor`: `Check`, `run_checks`;
 - the schemas in `tools/xut/schemas/`, the templates in `docs/templates/`, and AGENTS.md.
 
-`xut.status`, `xut.lint` and `xut.doctor` come from step-1 Tasks 6–9, which were not implemented when this plan was written. Before Task 1, re-check the names used here (`LintIssue`, `Check(enables=...)`, `current_branch`, `coverage_bins`, `RESULT_VALUES`) against the merged code, and adapt the calls, not the semantics.
+`xut.status`, `xut.lint` and `xut.doctor` come from step-1 Tasks 6–9, which were not implemented when this plan was written.
+
+- [ ] **Step 0 (before Task 1): verify the step-1 interfaces on `main`**
+
+```bash
+cd /home/tim/github/f4pga/xilinx-unittests && git fetch origin && git checkout main && git pull --ff-only
+uv run xut lint --help > .cache/step0.log 2>&1
+uv run xut status generate --help >> .cache/step0.log 2>&1
+uv run xut doctor >> .cache/step0.log 2>&1
+uv run python -c "from xut.lint import LintIssue; from xut.doctor import Check, run_checks; from xut.status import current_branch, coverage_bins, RESULT_VALUES, load_status; from xut.workunits import owned_paths, unit_for_branch; print('step-1 interfaces OK', RESULT_VALUES)" >> .cache/step0.log 2>&1
+cat .cache/step0.log
+```
+
+Expected: three help/doctor outputs and `step-1 interfaces OK (...)`. If a name differs, adapt this plan's calls to the merged code (not the semantics), and note the mapping in the first log entry.
 
 ## Global Constraints
 
@@ -69,20 +82,23 @@ After this step, fan-out work units can write tests against a working runner mat
 - **Stdlib-only modules.** `tools/xut/formats/*` and `models/xut_models/**` use only the standard library. They are imported inside the container by cocotb tests, where xut's dependencies are not installed.
 - Containers run with `--network=none`, as the invoking uid:gid, with the repository mounted at `/work` and model sources mounted read-only under `/models/`.
 - **Clean room.** Nobody working on `models/xut_models/7series/**` opens any UNISIM `.v` file for the primitive being modelled. Only UG953 text is used: `uv run xut fetch-docs`, then read `.cache/docs/ug953-2026.1.txt`.
-- Worktrees live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. Branches and PRs are split as in the table below.
+- Worktrees live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. **One PR per branch, always**, as in the table below.
 
 ### Branches and PRs
 
-| Branch | Worktree | Tasks | PR |
-|---|---|---|---|
-| `infra/sim-core` | `infra-sim-core` | 1–5 | **PR A** "infra: sim core part A — container, formats, wrapper, validation" |
-| `infra/sim-core` (continued) | same | 6–11 | **PR B** "infra: sim core part B — golden-model API, testbench, runners, xut run" |
-| `infra/verilatorize` (stacked on `infra/sim-core`) | `infra-verilatorize` | 12–16 | **PR C** "infra: verilatorize, verilator runner, portability table" |
-| `infra/crosscheck` (stacked on `infra/sim-core`) | `infra-crosscheck` | 17–18 | **PR D** "infra: crosscheck, status record, shared unit test paths" |
-| `unit/7series/flops` (from `main` after A–D merge) | `unit-7series-flops` | 19–24 | **PR E** "flops: FDRE end-to-end pilot" |
-| `unit/7series/flops` (continued) | same | 25–27 | **PR F** "flops: FDSE, FDCE, FDPE" |
+| Branch | Branched from | Worktree | Tasks | PR (base) |
+|---|---|---|---|---|
+| `infra/sim-formats` | `origin/main` | `infra-sim-formats` | 1–5 | **PR A** "infra: sim formats — container, formats, wrapper, validation" (base `main`) |
+| `infra/sim-runners` | `infra/sim-formats` | `infra-sim-runners` | 6–11 | **PR B** "infra: sim runners — golden-model API, testbench, runners, xut run" (base `infra/sim-formats` until A merges, then `main`) |
+| `infra/verilatorize` | `infra/sim-runners` | `infra-verilatorize` | 12–16 | **PR C** "infra: verilatorize, verilator runner, portability table" (base `infra/sim-runners` until B merges, then `main`) |
+| `infra/crosscheck` | `infra/sim-runners` | `infra-crosscheck` | 17–18 | **PR D** "infra: crosscheck, status record, shared unit test paths" (base `infra/sim-runners` until B merges, then `main`) |
+| `unit/7series/flops` | `origin/main` after A–D merge | `unit-7series-flops` | 19–27 | **PR E** "flops: FDRE/FDSE/FDCE/FDPE pilot" (base `main`), one PR for the whole unit |
 
-- Merge order is A → B → C → D → E → F. After each infra merge, the orchestrator rebases the stacked branches.
+- **Merge order** is A → B → {C, D} → E.
+- **Stacked PRs.** A child PR's base is its parent branch while the parent's PR is open; `gh pr create --base <parent-branch>`. After the parent merges (rebase-merge), the **orchestrator** rebases the child onto `main`, re-runs its tests, force-pushes it with `git push --force-with-lease`, and retargets the PR: `gh pr edit <N> --base main`. That force-push is sanctioned only for the orchestrator, and only on its own feature branches; Task 1 amends AGENTS.md to say so.
+- **Per-task review.** On the unit branch, each task's commits are still reviewed (reviewer (a), then reviewer (b)) before the next task starts; the single PR E is the merge vehicle.
+- **Two-agent limit** (spec §13.5). With one implementer running, reviewers (a) and (b) run **sequentially**, never together.
+- **Expected conflict.** Tasks 16 (C) and 18 (D) both edit `status.py`, `lint.py`, `test_lint.py` and `cli.py`. Whichever merges second gets a rebase conflict; the orchestrator resolves it during the rebase onto `main` and re-runs the tests.
 - The pilot touches **only** `flops`-owned paths (spec §13). Task 18 adds `tests/<family>/<group>/_shared/<unit>/**` to a unit's owned paths, so the four flops can share test code.
 
 ## Review Focus
@@ -168,17 +184,18 @@ models/xut_models/7series/_common/flops.py   SdrFlop shared model               
 models/xut_models/7series/fd{r,s,c,p}e.py    per-primitive models                      (flops)
 catalog/7series/FD{R,S,C,P}E.overrides.yaml  claims, allowed-value fixes               (flops)
 tests/7series/register/_shared/flops/        flop_recipes.py, flops_cocotb.py, flop_*_tb.svh (flops)
-tests/7series/register/FD{R,S,C,P}E/         test.yaml, README.md, vectors/, sv/, cocotb/, test_fd?e_model.py (flops)
+tests/7series/register/_shared/flops/        also flop_tests.py, test_flop_models.py, test_flop_tests.py (flops)
+tests/7series/register/FD{R,S,C,P}E/         test.yaml, README.md, vectors/, sv/, cocotb/ (flops)
 status/7series/FD{R,S,C,P}E.yaml             (flops)
 ```
 
 Run directory layout (never committed):
 
 ```
-build/<flow>/<runner>/<test-id>/result.json    aggregate over configs
-build/<flow>/<runner>/<test-id>/trace.xtr      all configs; labels are "<cfg>/<label>"
-build/<flow>/<runner>/<test-id>/run.log        all configs' logs concatenated
-build/<flow>/<runner>/<test-id>/cfg-<cfg>/     per-config work dir (dut/, stim.*, raw.txt, logs)
+build/<flow>/<runner>/<model-source>/<test-id>/result.json    aggregate over configs
+build/<flow>/<runner>/<model-source>/<test-id>/trace.xtr      all configs; labels are "<cfg>/<label>"
+build/<flow>/<runner>/<model-source>/<test-id>/run.log        all configs' logs concatenated
+build/<flow>/<runner>/<model-source>/<test-id>/cfg-<cfg>/     per-config work dir (dut/, stim.*, raw.txt, logs)
 build/verilatorized/<model-source>/<MODEL>.v, manifest.json, equiv/<MODEL>/
 build/portability/<model-source>.json
 build/crosscheck/<test-id>.json
@@ -190,7 +207,7 @@ build/crosscheck/<test-id>.json
 
 **Files:**
 - Create: `containers/sim/Dockerfile`, `tools/xut/container.py`, `tools/xut/modelsrc.py`, `tools/tests/test_container.py`, `tools/tests/test_modelsrc.py`
-- Modify: `tools/xut/paths.py`, `tools/xut/cli.py`, `tools/xut/doctor.py`, `pyproject.toml` (pytest markers), `.github/workflows/ci.yml`
+- Modify: `tools/xut/paths.py`, `tools/xut/cli.py`, `tools/xut/doctor.py`, `pyproject.toml` (pytest markers), `.github/workflows/ci.yml`, `AGENTS.md`
 
 **Interfaces:**
 - Produces:
@@ -213,8 +230,8 @@ build/crosscheck/<test-id>.json
 
 ```bash
 cd /home/tim/github/f4pga/xilinx-unittests
-git fetch origin && git worktree add ../xilinx-unittests-worktrees/infra-sim-core -b infra/sim-core origin/main
-cd ../xilinx-unittests-worktrees/infra-sim-core
+git fetch origin && git worktree add ../xilinx-unittests-worktrees/infra-sim-formats -b infra/sim-formats origin/main
+cd ../xilinx-unittests-worktrees/infra-sim-formats
 mkdir -p .cache && uv venv && uv pip install -e '.[dev]' > .cache/uv-install.log 2>&1; cat .cache/uv-install.log
 git config core.hooksPath tools/hooks
 ```
@@ -778,7 +795,20 @@ Run: `uv run pytest tools/tests -v > .cache/pytest.log 2>&1; tail -n 20 .cache/p
 
 Expected: all pass. That includes the `container` tests (pinned versions, cocotb smoke on Icarus **and** Verilator, the deassign pin), because the image was built in Step 3.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 10: Amend AGENTS.md (branch and PR rules)**
+
+Add to the "One branch per work unit" section of `AGENTS.md`:
+
+- One PR per branch, always. Never push work for a later PR onto a branch whose PR is open.
+- A stacked branch is created from its parent branch, and its PR's base is the parent (`gh pr create --base <parent>`) until the parent merges.
+- After a parent merges, only the orchestrator rebases the child onto `main`, re-runs its tests, pushes with `git push --force-with-lease` (only on its own feature branches; never on `main`, never over someone else's branch), and retargets the PR with `gh pr edit <N> --base main`. This is the only sanctioned force-push; the rule against force-pushing reviewed history still applies to everyone else.
+- Reviewers run sequentially under the two-agent limit.
+
+```bash
+git add AGENTS.md && git commit -m "docs: AGENTS.md — one PR per branch, stacked-PR bases, orchestrator-only force-with-lease" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+- [ ] **Step 11: Commit**
 
 ```bash
 uv run ruff format tools && uv run ruff check tools > .cache/ruff.log 2>&1; cat .cache/ruff.log
@@ -2646,21 +2676,29 @@ git add tools/xut/stimgen.py tools/tests/test_stimgen.py tools/xut/cli.py && git
 
 - [ ] **Step 8: Progress log and PR checkpoint A**
 
-Write `log/<YYYY-MM-DDTHHMM>-infra-sim-core-part-a.md`. Record what landed, the pytest summary line, the container digest from `uv run xut container build`, and the next steps. Commit it with `log: infra/sim-core part A`.
+Write `log/<YYYY-MM-DDTHHMM>-infra-sim-formats-part-a.md`. Record what landed, the pytest summary line, the container digest from `uv run xut container build`, and the next steps. Commit it with `log: infra/sim-formats`.
 
 Then:
 
 ```bash
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
-git push -u origin infra/sim-core
-gh pr create --title "infra: sim core part A — container, formats, wrapper, validation" --body-file .cache/pr-a.md
+git push -u origin infra/sim-formats
+gh pr create --base main --title "infra: sim formats — container, formats, wrapper, validation" --body-file .cache/pr-a.md
 ```
 
-`.cache/pr-a.md` summarises Tasks 1–5, lists the Review Focus items that apply (3, 4), and ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. Run the review gate from spec §13.4. Continue with Task 6 on the same branch while review runs.
+`.cache/pr-a.md` summarises Tasks 1–5, lists the Review Focus items that apply (3, 4), and ends with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`. Run the review gate from spec §13.4 (reviewers sequentially). **Nothing more is pushed to `infra/sim-formats`** except review-fix commits for PR A. Task 6 starts on the stacked branch `infra/sim-runners`.
 
 ---
 
 ### Task 6: Golden-model base API and replay
+
+**Create the stacked worktree** (PR B's branch; its base is `infra/sim-formats` until PR A merges):
+
+```bash
+cd /home/tim/github/f4pga/xilinx-unittests
+git worktree add ../xilinx-unittests-worktrees/infra-sim-runners -b infra/sim-runners infra/sim-formats
+cd ../xilinx-unittests-worktrees/infra-sim-runners && mkdir -p .cache && uv venv && uv pip install -e '.[dev]' > .cache/uv-install.log 2>&1; cat .cache/uv-install.log
+```
 
 **Files:**
 - Create: `models/xut_models/__init__.py`, `models/xut_models/base.py`, `models/xut_models/registry.py`, `models/xut_models/7series/__init__.py`, `models/xut_models/7series/_common/__init__.py`, `tools/xut/golden.py`, `tools/tests/test_golden.py`
@@ -3396,13 +3434,14 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
 - `runners` values stay exactly as step 1's `test.schema.json` defines them: the **strings** `"yes"`, `"no"` or `"unsupported"`, always quoted in YAML. The schema's `$comment` explains why: PyYAML turns a bare `yes` into the boolean `true`, which the schema rejects.
 - `unsupported_reasons` (new, optional): a map `{<runner>: "<reason>"}`. Every runner whose value is `"no"` or `"unsupported"` must have an entry, and lint (`runner-reasons`, error) enforces it. `"unsupported"` means the runner cannot run this test; `"no"` means the test is deliberately not run there, e.g. python for a self-checking sv testbench.
 - A runner missing from `runners` is treated as `"no"` with the reason `not declared`, which lint flags.
-- **Infra task (this task, on `infra/sim-core`):** amend step 1's `tools/xut/schemas/test.schema.json` to add the optional keys `source`, `configs`, `unsupported_reasons`, `expected_divergence`, `timeout_s` and `sv_deviations`, keeping `runners` as the string enum and keeping its `$comment`. Update `docs/templates/test.yaml` to match. Add a schema test that bare `yes` still fails and that `unsupported_reasons` validates.
+- **Infra task (this task, on `infra/sim-runners`):** amend step 1's `tools/xut/schemas/test.schema.json` to add the optional keys `source`, `configs`, `unsupported_reasons`, `expected_divergence`, `timeout_s` and `sv_deviations`, keeping `runners` as the string enum and keeping its `$comment`. Update `docs/templates/test.yaml` to match. Add a schema test that bare `yes` still fails and that `unsupported_reasons` validates.
 - `expected_divergence`: a list of `{finding: findings/<PRIM>-<slug>.md, cls: <finding class>, runners: [..]}`.
 - `timeout_s` (optional; when absent, `--timeout`, otherwise 600).
+- `config_exclusions` (new, optional): `{<runner>: {<cfg glob>: "<reason>"}}`. The runner is declared `"yes"` for the test, but configurations whose name matches a glob get a `skip` `ConfigResult` with that reason (never silent), and the test's status is the worst of the rest. This keeps e.g. the non-`IS_D_INVERTED` configurations of L0/L2 hardware-eligible (review (b) nit).
 - `sv_deviations`: a list of strings (spec §4.3).
 
 **Runner contract.**
-- `Runner.run` creates `build/<flow>/<runner>/<test-id>/` fresh.
+- `Runner.run` creates `build/<flow>/<runner>/<model-source>/<test-id>/` fresh.
 - If the runner is declared unsupported, unavailable, or not applicable to the style, it writes a `skip` `result.json` with the reason.
 - Otherwise it calls `run_config` per configuration, each in `cfg-<cfg>/`, catching every exception as `error` with the exception text.
 - It then concatenates the per-config traces into `trace.xtr` (labels `<cfg>/<label>`) and the per-config logs into `run.log`, and writes `result.json`.
@@ -3443,7 +3482,9 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
 4. Union the `Reach.bins()` into `bins_reached`.
 5. Write `configs.json`, the list of **every** configuration the generator produced, including those that errored. Other runners take their configuration list from it (review #10), and `prepare_vector` returns `error "no expected trace (python: <reason>)"` for a configuration whose `expected.xtr` is missing.
 
-The python run directory is the **source of truth** for the other runners: they read `cfg-*/dut/`, `cfg-*/stim.xvec` and `cfg-*/expected.xtr` from `build/<flow>/python/<test-id>/`. `xut run` always runs `python` first for vector tests whenever another runner is selected.
+**Reject tests.** For a `.xvec` with `expect=reject`, the python runner does not replay (there is no behaviour to model). It writes an empty `expected.xtr` (header only, `kind=expected`, `expect=reject`), so the other runners find the configuration and apply the reject rule of Task 9.
+
+The python run directory is the **source of truth** for the other runners: they read `cfg-*/dut/`, `cfg-*/stim.xvec` and `cfg-*/expected.xtr` from `build/<flow>/python/<model-source>/<test-id>/`. `xut run` always runs `python` first for vector tests whenever another runner is selected.
 
 - [ ] **Step 1: Write the TOYFF fixture test tree** (this also documents the test.yaml shape)
 
@@ -3601,7 +3642,9 @@ class RunResult:
 
 
 def workdir(ctx: RunContext, runner: str, test_id: str) -> Path:
-    return ctx.root / "build" / ctx.flow / runner / test_id
+    # The model source is part of the key (review (b) #5): a run against the submodule
+    # never overwrites a run against Vivado's UNISIM, and crosscheck can pair like-for-like.
+    return ctx.root / "build" / ctx.flow / runner / ctx.model_source.name / test_id
 
 
 def sha256_file(p: Path) -> str:
@@ -3768,7 +3811,7 @@ git add tools && git commit -m "runners: add runner base, result.json, python go
   - `vector_check(cfgdir, m, labels, expected, actual_header, x_observable) -> ConfigResult`, which is shared by all simulator runners
   - `sv_check(cfgdir, log_text, header) -> ConfigResult`
 
-**Vector config run** (`cfgdir` = `build/rtl/iverilog/<id>/cfg-<cfg>/`):
+**Vector config run** (`cfgdir` = `build/rtl/iverilog/<model-source>/<id>/cfg-<cfg>/`):
 
 1. Copy `dut/` and `stim.xvec` from the python run's `cfg-<cfg>/`. Then `write_stim`.
 2. In the container, compile:
@@ -4104,7 +4147,14 @@ uv run pytest -v > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 ```
 
-Write `log/<ts>-infra-sim-core-part-b.md` and commit it. Push, then open PR B, "infra: sim core part B — golden-model API, testbench, runners, xut run", with a body file ending in the Claude Code line. Run the review gate.
+Write `log/<ts>-infra-sim-runners.md` and commit it. Then:
+
+```bash
+git push -u origin infra/sim-runners
+gh pr create --base infra/sim-formats --title "infra: sim runners — golden-model API, testbench, runners, xut run" --body-file .cache/pr-b.md
+```
+
+The body ends with the Claude Code line and states "stacked on #<PR A>". Run the review gate (sequential reviewers). When PR A merges, the orchestrator rebases this branch onto `main`, re-runs the tests, pushes with `--force-with-lease` and runs `gh pr edit <N> --base main`.
 
 ---
 
@@ -4124,11 +4174,11 @@ Write `log/<ts>-infra-sim-core-part-b.md` and commit it. Push, then open PR B, "
   - `generate_configs(path, module, choices=None, limit=64) -> list[dict[str, str]]`: parameter-override sets that together elaborate **every** generate branch (always including `{}`, the defaults)
   - `analyze(path, module, glbl, choices=None) -> Analysis`: runs the walker once per `generate_configs` entry and takes the union, so spans in every generate branch are rewritten (controller ruling on review #3)
 
-**Create the worktree** (stacked on `infra/sim-core`):
+**Create the worktree** (stacked on `infra/sim-runners`; PR base `infra/sim-runners` until PR B merges):
 
 ```bash
 cd /home/tim/github/f4pga/xilinx-unittests
-git worktree add ../xilinx-unittests-worktrees/infra-verilatorize -b infra/verilatorize infra/sim-core
+git worktree add ../xilinx-unittests-worktrees/infra-verilatorize -b infra/verilatorize infra/sim-runners
 cd ../xilinx-unittests-worktrees/infra-verilatorize && mkdir -p .cache && uv venv && uv pip install -e '.[dev]' > .cache/uv-install.log 2>&1
 ```
 
@@ -4161,6 +4211,7 @@ Check any other attribute with `dir()` before using it.
 | `vz_cone.v` / `MMCMVZ` | fan-in cone through a registered stage (the spec's RST\|PWRDWN example) | `{RST, PWRDWN}` / `{CLKIN1}` |
 | `vz_gate.v` / `BUFVZ` | triggers reached only through gate primitives, BUFR-style: `buf b0 (clr_in, CLR); not n0 (gsr_n, gsr_in_raw); and a0 (gsr_in, ~gsr_n, 1'b1);` with `always @(gsr_in or clr_in)` | `{glbl.GSR, CLR}` / `{}` |
 | `vz_sub.v` / `VZSUB` | a trigger reached through a same-file sub-instance (`VZSUB_INV u (.o(clr_n), .i(CLR));`, `always @(clr_n)`) | `{CLR}` / `{}` |
+| `vz_ifelse.v` / `VZIFELSE` | the `deassign` is the then-arm of `if (C2) deassign q; else assign q = E;` (dangling-else guard, Task 13) | `{C2, E}` / `{}` |
 | `vz_generate.v` / `VZGEN` | the forced reg written in **both** arms of `generate if (IS_C_INVERTED) ... else ...` (posedge vs negedge capture), with `parameter [0:0] IS_C_INVERTED = 1'b0` | `{R}` / `{}` |
 
 Two representative fixtures, verbatim (the others follow the one-line description in the table):
@@ -4250,6 +4301,7 @@ CASES = {
     "vz_gate.v": ("BUFVZ", {"glbl.GSR", "CLR"}, set()),
     "vz_sub.v": ("VZSUB", {"CLR"}, set()),
     "vz_generate.v": ("VZGEN", {"R"}, set()),
+    "vz_ifelse.v": ("VZIFELSE", {"C2", "E"}, set()),
 }
 
 
@@ -5033,7 +5085,22 @@ def test_verilator_lints_transformed(fname):
     assert rc == 0, log.read_text()
 ```
 
-`vz_ifelse.v` (`VZIFELSE`): `always @(C2 or E) if (C2) deassign q; else assign q = E;` plus `always @(posedge C) q <= D;`. The `deassign` is the then-arm of an if/else, which pins the dangling-else fix.
+`vz_ifelse.v` (`VZIFELSE`), in full:
+
+```verilog
+// SPDX-License-Identifier: Apache-2.0
+// vz_ifelse.v — the deassign is the then-arm of an if/else (dangling-else guard).
+`timescale 1ps/1ps
+module VZIFELSE (output Q, input C, input D, input C2, input E);
+  reg q;
+  assign Q = q;
+  always @(C2 or E)
+    if (C2) deassign q;
+    else assign q = E;
+  always @(posedge C) q <= D;
+endmodule
+```
+ The `deassign` is the then-arm of an if/else, which pins the dangling-else fix.
 
 `vz_ranges.v` (`VZRANGE`): three forced regs `reg [4:1] a;`, `reg [0:3] b;` and `reg signed [7:0] c;`, each read through selects (`a[4]`, `b[0:1]`, `c[7]`) in continuous assigns.
 
@@ -5248,7 +5315,7 @@ Either way, the choice is fixed in code and pinned by `test_runner_verilator.py:
   - A toy DUT whose output is an uninitialised reg (never written) gives `x_dependence: true` when the two seeds randomise it differently. Its expected trace masks that bit with `-`, so the status is still `pass`.
   - When the manifest says the primitive is `unsupported`, the result is `error` and the reason starts `verilatorize cannot transform`.
   - When the manifest says `equiv: fail`, the result is `error` and the reason starts `transform-bug:`.
-  - `xut run --runner verilator` also produces `build/rtl/iverilog-vz/<id>/result.json`.
+  - `xut run --runner verilator` also produces `build/rtl/iverilog-vz/<model-source>/<id>/result.json`.
   - The TOYFF cocotb fixture (Task 11) passes on `verilator`, with two X-seed runs recorded in `seeds.x`; its `iverilog-vz` companion also passes. cocotb tops instantiate `glbl` themselves, so the Step 1 multi-top decision does not affect them.
 
 - [ ] **Step 3: Implement `runners/verilator.py`**
@@ -5398,7 +5465,7 @@ uv run pytest -v > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 ```
 
-Write `log/<ts>-infra-verilatorize-portability.md`, recording the transform and equivalence counts, the smoke-run summary table and every `unsupported` or `fail` model. Commit it, push, and open **PR C**, "infra: verilatorize, verilator runner, portability table", whose body ends with the Claude Code line. **Do not** commit `status/PORTABILITY.md`: the orchestrator generates it on `main` after the merge, with `uv run xut portability --write`, and commits it as `status: regenerate`.
+Write `log/<ts>-infra-verilatorize-portability.md`, recording the transform and equivalence counts, the smoke-run summary table and every `unsupported` or `fail` model. Commit it, push (`git push -u origin infra/verilatorize`), and open **PR C** with `gh pr create --base infra/sim-runners --title "infra: verilatorize, verilator runner, portability table"`, whose body ends with the Claude Code line. **Do not** commit `status/PORTABILITY.md`: the orchestrator generates it on `main` after the merge, with `uv run xut portability --write`, and commits it as `status: regenerate`.
 
 ---
 
@@ -5408,11 +5475,11 @@ Write `log/<ts>-infra-verilatorize-portability.md`, recording the transform and 
 - Create: `tools/xut/crosscheck.py`, `tools/tests/test_crosscheck.py`
 - Modify: `tools/xut/cli.py`
 
-**Create the worktree** (stacked on `infra/sim-core`; it needs no verilatorize code, because `iverilog-vz` results are just another runner directory):
+**Create the worktree** (stacked on `infra/sim-runners`, PR base `infra/sim-runners` until PR B merges; it needs no verilatorize code, because `iverilog-vz` results are just another runner directory):
 
 ```bash
 cd /home/tim/github/f4pga/xilinx-unittests
-git worktree add ../xilinx-unittests-worktrees/infra-crosscheck -b infra/crosscheck infra/sim-core
+git worktree add ../xilinx-unittests-worktrees/infra-crosscheck -b infra/crosscheck infra/sim-runners
 cd ../xilinx-unittests-worktrees/infra-crosscheck && mkdir -p .cache && uv venv && uv pip install -e '.[dev]' > .cache/uv-install.log 2>&1
 ```
 
@@ -5423,11 +5490,12 @@ cd ../xilinx-unittests-worktrees/infra-crosscheck && mkdir -p .cache && uv venv 
   - `X_OBSERVABLE: dict[str, bool]` (`python xsim iverilog iverilog-vz` → True; `verilator hw` → False)
   - `View` (`flow, runner, status, model_source, trace: Trace | None, result: dict`)
   - `Finding` (frozen: `cls, test_id, flow, model_source, runners: tuple, points: tuple[str, ...], expected: bool`, with property `slug`)
-  - `gather(root, test_id) -> dict[tuple[str, str], View]`
+  - `gather(root, test_id) -> dict[str, dict[tuple[str, str], View]]`: per model source (the `<model-source>` path component), the views keyed `(flow, runner)`; `classify` runs once per model source, so traces are only ever compared like-for-like. The golden (`python`) expectation is taken from the same model-source directory; it is model-independent, so either copy serves.
   - `classify(test_id, views, expected_divergence=()) -> list[Finding]`
   - `matrix(views) -> str` (markdown)
   - `write_finding(root, prim, f) -> Path | None`, which never overwrites
   - CLI `xut crosscheck SELECT... [--write-findings]`. It writes `build/crosscheck/<test-id>.json`, prints the matrix and findings, and exits 1 if any finding is not covered by `expected_divergence`.
+  - **`expected_divergence` never masks** (controller ruling on review (b) #4, spec §8 rev 3.1). Expected bits stay defined, and every disagreement is still computed and reported. A finding matched by an `expected_divergence` entry is reported with class **`known-divergence`** plus `of: <original class>` and `finding: <finding id>` (the file stem). It is listed in the crosscheck output, recorded in the status file's `findings`, and so appears in PROGRESS.md/TODO.md. Only unlisted findings make the exit code 1.
 
 **Classification rules.** Each is pinned by a test with synthetic `View`s. Traces are compared only within one model source.
 
@@ -5473,7 +5541,8 @@ entry to test.yaml pointing here. Never weaken the test (spec §8).
 - [ ] **Step 1: Write the tests.** Include one per class using synthetic views, and these cases:
   - agreement → no findings;
   - two model sources are never cross-compared;
-  - an `expected_divergence` entry marks the finding `expected: true`, and the CLI exits 0;
+  - an `expected_divergence` entry turns the finding into `known-divergence` (with `of` and `finding` set), it is still printed and written to `build/crosscheck/<test-id>.json`, and the CLI exits 0;
+  - the expected trace is unchanged by `expected_divergence` (no bit becomes `-`);
   - `write_finding` twice → the second call returns `None` and the file is unchanged.
 
 - [ ] **Step 2: Implement `tools/xut/crosscheck.py`** (core shown; `gather`, `matrix` and the CLI are straightforward reads and formatting):
@@ -5487,11 +5556,13 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
+from pathlib import Path
 
 from xut.formats.xtr import Trace, compare, diff
 
 FINDING_CLASSES = ("doc-vs-model", "doc-gap", "sim-divergence", "x-dependence", "transform-bug",
-                   "flow-mismatch", "silicon-mismatch", "nondeterminism", "harness-error")
+                   "flow-mismatch", "silicon-mismatch", "nondeterminism", "harness-error",
+                   "known-divergence")
 SIMS = ("xsim", "iverilog", "verilator")
 X_OBSERVABLE = {"python": True, "xsim": True, "iverilog": True, "iverilog-vz": True,
                 "verilator": False, "hw": False}
@@ -5516,6 +5587,8 @@ class Finding:
     runners: tuple[str, ...]
     points: tuple[str, ...]
     expected: bool = False
+    known_of: str | None = None  # original class when reported as known-divergence
+    finding: str | None = None  # finding id (file stem) from expected_divergence
 
     @property
     def slug(self) -> str:
@@ -5592,9 +5665,12 @@ def classify(test_id: str, views: dict[tuple[str, str], View],
 
 
 def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
+    """A listed divergence is still reported, as known-divergence (never masked)."""
     for e in expected:
         if e.get("cls") == f.cls and set(e.get("runners", f.runners)) >= set(f.runners):
-            return Finding(f.cls, f.test_id, f.flow, f.model_source, f.runners, f.points, True)
+            fid = Path(e["finding"]).stem
+            return Finding("known-divergence", f.test_id, f.flow, f.model_source, f.runners,
+                           f.points, True, f.cls, fid)
     return f
 ```
 
@@ -5605,7 +5681,7 @@ def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
 ### Task 18: `xut status record`, bins-accounted lint, shared unit test paths, pytest over `tests/`
 
 **Files:**
-- Modify: `tools/xut/status.py`, `tools/xut/cli.py`, `tools/xut/workunits.py`, `tools/xut/testspec.py`, `tools/xut/lint.py`, `pyproject.toml`, `AGENTS.md`, `docs/templates/test.yaml`
+- Modify: `tools/xut/status.py`, `tools/xut/cli.py`, `tools/xut/workunits.py`, `tools/xut/testspec.py`, `tools/xut/lint.py`, `pyproject.toml`, `AGENTS.md`, `docs/templates/test.yaml`, `.github/workflows/ci.yml`
 - Create: `tools/tests/test_status_record.py`
 - Modify tests: `tools/tests/test_workunits.py`, `tools/tests/test_lint.py`
 
@@ -5617,21 +5693,29 @@ def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
   - `owned_paths(unit)` also returns `tests/<family>/<group>/_shared/<unit>/**`
   - `TestCase.shared_dirs` = `[root/tests/<family>/<group>/_shared/<work_unit>]` when that directory exists
   - `xut.lint.check_bins_accounted(root) -> list[LintIssue]`
+  - `xut.lint.check_gaps_present(root) -> list[LintIssue]`: rule `gaps-present` (error) for any test whose `gaps` is missing or empty. Every test must say what it misses (spec §1.6, controller ruling on review (b) #3).
 
 `record` rules (spec §9, §11):
 
 - **`results`.** The key is `<level>/<runner>/<flow>` for runners `python`, `xsim`, `iverilog`, `verilator` and `hw`. `iverilog-vz` is not recorded: it feeds `transform-bug` findings only.
-  - The value is the worst status over that primitive's tests at that level, with the precedence `fail > error > pass > not-run > unsupported > skip`.
+  - The value is the worst status over that primitive's tests at that level, with the precedence `fail > error > pass > not-run > unsupported > n/a > skip`.
+  - **Flows.** Keys are written for every flow a test declares, not only the flows that ran: a declared but unrun flow (`vivado`, `yosys`, `openxc7`, `vpr` in step 2) gets `not-run`, so TODO.md shows the step-4 cells. The `hw` runner never runs the `rtl` flow, so its keys use the declared non-`rtl` flows (`L1/hw/vivado`, …), never `…/hw/rtl`.
   - A runner declared `"unsupported"` gives `unsupported`, and one declared `"no"` gives `n/a` (both are step-1 `RESULT_VALUES`).
   - A skip because the runner is unavailable gives `not-run`.
   - A declared runner with no result gives `not-run`.
-- **`measured.tree_hash`** = `git rev-parse HEAD:tests/<family>/<group>/<PRIM>`. `record` refuses (with a `ClickException` naming the files) when `git status --porcelain -- <that dir>` is not empty, because a tree hash of uncommitted tests would be a lie.
+- **`measured.tree_hash`** covers everything the primitive's results depend on in the repository (review (b) #2):
+  - `tests/<family>/<group>/<PRIM>` (its tests);
+  - `tests/<family>/<group>/_shared/<unit>/**` (shared recipes, sv bodies, cocotb session, metadata generator);
+  - `models/xut_models/<family>/<prim>.py` and `models/xut_models/<family>/_common/<unit>.py` (the golden model);
+  - `catalog/<family>/<PRIM>.overrides.yaml` (the claims).
+
+  It is `sha256` over the sorted lines `"<path> <git rev-parse HEAD:<path>>"` for those paths that exist, stored as `"sha256:<hex>"` (one string, as the status schema allows). `record` refuses (with a `ClickException` naming the files) when `git status --porcelain -- <all of those paths>` is not empty, because a hash of uncommitted inputs would be a lie.
 - **`measured.tools`** is the union of the `tools` of the recorded results, plus `container` (digest) and `model_source`.
 - **`coverage.covered`** is:
   - (the declared `exercises` of vector tests) ∩ (the python runner's `bins_reached`) — the golden model confirms reach, spec §9;
   - ∪ the declared `exercises` of sv and cocotb tests that passed on at least one simulator runner.
   - `uncovered` = `coverage_bins(entry)` − `covered`.
-- **`findings`** lists `findings/<PRIM>-*.md` whose `Status:` line is `open`.
+- **`findings`** lists the **file stems** (e.g. `FDRE-doc-gap-L1-gsr_init`, as the step-1 schema describes), not paths, of `findings/<PRIM>-*.md` whose `Status:` line is `open`. Known divergences stay listed while their finding is open.
 - **Declared but not reached.** An exercised bin that the python runner did not reach produces a warning from `record`, naming the test and the bin. It is also left in `uncovered`.
 
 `check_bins_accounted` (spec §12 "every bin is covered or listed as a gap"): for each `test.yaml`, every bin in `coverage_bins(entry)` must appear in some test's `exercises`, or at the start of some `gaps` string (`"claim:FDRE.C8 — ..."`). Otherwise it is an error with rule `bins-accounted`.
@@ -5649,10 +5733,12 @@ Model and generator unit tests that a work unit owns live beside its tests, name
 In AGENTS.md, add a line under "Only touch owned paths": shared test code for a unit lives in `tests/<family>/<group>/_shared/<unit>/`.
 
 - [ ] **Step 1: Write the tests.**
-  - `record` on a tmp repo (`git init`, a committed fixture test dir, fabricated `build/rtl/*/…/result.json` files) produces the expected `results` keys and values, `tree_hash` equals `git rev-parse`, and `covered` follows the reach intersection.
-  - A dirty test dir is refused.
+  - `record` on a tmp repo (`git init`, a committed fixture test dir, fabricated `build/rtl/*/<model-source>/…/result.json` files) produces the expected `results` keys and values, `tree_hash` equals `git rev-parse`, and `covered` follows the reach intersection.
+  - A dirty test dir is refused, and so is a dirty `_shared/<unit>` file or `_common/<unit>.py`.
+  - Committing a change to a `_shared/<unit>` file changes the primitive's `tree_hash`.
   - `owned_paths(flops)` contains `tests/7series/register/_shared/flops/**`.
   - `check_bins_accounted` flags a missing bin and accepts one listed in `gaps`.
+  - `check_gaps_present` flags a test with `gaps: []` and one with no `gaps` key.
 
 - [ ] **Step 2: Implement. Run** `uv run pytest -v > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log`.
 
@@ -5661,16 +5747,25 @@ In AGENTS.md, add a line under "Only touch owned paths": shared test code for a 
 ```bash
 git add tools/xut/workunits.py tools/xut/testspec.py tools/tests/test_workunits.py AGENTS.md && git commit -m "infra: let a work unit own shared test code under tests/<family>/<group>/_shared/<unit>" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 git add tools/xut/status.py tools/xut/cli.py tools/tests/test_status_record.py && git commit -m "status: add xut status record (results, tree hash, reach-confirmed coverage)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
-git add tools/xut/lint.py tools/tests/test_lint.py pyproject.toml docs/templates/test.yaml && git commit -m "infra: lint bins-accounted; collect unit-owned pytest files under tests/" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/xut/lint.py tools/tests/test_lint.py pyproject.toml docs/templates/test.yaml && git commit -m "infra: lint bins-accounted and gaps-present; collect unit-owned pytest files under tests/" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-Update `docs/templates/test.yaml` with the Task 8 keys (`source`, `configs`, `expected_divergence`, `timeout_s`, `sv_deviations`). Write the log entry, push, and open **PR D**, "infra: crosscheck, status record, shared unit test paths". Merge order: A, B, C, D. After each merge the orchestrator regenerates status on `main` (`uv run xut status generate`, and after C also `uv run xut portability --write`) and commits `status: regenerate`.
+**CI on the open-source model source** (review (b) #5). Add to the `sim` job in `.github/workflows/ci.yml`:
+
+```yaml
+      - run: uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4
+      - run: uv run xut crosscheck 'unit:flops' --model-source unisim-gh-2020.1
+```
+
+Until the flops unit merges, `xut run` selects nothing and exits 0 with `no tests selected`; the step becomes live with PR E. Commit it with `infra: CI runs flops L0/L1 vector tests on iverilog against the UNISIM submodule`. `xut crosscheck` gains `--model-source` to restrict the report to one source.
+
+Update `docs/templates/test.yaml` with the Task 8 keys (`source`, `configs`, `expected_divergence`, `timeout_s`, `sv_deviations`). Write the log entry, push (`git push -u origin infra/crosscheck`), and open **PR D** with `gh pr create --base infra/sim-runners --title "infra: crosscheck, status record, shared unit test paths"`. Merge order: A, B, then C and D (either order; the second one resolves the Task 16/18 rebase conflict). After each merge the orchestrator regenerates status on `main` (`uv run xut status generate`, and after C also `uv run xut portability --write`) and commits `status: regenerate`.
 
 ---
 
 ## Pilot: the `flops` work unit (branch `unit/7series/flops`)
 
-Start only after PRs A–D are merged, then rebase onto `main`. This branch touches **only** these paths, which `xut lint --branch` enforces:
+Start only after PRs A–D are merged (branch from `origin/main`). The whole unit (Tasks 19–27) is **one** PR, opened in Task 27; each task is still reviewed before the next starts. This branch touches **only** these paths, which `xut lint --branch` enforces:
 
 - `catalog/7series/FD{R,S,C,P}E.overrides.yaml`;
 - `models/xut_models/7series/_common/flops.py` and `models/xut_models/7series/fd{r,s,c,p}e.py`;
@@ -6356,7 +6451,8 @@ def l1_is_d_inverted(ctx, k):
 
 
 def l2_exhaustive(ctx, k):
-    """16 configurations x prior Q x (control, CE, D) at an active edge, then a GSR pulse."""
+    """16 configurations x prior Q x (control, CE, D) at an active edge. No GSR, so the
+    configurations without IS_D_INVERTED stay hardware-eligible (GSR on hw needs §7.2)."""
     for cfg, attrs in all_configs(k):
         f = Flop(ctx, k, cfg, attrs)
         for q0, (c, ce, d) in product((0, 1), product((0, 1), repeat=3)):
@@ -6368,8 +6464,6 @@ def l2_exhaustive(ctx, k):
                 f.sample()
             f.clock()
             f.ctrl(False)
-        f.gsr_pulse()
-        f.clock()
         yield f.build()
 
 
@@ -6380,9 +6474,7 @@ def l2_random(ctx, k, steps: int = 300):
         rng = ctx.rng
         for _ in range(steps):
             r = rng.random()
-            if r < 0.02:
-                f.gsr_pulse()
-            elif k.is_async and r < 0.15:
+            if k.is_async and r < 0.13:
                 f.ctrl(rng.random() < 0.5)
                 f.sample()
             else:
@@ -6393,10 +6485,18 @@ def l2_random(ctx, k, steps: int = 300):
         yield f.build()
 
 
+def l0_illegal_init(ctx, k):
+    """INIT=1'bx is outside UG953's allowed values: the model must reject it (expect=reject)."""
+    b = ctx.dut("init_x", allow_illegal=True, expect="reject", INIT="1'bx")
+    b.sample()
+    yield b.build()
+
+
 def generators(prim: str) -> dict:
     """test.yaml function name -> generator, for vectors/gen.py of each primitive."""
     k = KINDS[prim]
-    table = {"l0_smoke": l0_smoke, "l1_capture": l1_capture, "l1_ce_hold": l1_ce_hold,
+    table = {"l0_smoke": l0_smoke, "l0_illegal_init": l0_illegal_init,
+             "l1_capture": l1_capture, "l1_ce_hold": l1_ce_hold,
              f"l1_{k.word}_over_ce": l1_ctrl_over_ce, "l1_gsr_init": l1_gsr,
              "l1_is_c_inverted": l1_is_c_inverted,
              f"l1_is_{k.ctrl.lower()}_inverted": l1_is_ctrl_inverted,
@@ -6459,6 +6559,9 @@ X_VL = ("unsupported", "2-state simulator: x stimulus is randomised per X seed (
 CO_XS = ("unsupported", "cocotb has no xsim backend (spec §4.3)")
 CO_HW = ("unsupported", "cocotb runs in simulation; failing seeds are frozen into vector tests")
 CO_PY = ("no", "the cocotb test compares against the golden model itself")
+PY_REJ = ("no", "expect=reject: there is no behaviour to model")
+VL_REJ = ("unsupported", "a 2-state simulator cannot represent the 1'bx attribute value")
+HW_REJ = ("unsupported", "rejection of an illegal attribute is a simulation-model check")
 
 
 def hw_inv_d(ap: int) -> tuple[str, str]:
@@ -6500,65 +6603,97 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
     all_ports = _ports(k, "C", "CE", "D", "Q", c)
     out: list[tuple[dict, str]] = []
 
-    def add(level, suffix, style, source, exercises, why, *, sampling=None, runners=None,
-            flows=None, gaps=(), configs=None):
+    def add(level, suffix, style, source, exercises, why, *, gaps, sampling=None,
+            runners=None, flows=None, configs=None, exclusions=None, related=()):
+        assert gaps, f"{suffix}: every test must say what it misses"
         declared, reasons = runners or _runners()
         e = {"id": f"7series.{k.prim}.{level}.{suffix}", "level": level, "style": style,
              "source": source, "exercises": exercises, "attr_sampling": sampling or {},
              "runners": declared, "flows": flows or ALL_FLOWS,
-             "related": _related(k, level, suffix), "gaps": list(gaps)}
+             "related": _related(k, level, suffix) + list(related), "gaps": list(gaps)}
         if reasons:
             e["unsupported_reasons"] = reasons
+        if exclusions:
+            e["config_exclusions"] = exclusions
         if configs:
             e["configs"] = configs
         out.append((e, why))
 
     init_s = {"INIT": [0, 1]}
+    no_x = "no x/z on any input (sv_x_inputs covers x)"
+    d1 = {"hw": {"*_d1_*": f"IS_D_INVERTED=1 (UG953 p{ap}) is only legal on I/O registers; "
+                           "the fabric harness uses SLICE flops"}}
     add("L0", "smoke", "vector", "vectors/gen.py:l0_smoke",
         all_ports + _attrs(attr_names(k)) + _claims(k, 1, 4),
         "Every one of the 16 attribute combinations elaborates, powers up to INIT and "
         "captures once on every simulator: the minimum any toolchain must get right.",
-        sampling={n: [0, 1] for n in attr_names(k)}, runners=_runners(hw=hw_inv_d(ap)),
-        gaps=[f"L0 illegal-value rejection: every {k.prim} attribute is a 1-bit BINARY "
-              f"(UG953 p{ap}), so no illegal value exists"])
+        sampling={n: [0, 1] for n in attr_names(k)}, exclusions=d1,
+        gaps=["only one capture per configuration; no control, CE-low or GSR activity",
+              no_x, "illegal values are tried only by L0.illegal_init"],
+        related=[f"7series.{k.prim}.L0.illegal_init"])
+    add("L0", "illegal_init", "vector", "vectors/gen.py:l0_illegal_init", [],
+        f"INIT=1'bx is outside UG953's 1'b0/1'b1 (p{ap}); the simulation must reject it "
+        "(expect=reject), which exercises the runtime-rejection path of spec §4.1.",
+        runners=_runners(python=PY_REJ, verilator=VL_REJ, hw=HW_REJ),
+        gaps=["only INIT=1'bx is tried; over-width literals are truncated at elaboration "
+              "and IS_*_INVERTED illegal values are not tried",
+              "whether UNISIM rejects it is observed, not documented (see Task 24)"],
+        related=[f"7series.{k.prim}.L0.smoke"])
     add("L1", "capture", "vector", "vectors/gen.py:l1_capture",
         _ports(k, "C", "CE", "D", "Q") + _claims(k, 1),
         "Pins the basic D-to-Q transfer on the active edge, for both INIT values and for "
         "the all-defaults configuration (model defaults vs UNISIM defaults).",
-        sampling=init_s)
+        sampling=init_s,
+        gaps=["CE held High and the control inactive throughout", "no GSR after power-up",
+              "default polarities only", no_x],
+        related=[f"7series.{k.prim}.L2.exhaustive"])
     add("L1", "ce_hold", "vector", "vectors/gen.py:l1_ce_hold",
         _ports(k, "C", "CE", "D", "Q") + _claims(k, 2),
         "Shows that CE Low makes clock edges no-ops even with D different from Q.",
-        sampling=init_s)
+        sampling=init_s,
+        gaps=["CE never toggles within a cycle (between edges only)", "control inactive",
+              "default polarities only", no_x])
     add("L1", f"{w}_over_ce", "vector", f"vectors/gen.py:l1_{w}_over_ce",
         _ports(k, c, "CE", "Q") + _claims(k, 3),
         (f"{c} must win over CE Low and over D, "
          + ("at once, with no clock edge." if k.is_async else "at the next active edge.")
          + " A priority inversion here is a classic synthesis-mapping bug."),
-        sampling=init_s)
+        sampling=init_s,
+        gaps=[f"{c} is never asserted and released within one clock period" if not k.is_async
+              else f"{c} release timing relative to the clock is covered only by {w}_recovery",
+              "default polarities only", no_x])
     if k.is_async:
         add("L1", f"{w}_async", "vector", f"vectors/gen.py:l1_{w}_async",
             _ports(k, c, "Q") + _claims(k, 3),
             f"{c} acts without any clock edge, repeatedly, from both Q values.",
-            sampling=init_s)
+            sampling=init_s,
+            gaps=["no clock activity while the control is asserted", "no GSR overlap",
+                  "default polarities only"])
         add("L1", f"{w}_recovery", "vector", f"vectors/gen.py:l1_{w}_recovery",
             _ports(k, c, "C", "D", "Q") + _claims(k, 1, 3),
             f"After {c} is released, the next active edge captures D. The edge is at least "
             "async_sep_ps after the release, so recovery timing is not tested (spec §2).",
-            sampling=init_s, gaps=["recovery/removal timing is out of scope (spec §2)"])
+            sampling=init_s, gaps=["recovery/removal timing is out of scope (spec §2)",
+                                   "one release per configuration"])
     add("L1", "gsr_init", "vector", "vectors/gen.py:l1_gsr_init",
         _ports(k, "Q") + _claims(k, 4),
         "A GSR pulse mid-run returns Q to INIT from the opposite value; checks glbl handling "
         "in every simulator and, later, every flow's INIT mapping.",
-        sampling=init_s, runners=_runners(hw=HW_GSR))
+        sampling=init_s, runners=_runners(hw=HW_GSR),
+        gaps=["GSR overlapping an active control is not driven here",
+              "edges during GSR are an inferred behaviour (see sv_gsr_midsim)"],
+        related=[f"7series.{k.prim}.L1.sv_gsr_midsim"])
     add("L1", "is_c_inverted", "vector", "vectors/gen.py:l1_is_c_inverted",
         _ports(k, "C", "Q") + ["attr:IS_C_INVERTED=1'b1"] + _claims(k, 5),
         "Samples after both edges show capture only on the falling edge.",
-        sampling={"INIT": [0, 1], "IS_C_INVERTED": [1]})
+        sampling={"INIT": [0, 1], "IS_C_INVERTED": [1]},
+        gaps=["CE High and control inactive throughout; the other inversions stay 0 "
+              "(combinations are in L2.exhaustive)"])
     add("L1", f"is_{lc}_inverted", "vector", f"vectors/gen.py:l1_is_{lc}_inverted",
         _ports(k, c, "Q") + [f"attr:IS_{c}_INVERTED=1'b1"] + _claims(k, 6),
         f"{c} held Low acts as active; a flow that drops the inversion fails at once.",
-        sampling={"INIT": [0, 1], f"IS_{c}_INVERTED": [1]})
+        sampling={"INIT": [0, 1], f"IS_{c}_INVERTED": [1]},
+        gaps=["one assertion per configuration; other inversions stay 0"])
     add("L1", "is_d_inverted", "vector", "vectors/gen.py:l1_is_d_inverted",
         _ports(k, "D", "Q") + ["attr:IS_D_INVERTED=1'b1"] + _claims(k, 7),
         "Q takes the complement of D.",
@@ -6566,41 +6701,55 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         gaps=[f"claim:{k.prim}.C8 — IS_D_INVERTED=1 is only legal on I/O registers; a "
               "placement rule for hardware flows (steps 3-4), not a simulation behaviour"])
     add("L2", "exhaustive", "vector", "vectors/gen.py:l2_exhaustive",
-        all_ports + _attrs(attr_names(k)) + _claims(k, 1, 2, 3, 4, 5, 6, 7),
+        all_ports + _attrs(attr_names(k)) + _claims(k, 1, 2, 3, 5, 6, 7),
         "Every attribute combination x prior Q x (control, CE, D): the complete "
-        "single-edge truth table, plus a GSR pulse per configuration.",
-        sampling={n: [0, 1] for n in attr_names(k)}, runners=_runners(hw=hw_inv_d(ap)))
+        "single-edge truth table.",
+        sampling={n: [0, 1] for n in attr_names(k)}, exclusions=d1,
+        gaps=["single edge per combination: no multi-cycle ordering (see L2.random)",
+              "no GSR (L1.gsr_init and sv_gsr_midsim cover it; hardware GSR needs §7.2)",
+              no_x],
+        related=[f"7series.{k.prim}.L1.capture"])
     add("L2", "random", "vector", "vectors/gen.py:l2_random",
-        all_ports + _attrs(attr_names(k)) + _claims(k, 1, 2, 3, 4),
+        all_ports + _attrs(attr_names(k)) + _claims(k, 1, 2, 3),
         "Seeded constrained-random sequences find ordering effects that the "
         "single-edge table cannot.",
-        sampling={n: [0, 1] for n in attr_names(k)}, runners=_runners(hw=hw_inv_d(ap)))
+        sampling={n: [0, 1] for n in attr_names(k)}, exclusions=d1,
+        gaps=["no GSR (hardware GSR needs §7.2; L1.gsr_init covers simulation)",
+              "one seed per run; failing seeds must be frozen by hand (xut freeze-seed is "
+              "deferred)",
+              no_x] + (["the control only changes between edges (sync kinds)"]
+                       if not k.is_async else []),
+        related=[f"7series.{k.prim}.L2.cocotb_random"])
     add("L1", "sv_gsr_midsim", "sv", f"sv/tb_{k.prim.lower()}_gsr.sv",
         _ports(k, "Q") + _claims(k, 4),
         "Direct UNISIM instances for both INIT values; glbl GSR is forced mid-run while "
         "clocking. Edges during GSR are recorded, not judged, because UG953 is silent.",
         runners=_runners(python=SV_PY, hw=SV_HW), flows=["rtl"],
-        gaps=["behaviour of clock edges while GSR is active: undocumented, checkpoint only"],
-        configs=[{"cfg": "default", "attrs": {}}])
+        gaps=["behaviour of clock edges while GSR is active: undocumented, checkpoint only",
+              "default IS_* polarities only", "control inactive throughout"],
+        configs=[{"cfg": "default", "attrs": {}}],
+        related=[f"7series.{k.prim}.L1.gsr_init"])
     add("L1", "sv_x_inputs", "sv", f"sv/tb_{k.prim.lower()}_x.sv",
         _ports(k, "CE", "D", c, "Q") + _claims(k, 2, 3),
         "X on D, CE or the control: the documented cases (CE Low holds; the control "
         "overrides) are checked; the undocumented ones are recorded for cross-simulator "
-        "comparison. Not run on Verilator: see unsupported_reasons (plan ambiguity 8).",
+        "comparison. Not run on Verilator: see unsupported_reasons (plan ambiguity 9).",
         runners=_runners(python=SV_PY, verilator=X_VL, hw=SV_HW), flows=["rtl"],
         gaps=["UG953 does not define X behaviour; X on D with CE High, X on CE and X on the "
-              "control are checkpoints only"],
+              "control are checkpoints only", "no x on C", "default polarities only"],
         configs=[{"cfg": "default", "attrs": {}}])
     add("L2", "cocotb_random", "cocotb", f"cocotb/cocotb_{k.prim.lower()}_random.py",
         all_ports + _claims(k, 1, 2, 3, 4),
         "Long model-checked random sessions on Icarus and Verilator; any failing seed becomes "
         "a frozen vector test that also runs on xsim and hardware.",
         runners=_runners(python=CO_PY, xsim=CO_XS, hw=CO_HW), flows=["rtl"],
+        gaps=["no GSR mid-session", "only 4 of the 16 attribute configurations", no_x],
         configs=[{"cfg": "default", "attrs": {}},
                  {"cfg": "init1", "attrs": {"INIT": "1'b1"}},
                  {"cfg": "inv_all", "attrs": {"IS_C_INVERTED": "1'b1", "IS_D_INVERTED": "1'b1",
                                               f"IS_{c}_INVERTED": "1'b1"}},
-                 {"cfg": "init1_inv_c", "attrs": {"INIT": "1'b1", "IS_C_INVERTED": "1'b1"}}])
+                 {"cfg": "init1_inv_c", "attrs": {"INIT": "1'b1", "IS_C_INVERTED": "1'b1"}}],
+        related=[f"7series.{k.prim}.L2.random"])
     return out
 
 
@@ -6639,8 +6788,13 @@ def render_readme(k: FlopKind, root: Path = ROOT) -> str:
              "", "## Tests", "", "| ID | Level | Style | Exercises |", "|---|---|---|---|"]
     lines += [f"| `{e['id']}` | {e['level']} | {e['style']} | {', '.join(e['exercises'])} |"
               for e, _ in tests]
-    lines += ["", "## Why each test is useful", ""]
-    lines += [f"- `{e['id']}`: {why}" for e, why in tests]
+    lines += ["", "## Why each test is useful, and what it misses", ""]
+    for e, why in tests:
+        lines.append(f"- `{e['id']}`: {why}")
+        lines += [f"  - Misses: {g}" for g in e["gaps"]]
+        for runner, excl in e.get("config_exclusions", {}).items():
+            lines += [f"  - Not on {runner} for configurations `{pat}`: {why_x}"
+                      for pat, why_x in excl.items()]
     lines += ["", "## Oracle", "",
               f"- Vector tests: the clean-room golden model `models/xut_models/7series/"
               f"{k.prim.lower()}.py` (shared logic in `_common/flops.py`), written from UG953 "
@@ -6651,7 +6805,7 @@ def render_readme(k: FlopKind, root: Path = ROOT) -> str:
               "- cocotb: the same golden model, cycle by cycle.",
               "- References: UNISIM on xsim, Icarus and Verilator (after `xut verilatorize`, "
               "guarded by its Icarus equivalence check).", "",
-              "## Known gaps", "",
+              "## Known gaps (all tests)", "",
               "- Timing (setup/hold, clock-to-Q, recovery/removal) is out of scope (spec §2)."]
     gaps = dict.fromkeys(g for e, _ in tests for g in e["gaps"])
     lines += [f"- {g}" for g in gaps]
@@ -6714,6 +6868,13 @@ def test_every_generator_exists(prim):
             assert t["source"].split(":", 1)[1] in names
 
 
+def test_every_test_has_gaps():
+    for k in KINDS.values():
+        from flop_tests import tests_for
+
+        assert all(e["gaps"] for e, _ in tests_for(k)), k.prim
+
+
 @pytest.mark.parametrize("prim", PRESENT)
 def test_validates_against_step1_schema(prim):
     import json
@@ -6738,7 +6899,7 @@ uv run xut lint > .cache/lint.log 2>&1; cat .cache/lint.log
 ```
 
 Expected:
-- `tests/7series/register/FDRE/test.yaml` has 13 tests (FDRE has no async tests).
+- `tests/7series/register/FDRE/test.yaml` has 14 tests (FDRE has no async tests), every one with a non-empty `gaps` list.
 - Lint reports only `related` warnings (FDSE, FDCE and FDPE do not exist yet) and no `bins-accounted` error: `claim:FDRE.C8` is covered by a `gaps` entry, and the other 20 bins by `exercises`.
 
 The start of the rendered `test.yaml`:
@@ -6779,7 +6940,7 @@ uv run xut run '7series.FDRE.*' --runner python > .cache/run-fdre-python.log 2>&
 
 Expected:
 - every vector test `pass`, and the sv and cocotb tests `skip` with their declared reasons;
-- `build/rtl/python/7series.FDRE.L1.gsr_init/cfg-init0/stim.xvec` starts with `# xut-vec 2  prim=FDRE cfg=init0` and has `hw_renderable yes`, because GSR is renderable per spec §5.2 (the runner declaration covers the §7.2 limitation);
+- `build/rtl/python/unisim-2025.2/7series.FDRE.L1.gsr_init/cfg-init0/stim.xvec` starts with `# xut-vec 2  prim=FDRE cfg=init0` and has `hw_renderable yes`, because GSR is renderable per spec §5.2 (the runner declaration covers the §7.2 limitation);
 - the L0 `result.json` `bins_reached` includes every L0 `exercises` bin.
 
 - [ ] **Step 6: Commit**
@@ -7080,7 +7241,7 @@ Expected:
 
 ---
 
-### Task 24: FDRE end-to-end run, crosscheck, findings, status — PR E
+### Task 24: FDRE end-to-end run, crosscheck, findings, status
 
 **Files:**
 - Modify: `status/7series/FDRE.yaml`
@@ -7088,7 +7249,7 @@ Expected:
 - Create: `log/<ts>-unit-7series-flops-fdre-pilot.md`
 
 - [ ] **Step 1: Full run.**
-  - **Estimate:** about 13 tests; vector configurations total 16 + 3 + 2 + 4 + 2 + 2 + 2 + 2 + 16 + 16 = 65, plus 2 sv and 4 cocotb. Verilator builds dominate: about 70 × 40 s ≈ 47 CPU-minutes. At `--jobs 40` that is about 2–4 minutes, and xsim adds about 65 × 15 s ÷ 40 ≈ 0.5 min.
+  - **Estimate:** 14 tests; vector configurations total 16 + 1 + 3 + 2 + 4 + 2 + 2 + 2 + 2 + 16 + 16 = 66, plus 2 sv and 4 cocotb. Verilator builds dominate: about 70 × 40 s ≈ 47 CPU-minutes. At `--jobs 40` that is about 2–4 minutes, and xsim adds about 65 × 15 s ÷ 40 ≈ 0.5 min.
   - **Cadence:** expected under 10 minutes, so report every 60 s with the remaining time and the finish clock-time, from the `progress:` lines.
 
 ```bash
@@ -7097,7 +7258,7 @@ uv run xut run '7series.FDRE.*' --jobs 40 > .cache/run-fdre.log 2>&1
 
 (Run it in the background with a Monitor on `.cache/run-fdre.log`.)
 
-Expected: every declared runner is `pass` for every test, and every undeclared cell is `skip` with a reason. `build/rtl/{python,xsim,iverilog,iverilog-vz,verilator}/7series.FDRE.*/result.json` all exist.
+Expected: every declared runner is `pass` for every test, and every undeclared cell is `skip` with a reason. `build/rtl/{python,xsim,iverilog,iverilog-vz,verilator}/unisim-2025.2/7series.FDRE.*/result.json` all exist.
 
 - [ ] **Step 2: Crosscheck**
 
@@ -7108,8 +7269,10 @@ uv run xut crosscheck '7series.FDRE.*' --write-findings > .cache/xc-fdre.log 2>&
 Expected in the best case: `exit=0` and no findings. For each finding reported:
 1. Read the evidence against the UG953 text (pages 375–376), without opening UNISIM.
 2. If the golden model contradicts UG953, fix the model with a test in `test_flop_models.py` and re-run. That is a model bug, not a finding.
-3. Otherwise complete the finding file's **Analysis** section. For a `doc-gap`, the model's `inferred:` choice was not what UNISIM does: keep the finding open. If you conclude UG953 is silent, change that behaviour to `-` (undefined) in the model, keeping the provenance tag, and add an `expected_divergence` entry. Never make the model copy UNISIM.
-4. Add `{finding: findings/FDRE-<slug>.md, cls: <class>, runners: [...]}` to the test in `flop_tests.py`, regenerate (`flop_tests.py FDRE`), and re-run crosscheck until `exit=0`.
+3. Otherwise complete the finding file's **Analysis** section and keep it open. **Do not change the expectation**: the model keeps its `doc:`/`inferred:` value, and the bit stays defined. (`-` is only for bits the model already declares undefined because UG953 is silent on a *conflict*, Review Focus 2; it is never introduced in response to a finding.) Never make the model copy UNISIM.
+4. Add `{finding: findings/FDRE-<slug>.md, cls: <class>, runners: [...]}` to the test's `expected_divergence` in `flop_tests.py`, and link the finding from the test's `gaps`. Regenerate (`flop_tests.py FDRE`) and re-run crosscheck. The disagreement is still reported, now as `known-divergence` referencing the finding, and the exit code becomes 0.
+
+**`L0.illegal_init`** (the reject path). If iverilog and xsim both reject `INIT=1'bx` (no `XUT_DONE`, or an elaboration error), keep the test. If either simulator accepts it (`fail` "illegal attribute was accepted"), that is not a UG953 violation: UG953 lists the legal values but does not promise a runtime check. Remove the test from `flop_tests.py`, and add to `L0.smoke`'s `gaps`: "UNISIM (<model source>) accepts INIT=1'bx without rejecting it; the reject path is not exercised for flops". Record the observation in the log entry. This is recording a gap, not weakening a documented check.
 
 For a `transform-bug` or `x-dependence`: record it and declare `verilator` `"unsupported"`, with the finding link as its `unsupported_reasons` entry, in `flop_tests.py` for the affected tests. That is the spec's "blocks the Verilator results for that model". Never delete a check.
 
@@ -7123,11 +7286,11 @@ git add status/7series/FDRE.yaml && git commit -m "flops: record FDRE L0-L2 resu
 ```
 
 Skip the first commit if Step 2 changed nothing. Expected in `status/7series/FDRE.yaml`:
-- `results` has keys such as `L1/iverilog/rtl: pass`, `L1/hw/rtl: not-run` and `L1/verilator/rtl: pass`;
+- `results` has keys such as `L1/iverilog/rtl: pass`, `L1/verilator/rtl: pass`, `L1/xsim/vivado: not-run` and `L1/hw/vivado: not-run`;
 - `coverage.uncovered` is exactly `[claim:FDRE.C8]`;
-- `measured.tree_hash` equals `git rev-parse HEAD:tests/7series/register/FDRE`.
+- `measured.tree_hash` is a `sha256:` over the FDRE test dir, `_shared/flops`, `fdre.py`, `_common/flops.py` and `FDRE.overrides.yaml` at `HEAD`.
 
-- [ ] **Step 4: Lint, log, and PR E**
+- [ ] **Step 4: Lint, log, per-task review**
 
 ```bash
 uv run pytest -v > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
@@ -7136,7 +7299,7 @@ uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 
 Expected: lint has no errors. Its warnings are only the `related` targets for FDSE, FDCE and FDPE.
 
-Write `log/<ts>-unit-7series-flops-fdre-pilot.md`: the result matrix (paste `xut crosscheck`'s matrix), findings, run durations, and next steps (FDSE, FDCE, FDPE). Commit it with `flops: log FDRE pilot`. Then push and open **PR E**, "flops: FDRE end-to-end pilot", whose body lists the Review Focus items 2–4 as they apply and ends with the Claude Code line. Run the review gate. Reviewer (b) checks the clean-room rule and every claim against UG953 pages 375–376.
+Write `log/<ts>-unit-7series-flops-fdre-pilot.md`: the result matrix (paste `xut crosscheck`'s matrix), findings, run durations, and next steps (FDSE, FDCE, FDPE). Commit it with `flops: log FDRE pilot`. Do **not** open a PR yet: the unit has one PR (opened in Task 27). Run the per-task review on the local commits (reviewer (a), then reviewer (b), sequentially). Reviewer (b) checks the clean-room rule and every claim against UG953 pages 375–376. Address must-fix items in new commits before Task 25.
 
 ---
 
@@ -7170,7 +7333,11 @@ class FDSE(SdrFlop):
 MODEL = FDSE
 ```
 
-Run the model tests: all pass.
+Run the model tests: all pass. Commit the model now, before any test file:
+
+```bash
+git add models tests/7series/register/_shared/flops/test_flop_models.py && git commit -m "flops: add FDSE golden model (UG953 pp. 378-379)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
 
 - [ ] **Step 3: Write the FDSE test files**
 
@@ -7235,14 +7402,14 @@ uv run xut crosscheck '7series.FDSE.*' --write-findings > .cache/xc-fdse.log 2>&
 Handle each finding with the Task 24, Step 2 procedure, against UG953 pp. 378–379. Then commit the tests and findings and record the status:
 
 ```bash
-git add tests/7series/register findings && git commit -m "flops: add FDSE vector, sv and cocotb tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tests/7series/register/FDSE findings && git commit -m "flops: add FDSE vector, sv and cocotb tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 uv run xut status record FDSE > .cache/status-fdse.log 2>&1; cat .cache/status-fdse.log
 git add status/7series/FDSE.yaml && git commit -m "flops: record FDSE results and coverage" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 Expected: `coverage.uncovered` is exactly `[claim:FDSE.C8]`.
 
-- [ ] **Step 5: Commit the model** (the tests and status were committed in Step 4). The model goes in its own commit before the tests, `git add models tests/7series/register/_shared/flops/test_flop_models.py`, with the message `flops: add FDSE golden model (UG953 pp. 378-379)`. Reorder with `git rebase` if it was left until now; the history must read model → tests → status.
+The history now reads model (Step 2) → tests (Step 4) → status (Step 4), with no rebase needed.
 
 ---
 
@@ -7415,17 +7582,17 @@ uv run xut run '7series.FDCE.*' '7series.FDPE.*' --runner python > .cache/run-as
 
 Expected: every vector test passes, meaning every generated `.xvec` validated.
 
-Spot-check that `build/rtl/python/7series.FDCE.L1.clear_async/cfg-init0/stim.xvec` has every `set in[<CLR bit>]` alone at its time, and at least 1000 ps from the nearest `edge` line:
+Spot-check that `build/rtl/python/unisim-2025.2/7series.FDCE.L1.clear_async/cfg-init0/stim.xvec` has every `set in[<CLR bit>]` alone at its time, and at least 1000 ps from the nearest `edge` line:
 
 ```bash
-uv run xut vec check build/rtl/python/7series.FDCE.L1.clear_async/cfg-init0/stim.xvec --map build/rtl/python/7series.FDCE.L1.clear_async/cfg-init0/dut/xut_dut.map.json > .cache/vec-check.log 2>&1; cat .cache/vec-check.log
+uv run xut vec check build/rtl/python/unisim-2025.2/7series.FDCE.L1.clear_async/cfg-init0/stim.xvec --map build/rtl/python/unisim-2025.2/7series.FDCE.L1.clear_async/cfg-init0/dut/xut_dut.map.json > .cache/vec-check.log 2>&1; cat .cache/vec-check.log
 ```
 
 Expected: no `error:` lines and `hw_renderable: yes`.
 
 - [ ] **Step 5: Run, crosscheck and record both primitives**
 
-- **Estimate:** 2 × (65 vector configurations + 8 for `_async`/`_recovery`) ≈ 144 Verilator builds ≈ 96 CPU-minutes. At `--jobs 40` that is about 3–6 minutes.
+- **Estimate:** 2 × (65 vector configurations + 4 for `_async`/`_recovery`) ≈ 144 Verilator builds ≈ 96 CPU-minutes. At `--jobs 40` that is about 3–6 minutes.
 - **Cadence:** report every 60 s.
 
 ```bash
@@ -7448,18 +7615,21 @@ Expected: `coverage.uncovered` is exactly `[claim:FDCE.C8]` and `[claim:FDPE.C8]
 
 ---
 
-### Task 27: Whole-unit verification — PR F
+### Task 27: Whole-unit verification — PR E (the unit's single PR)
 
 - [ ] **Step 1: Re-run the whole unit from a clean build directory**
 
 ```bash
 rm -rf build/rtl
 uv run xut run 'unit:flops' --jobs 40 > .cache/run-flops.log 2>&1
+uv run xut run 'unit:flops' --model-source unisim-gh-2020.1 --runner python --runner iverilog --runner verilator --jobs 40 > .cache/run-flops-gh.log 2>&1
 uv run xut crosscheck 'unit:flops' > .cache/xc-flops.log 2>&1; echo "exit=$?"; tail -n 40 .cache/xc-flops.log
 ```
 
+The second run is the open-source model source (the submodule). Its results land under `build/rtl/<runner>/unisim-gh-2020.1/`, and crosscheck compares them only with each other, never with `unisim-2025.2` traces. A cross-version report is a separate, explicit step (spec §6.2) and is not part of step 2.
+
 - **Estimate:** about 280 Verilator builds ÷ 40 jobs × 40 s ≈ 5–8 minutes. That is under 10 minutes, so report every 60 s. If the first ETA exceeds 10 minutes, switch to a 5-minute cadence.
-- **Expected:** `exit=0`. Every finding is expected, i.e. linked from an `expected_divergence`.
+- **Expected:** `exit=0`. Every disagreement is either absent or reported as `known-divergence` linked to an open finding.
 
 - [ ] **Step 2: Status, lint and tests**
 
@@ -7475,13 +7645,20 @@ Expected:
 - `git status` shows only the four status files as modified;
 - `status/PROGRESS.md` is **not** modified (it is generated on `main` only).
 
-- [ ] **Step 3: Commit, log, PR F**
+- [ ] **Step 3: Commit, log, PR E**
 
 ```bash
 git add status/7series && git commit -m "flops: record whole-unit results" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-Write `log/<ts>-unit-7series-flops-complete.md` with the final matrix, the findings and the timings, and commit it. Push, and open **PR F**, "flops: FDSE, FDCE, FDPE". Run the review gate. After the merge, the orchestrator runs on `main`:
+Write `log/<ts>-unit-7series-flops-complete.md` with the final matrix, the findings and the timings, and commit it. Then push and open the unit's **one** PR:
+
+```bash
+git push -u origin unit/7series/flops
+gh pr create --base main --title "flops: FDRE/FDSE/FDCE/FDPE pilot" --body-file .cache/pr-e.md
+```
+
+The body lists every task's per-task review outcome, the Review Focus items 2–4 as they apply, and ends with the Claude Code line. Run the review gate (sequential reviewers). After the merge, the orchestrator runs on `main`:
 
 ```bash
 uv run xut status generate > .cache/status-gen.log 2>&1; cat .cache/status-gen.log
@@ -7530,13 +7707,13 @@ git commit -m "status: regenerate" -m "Co-Authored-By: Claude Opus 5.5 (1M conte
   - model identity;
   - the portability table with triggers;
   - pinned XIL_* defines (recorded, default undefined).
-- **§8 crosscheck.** All nine classes are classified, like-for-like by model source. Findings are recorded as `findings/<PRIM>-<slug>.md` and linked from the README; `expected_divergence` is honoured; weakening tests is explicitly forbidden in Task 24.
+- **§8 crosscheck.** All nine classes are classified, like-for-like by model source (the build path includes the model source; CI runs flops L0/L1 against the submodule). Findings are recorded as `findings/<PRIM>-<slug>.md` and linked from the README. `expected_divergence` never masks: listed disagreements are still reported as `known-divergence` (spec §8 rev 3.1). Weakening tests is explicitly forbidden in Task 24.
 - **§9 coverage.** Bins are confirmed by golden-model reach (`Reach`, Task 6; `status record`, Task 18). Model code coverage is step 5.
 - **§11 metadata and status.** `test.yaml` follows the spec plus `source`/`configs`. `status record` writes results, the tree hash, tools and coverage. Generated files are never committed on branches (Global Constraints; Tasks 16, 27).
-- **§12 documentation.** Generated READMEs have every template section. Lint checks `bins-accounted` (Task 18) on top of the step-1 rules.
+- **§12 documentation.** Generated READMEs have every template section, with gaps listed per test. Lint checks `bins-accounted` and `gaps-present` (Task 18) on top of the step-1 rules.
 - **§13 process.**
   - Branch types and worktrees, and a path-owned pilot, extended in Task 18 with `_shared/<unit>`.
-  - Small prefixed commits with the trailer, PRs A–F with the review gate, and infra merged first.
+  - Small prefixed commits with the trailer; one PR per branch (A–E), stacked bases, orchestrator-only `--force-with-lease` rebases; the review gate with sequential reviewers; infra merged first.
 - **§14 no silent skips.** Every (test, runner) pair writes a `result.json`, and `error` is distinct from `fail` (Task 8).
 - **§16 step 2 scope** is fully covered. Deliberately **not** in step 2:
   - clock observers (§5.4);
@@ -7544,21 +7721,29 @@ git commit -m "status: regenerate" -m "Co-Authored-By: Claude Opus 5.5 (1M conte
   - the hardware harness and the `hw` runner (§7);
   - non-`rtl` flows and fasm2bels (§6, §6.1);
   - model code coverage (§9);
-  - publishing images.
+  - publishing images;
+  - **`xut freeze-seed`** (spec §4.3), which would turn a failing cocotb seed into a committed `vectors/frozen/<seed>.xvec`. TODO(step 5, infra): `XutDut` must record every driven event as it happens (a `VecBuilder`-compatible log), and `xut freeze-seed <test-id> --cfg <cfg> --seed <n>` must write the `.xvec` plus a test.yaml entry. Until then, a failing seed is frozen by hand, and each cocotb and random test lists this in its `gaps`;
+  - a cross-model-source comparison report (spec §6.2), beyond running both sources like-for-like.
 
   The interfaces above leave a place for each of them.
 
 **Spec ambiguities resolved in this plan:**
 
 1. **cocotb on Verilator — resolved by the owner-delegated controller ruling.** cocotb 2.0.1 refuses Verilator < 5.036, and spec rev 3 pinned apt 5.032. Ruling: cocotb-on-Verilator is required, so Verilator is pinned to **v5.048 built from the upstream git tag** (commit `d0aa828c217410fffc73d92077b6f4f54830357c`) in a multi-stage `xut-sim` build on the same base digest. iverilog stays apt `12.0-2+b1` and cocotb stays pip `2.0.1`. The spec is amended to rev 3.1. Task 1 pins cocotb running on Verilator with a positive smoke test, and also pins that v5.048 still rejects procedural `deassign`, the reason `xut verilatorize` exists. The glbl-as-second-top spike (Task 15, Step 1) runs against v5.048 and assumes nothing from the 5.032 research.
-2. **Multi-configuration tests.** Spec §6 puts `trace.xtr`, `result.json` and `run.log` at `build/<flow>/<runner>/<test-id>/`. Here they are aggregates over per-configuration `cfg-<cfg>/` subdirectories, and trace labels are `<cfg>/<label>`.
+2. **Multi-configuration tests.** The run directory `build/<flow>/<runner>/<model-source>/<test-id>/` (model source per ambiguity 17) holds `trace.xtr`, `result.json` and `run.log` (spec §16 step 2). Here they are aggregates over per-configuration `cfg-<cfg>/` subdirectories, and trace labels are `<cfg>/<label>`.
 3. **Initialisation before `settle_ps`.** Only `t=0 set` lines are allowed, so inverted control pins are inactive during power-up.
 4. **Trace readability and provenance.** Traces are written as `<label>  <port>=<bits>` (`_` every 4 bits), with golden provenance after `|`.
 5. **Shared unit test code.** It lives in `tests/<family>/<group>/_shared/<unit>/**`, a new owned path (Task 18), so the four flops share recipes, testbenches and the metadata generator.
 6. **Where glbl lives.** glbl stays a second top level (spec §6). The testbench writes `glbl.*_int` for the glbl channel. A Verilator spike (Task 15, Step 1) decides the fallback: an in-testbench glbl instance, which UNISIM resolves by upward name lookup.
 7. **Portability scope.** The table covers every `unisims/*.v` plus the `retarget/` models that are in the catalog, each under its default, generate-selecting and `IS_*_INVERTED` configurations. xsim is not in the smoke run, because it uses Vivado's precompiled library.
-8. **Runner declarations** (controller ruling on PR #3 review item 1). `runners` values stay step 1's strings `"yes"|"no"|"unsupported"`, and reasons go in a separate `unsupported_reasons` map. The schema amendment is part of Task 8 (`infra/sim-core`).
+8. **Runner declarations** (controller ruling on PR #3 review item 1). `runners` values stay step 1's strings `"yes"|"no"|"unsupported"`, and reasons go in a separate `unsupported_reasons` map. The schema amendment is part of Task 8 (`infra/sim-runners`).
 9. **`sv_x_inputs` on Verilator** (review item 11). Declared `"unsupported"` with a reason. A 2-state simulator randomises the `1'bx` stimulus per X seed (spec §5.6), so the undocumented checkpoints would differ by construction. That is a property of the stimulus, not a model `x-dependence` finding (§8). Its `iverilog-vz` companion is skipped with it, because it follows the Verilator declaration.
 10. **Trigger tracing and generate branches** (controller rulings on review items 2 and 3). Tracing crosses gate primitives, continuous assigns and same-file sub-instances (over-approximated: outputs depend on all inputs). Any unresolvable driver makes the model `unsupported`. Analysis and rewrite cover every generate branch, and equivalence runs for the default plus every attribute configuration a test uses.
 11. **Guarded `deassign`** (review item 4 and follow-up N1). `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`. The outer `begin … end` prevents a dangling `else` when the `deassign` is an if-arm. Spec §6.2 step 2 is amended in rev 3.1.
 12. **Nested generate constructs** (known limitation). `generate_configs` enumerates each generate `if`/`case` on its own. A generate construct nested inside another raises `TransformError("nested generate conditions ...")`, so the model is `unsupported` in the manifest and in `PORTABILITY.md`. It is never partially transformed. `xut lint` (`portability-agreement`, `verilatorize-equiv`) then rejects any test that declares `verilator: "yes"` for such a primitive. Lifting this means enumerating nested conditions under their parents' configurations, which is a later infra change.
+13. **One PR per branch** (controller ruling on review (b) #1). `infra/sim-formats` (A), stacked `infra/sim-runners` (B), then `infra/verilatorize` (C) and `infra/crosscheck` (D) stacked on B, and one unit PR (E). The orchestrator rebases children onto `main` with `--force-with-lease`, and AGENTS.md is amended in Task 1.
+14. **Status tree hash** (review (b) #2). It covers the test dir, `_shared/<unit>`, the unit's models and the overrides, and the dirty check covers the same set.
+15. **Per-test gaps** (review (b) #3). Every test lists what it misses, READMEs show gaps per test, and lint `gaps-present` enforces it.
+16. **Known divergences** (review (b) #4). `expected_divergence` never masks a bit; crosscheck reports `known-divergence` referencing the finding, and fails only on unlisted ones. Spec §8 is amended in rev 3.1.
+17. **Model source in the build path** (review (b) #5). `build/<flow>/<runner>/<model-source>/<test-id>/`; Task 27 also runs the unit on `unisim-gh-2020.1`, and CI runs flops L0/L1 vector tests on iverilog against the submodule.
+18. **Hardware eligibility per configuration.** `config_exclusions` keeps the non-`IS_D_INVERTED` configurations of L0/L2 on `hw`; L2 no longer pulses GSR.
