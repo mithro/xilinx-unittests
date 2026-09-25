@@ -11,6 +11,22 @@ hardware-renderable.
 ``clock_start``/``clock_stop`` are not changes in their own right: the changes they
 cause are the free-clock edges from ``free_clock_edges``, which are merged into the
 timeline (so a ``clock_start`` does not collide with its own first rising edge).
+
+What ``hw_renderable`` means (Ruling S8): *order-renderable*. The stepped hardware
+harness renders the ORDER of events, not their picosecond times: it re-times every
+event with a guaranteed gap of N system cycles, and the functional UNISIM models are
+order-dependent only. So events at distinct times on ``stepped`` clocks stay
+renderable however closely they are spaced in the file. The exception is a
+``free``-running clock, whose edges the harness cannot re-time: any data, async/gate
+or ``glbl GSR`` change closer than the recorded ``async_sep_ps`` to a free-clock edge
+makes the file ``hw_renderable no`` (it stays legal for simulation). ``glbl GSR`` is
+treated as an async input for every separation rule. The hardware harness must also
+wait for the STARTUPE2 GSR release before the first event (a Step 3 requirement).
+
+A file with any error is never hardware-renderable: ``Report.hw_renderable`` is
+false whenever ``errors`` is non-empty, and ``mark`` refuses such a report. A ``Vec``
+built in memory is also checked against the parser's structural rules
+(``xvec.check_structure``), so parser-illegal co-timing is an error, not a silent yes.
 """
 
 from __future__ import annotations
@@ -19,7 +35,7 @@ import bisect
 from dataclasses import dataclass, field
 from itertools import groupby
 
-from xut.formats.xvec import Event, Vec, free_clock_edges, free_runs
+from xut.formats.xvec import Event, Vec, XvecError, check_structure, free_clock_edges, free_runs
 from xut.wrap import DutMap
 
 #: THE minimum spacing, shared by the validator and xut.stimgen.VecBuilder: a sample
@@ -46,7 +62,8 @@ class Report:
 
     @property
     def hw_renderable(self) -> bool:
-        return not self.hw_reasons
+        """Order-renderable on the stepped hw harness (Ruling S8); never with errors."""
+        return not self.errors and not self.hw_reasons
 
 
 def _desc(e: Event) -> str:
@@ -102,6 +119,13 @@ def _check_set_classes(t: int, e: Event, cls: dict[int, str], r: Report) -> set[
     return classes
 
 
+def _nearest(ts: list[int], t: int) -> tuple[int, int] | None:
+    """(distance, time) of the entry of sorted ``ts`` nearest to ``t``, or None."""
+    i = bisect.bisect_left(ts, t)
+    near = [(abs(x - t), x) for x in ts[max(0, i - 1) : i + 1]]
+    return min(near) if near else None
+
+
 def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) -> Report:
     r = Report()
     _check_header(vec, m, r)
@@ -110,6 +134,10 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
     sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
     if sep < MIN_SEP_PS:
         r.errors.append(f"header async_sep_ps={sep} is below the minimum {MIN_SEP_PS}")
+    try:
+        check_structure(vec)
+    except XvecError as e:
+        r.errors.append(f"structure: {e}")
     cls = {b.bit: b.cls for b in m.of("in")}
     _check_free_stops(vec, r)
     for e in vec.events:
@@ -124,6 +152,7 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
         key=lambda e: e.t,
     )  # stable: file order within a time
     edges = [e.t for e in timed if e.op == "edge"]
+    free_ts = [e.t for e in computed]  # sorted
     level: dict[str, str] = {c.name: "f" for c in vec.clocks}
     last_change: int | None = None
     for t, group in groupby(timed, key=lambda e: e.t):
@@ -172,24 +201,37 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
                 elif level[e.target] == e.value:
                     r.errors.append(f"t={t}: edges on {e.target} must alternate r/f from idle 0")
                 level[e.target] = e.value
-            elif e.op == "set":
-                classes = _check_set_classes(t, e, cls, r)
-                if classes & {"async", "gate"} and not e.simultaneous:
-                    i = bisect.bisect_left(edges, t)
-                    near = [abs(x - t) for x in edges[max(0, i - 1) : i + 1]]
-                    if near and min(near) < sep:
-                        r.errors.append(
-                            f"t={t}: async/gate change {min(near)} ps from a clock "
-                            f"edge (< async_sep_ps={sep})"
-                        )
-            elif e.op == "glbl" and e.target != "GSR":
+                continue
+            gsr = e.op == "glbl" and e.target == "GSR"
+            if e.op == "glbl" and not gsr:
                 r.hw_reasons.append(f"t={t}: glbl {e.target} is sim-only (spec §5.2)")
+                continue
+            is_async = gsr
+            if e.op == "set":
+                is_async = bool(_check_set_classes(t, e, cls, r) & {"async", "gate"})
+            if is_async and not e.simultaneous:
+                d = _nearest(edges, t)
+                if d is not None and d[0] < sep:
+                    r.errors.append(
+                        f"t={t}: {'GSR' if gsr else 'async/gate'} change {d[0]} ps from a "
+                        f"clock edge (< async_sep_ps={sep})"
+                    )
+            d = _nearest(free_ts, t)
+            if d is not None and d[0] < sep:
+                edge = next(x for x in computed if x.t == d[1])
+                r.hw_reasons.append(
+                    f"t={t}: {_desc(e)} is {d[0]} ps from free-running {edge.target} edge "
+                    f"{edge.value} at t={edge.t} (< async_sep_ps={sep}; spec §5.1, Ruling S8)"
+                )
         if changes:
             last_change = t
     return r
 
 
 def mark(vec: Vec, report: Report) -> None:
-    """Record ``report``'s hw renderability in ``vec`` (its ``hw_renderable`` line)."""
+    """Record ``report``'s hw renderability in ``vec`` (its ``hw_renderable`` line).
+    Refuses a report with errors: an invalid file has no renderability to record."""
+    if report.errors:
+        raise ValueError(f"cannot mark an invalid stimulus: {report.errors[0]}")
     vec.hw_renderable = report.hw_renderable
     vec.hw_reason = "; ".join(report.hw_reasons)
