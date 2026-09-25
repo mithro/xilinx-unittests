@@ -234,7 +234,9 @@ def test_non_generated_file_never_flagged():
 # --- check_tests_documented ---------------------------------------------------
 
 
-def _write_test_yaml(dir_: Path, ids: list[str], related: dict | None = None) -> None:
+def _write_test_yaml(
+    dir_: Path, ids: list[str], related: dict | None = None, primitive: str = "FDRE"
+) -> None:
     dir_.mkdir(parents=True, exist_ok=True)
     tests = []
     for tid in ids:
@@ -251,7 +253,7 @@ def _write_test_yaml(dir_: Path, ids: list[str], related: dict | None = None) ->
             entry["related"] = related[tid]
         tests.append(entry)
     data = {
-        "primitive": "FDRE",
+        "primitive": primitive,
         "family": "7series",
         "work_unit": "flops",
         "doc_refs": [],
@@ -312,6 +314,47 @@ def test_tests_documented_existing_related_id_is_clean(tmp_path):
     assert check_tests_documented(tmp_path) == []
 
 
+def test_tests_documented_related_id_resolves_across_whole_tree(tmp_path):
+    """Controller ruling: `related:` ids resolve across ALL tests/**/test.yaml, not just
+    the same file — pinned with two fixture test.yaml files in different primitive
+    directories."""
+    fdre_dir = tmp_path / "tests" / "7series" / "register" / "FDRE"
+    fdce_dir = tmp_path / "tests" / "7series" / "register" / "FDCE"
+    _write_test_yaml(
+        fdre_dir,
+        ["7series.FDRE.L1.reset"],
+        related={"7series.FDRE.L1.reset": ["7series.FDCE.L1.reset"]},
+        primitive="FDRE",
+    )
+    (fdre_dir / "README.md").write_text("Covers `7series.FDRE.L1.reset`.\n")
+    _write_test_yaml(fdce_dir, ["7series.FDCE.L1.reset"], primitive="FDCE")
+    (fdce_dir / "README.md").write_text("Covers `7series.FDCE.L1.reset`.\n")
+
+    # The related id lives only in the *other* file's test.yaml: whole-tree resolution
+    # must find it there and report nothing.
+    assert check_tests_documented(tmp_path) == []
+
+
+def test_tests_documented_related_id_missing_from_whole_tree_is_warning(tmp_path):
+    fdre_dir = tmp_path / "tests" / "7series" / "register" / "FDRE"
+    fdce_dir = tmp_path / "tests" / "7series" / "register" / "FDCE"
+    _write_test_yaml(
+        fdre_dir,
+        ["7series.FDRE.L1.reset"],
+        related={"7series.FDRE.L1.reset": ["7series.FDCE.L1.nosuchtest"]},
+        primitive="FDRE",
+    )
+    (fdre_dir / "README.md").write_text("Covers `7series.FDRE.L1.reset`.\n")
+    _write_test_yaml(fdce_dir, ["7series.FDCE.L1.reset"], primitive="FDCE")
+    (fdce_dir / "README.md").write_text("Covers `7series.FDCE.L1.reset`.\n")
+
+    issues = check_tests_documented(tmp_path)
+    assert len(issues) == 1
+    assert issues[0].severity == "warning"
+    assert issues[0].rule == "tests-documented"
+    assert "7series.FDCE.L1.nosuchtest" in issues[0].message
+
+
 def test_tests_documented_no_test_yaml_anywhere_is_clean(tmp_path):
     (tmp_path / "tests").mkdir()
     assert check_tests_documented(tmp_path) == []
@@ -350,7 +393,71 @@ def test_status_files_invalid_entry_is_error(tmp_path):
     assert issues[0].rule == "status-schema"
 
 
+# --- _changed_files / --base ---------------------------------------------------
+
+
+def _git(args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _init_repo_with_two_commits(tmp_path: Path, base_branch: str) -> None:
+    """A tiny local repo: `base_branch` has one commit (a.txt); a `feature` branch
+    checked out off it adds a second commit (b.txt). No `origin` remote is configured,
+    so `origin/<anything>` never resolves here."""
+    _git(["init", "-q", "-b", base_branch], tmp_path)
+    _git(["config", "user.email", "t@example.com"], tmp_path)
+    _git(["config", "user.name", "T"], tmp_path)
+    (tmp_path / "a.txt").write_text("1\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: initial"], tmp_path)
+    _git(["checkout", "-q", "-b", "feature"], tmp_path)
+    (tmp_path / "b.txt").write_text("2\n")
+    _git(["add", "-A"], tmp_path)
+    _git(["commit", "-q", "-m", "infra: add b"], tmp_path)
+
+
+def test_changed_files_uses_given_base(tmp_path):
+    from xut.lint import _changed_files
+
+    _init_repo_with_two_commits(tmp_path, "custombase")
+    changed, warning = _changed_files(tmp_path, base="custombase")
+    assert changed == ["b.txt"]
+    assert warning is None
+
+
+def test_changed_files_falls_back_when_base_ref_missing(tmp_path):
+    from xut.lint import _changed_files
+
+    _init_repo_with_two_commits(tmp_path, "custombase")
+    # "origin/custombase" doesn't exist (no origin remote at all); falls back to the
+    # bare "custombase", which does.
+    changed, warning = _changed_files(tmp_path, base="origin/custombase")
+    assert changed == ["b.txt"]
+    assert warning == "origin/custombase not found locally; diffing against custombase instead"
+
+
+def test_lint_passes_base_through_to_changed_files(monkeypatch):
+    from xut import lint as lint_mod
+    from xut.paths import repo_root
+
+    captured = {}
+
+    def fake_changed_files(root, base="origin/main"):
+        captured["base"] = base
+        return [], None
+
+    monkeypatch.setattr(lint_mod, "_changed_files", fake_changed_files)
+    monkeypatch.setattr("xut.status.current_branch", lambda: "infra/bootstrap")
+    lint_mod.lint(repo_root(), True, base="origin/develop")
+    assert captured["base"] == "origin/develop"
+
+
 # --- CLI wiring / end-to-end ---------------------------------------------------
+
+
+def test_lint_cli_base_option_is_registered():
+    result = CliRunner().invoke(main, ["lint", "--help"])
+    assert "--base" in result.output
 
 
 def test_lint_cli_runs_without_branch_flag():

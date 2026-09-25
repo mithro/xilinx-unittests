@@ -8,6 +8,7 @@ and validates a status file, and builds a fresh stub.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -115,6 +116,12 @@ def dump_stub(entry: CatalogEntry, unit: str) -> str:
 def current_branch() -> str:
     """The current git branch name (``git rev-parse --abbrev-ref HEAD``).
 
+    Honours the ``XUT_BRANCH`` env var as an override, checked first: CI checks out a
+    pull_request event's head commit as a **detached HEAD** (a merge ref, not the PR's
+    actual branch), so ``git rev-parse --abbrev-ref HEAD`` would return ``"HEAD"``, not
+    the branch name ``xut lint --branch``'s branch-ownership rules need. CI sets
+    ``XUT_BRANCH: ${{ github.head_ref }}`` for exactly this reason (controller ruling).
+
     A thin, separately-mockable wrapper so ``xut status generate`` can be tested
     without depending on the actual checked-out branch.
 
@@ -125,6 +132,10 @@ def current_branch() -> str:
     whether ``xut status generate`` is allowed to run at all. The CLI turns this
     into a clean, non-traceback ``click.ClickException``.
     """
+    override = os.environ.get("XUT_BRANCH")
+    if override:
+        return override
+
     from xut.paths import repo_root
 
     proc = subprocess.run(

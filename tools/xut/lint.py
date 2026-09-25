@@ -256,18 +256,19 @@ def _tracked_files(root: Path) -> list[str]:
     return [line for line in proc.stdout.splitlines() if line]
 
 
-def _changed_files(root: Path) -> tuple[list[str], str | None]:
-    """Files this branch has touched relative to `origin/main...HEAD` (controller ruling:
-    `--branch` mode). Falls back to `main...HEAD` with a warning if `origin/main` isn't
-    present locally (e.g. a fresh clone with no fetch yet)."""
-    base = "origin/main"
+def _changed_files(root: Path, base: str = "origin/main") -> tuple[list[str], str | None]:
+    """Files this branch has touched relative to `<base>...HEAD` (controller ruling:
+    `--branch` mode; `--base` lets CI diff against `origin/<PR base branch>` instead of
+    `origin/main`). Falls back to the bare ref (stripping a leading `origin/`) with a
+    warning if `base` isn't present locally (e.g. a fresh clone with no fetch yet)."""
     warning = None
     verify = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", base], cwd=root, capture_output=True
     )
     if verify.returncode != 0:
-        warning = "origin/main not found locally; diffing against main instead"
-        base = "main"
+        fallback = base.removeprefix("origin/")
+        warning = f"{base} not found locally; diffing against {fallback} instead"
+        base = fallback
     proc = subprocess.run(
         ["git", "diff", "--name-only", f"{base}...HEAD"],
         cwd=root,
@@ -278,12 +279,16 @@ def _changed_files(root: Path) -> tuple[list[str], str | None]:
     return [line for line in proc.stdout.splitlines() if line], warning
 
 
-def lint(root: Path, branch_mode: bool) -> tuple[list[LintIssue], list[str]]:
+def lint(
+    root: Path, branch_mode: bool, base: str = "origin/main"
+) -> tuple[list[LintIssue], list[str]]:
     """Run every lint rule. Always runs spdx, tests-documented and status-schema over the
     whole tree; `branch_mode` additionally runs branch-paths and generated-files against
-    the current branch's diff from `origin/main...HEAD` (those two rules are meaningless
+    the current branch's diff from `<base>...HEAD` (those two rules are meaningless
     without a diff — every file under `tools/**` is "on" a unit branch merely because it
-    was inherited from `main`, not because that branch touched it).
+    was inherited from `main`, not because that branch touched it). The current branch is
+    `xut.status.current_branch()`, which honours the `XUT_BRANCH` env override CI needs
+    for a pull_request event's detached-HEAD checkout.
 
     Returns `(issues, warnings)`; `warnings` never affect the exit code.
     """
@@ -303,7 +308,7 @@ def lint(root: Path, branch_mode: bool) -> tuple[list[LintIssue], list[str]]:
 
     if branch_mode:
         branch = current_branch()
-        changed, warning = _changed_files(root)
+        changed, warning = _changed_files(root, base)
         if warning:
             warnings.append(warning)
         issues += check_branch_paths(branch, changed, units)
