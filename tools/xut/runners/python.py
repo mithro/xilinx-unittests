@@ -62,7 +62,11 @@ class PythonTimeout(XutError, TimeoutError):
 def _watchdog[T](fn: Callable[[], T], deadline: float, what: str, limit_s: int) -> T:
     """``fn()`` in a daemon thread, abandoned with ``PythonTimeout`` at ``deadline``
     (time.monotonic). A Python thread cannot be killed: a runaway generator keeps
-    spinning in the background, but the run reports ``error`` and moves on."""
+    spinning in the background, but the run reports ``error`` and moves on. Once the
+    deadline has passed no new thread is started (after one golden-model timeout the
+    remaining configurations time out at once instead of each leaving a runaway)."""
+    if time.monotonic() >= deadline:  # never start work once the deadline has passed
+        raise PythonTimeout(f"timeout: {what} exceeded the {limit_s} s limit")
     box: dict[str, object] = {}
 
     def target() -> None:
