@@ -166,8 +166,8 @@ def write_stim(vec: Vec, m: DutMap, out_dir: Path) -> Compiled:
 
 def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str]) -> Trace:
     """The testbench's ``raw.txt`` as a trace. Every line must be ``S <n> <bits>`` with
-    ``n`` a known sample, seen once, and exactly ``max(1, nout)`` bits; anything else is
-    an error (never skipped or padded)."""
+    ``n`` a known sample, seen once, and exactly ``max(1, nout)`` bits, and every label
+    must be printed exactly once; anything else is an error (never skipped or padded)."""
     t = Trace(dict(header))
     width = max(1, m.nout)
     ports = {  # MSB first
@@ -193,4 +193,8 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
         seen.add(k)
         by_index = bits[::-1]  # by_index[i] is out_vec[i]
         t.add(labels[k], {p: "".join(by_index[b.bit] for b in pb) for p, pb in ports.items()})
+    missing = [f"{k} ({labels[k]})" for k in range(len(labels)) if k not in seen]
+    if missing:
+        more = f", ... ({len(missing) - 5} more)" if len(missing) > 5 else ""
+        raise StimCompileError(f"raw.txt: sample(s) {', '.join(missing[:5])}{more} never printed")
     return t

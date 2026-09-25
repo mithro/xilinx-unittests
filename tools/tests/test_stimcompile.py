@@ -201,11 +201,20 @@ def test_compile_refuses_a_free_clock_with_an_empty_phase():
         ("S 0 1\nS 0 1\n", "twice"),
         ("S 0 2\n", "bits"),
         ("hello\n", "line 1"),
+        ("", r"sample\(s\) 0 \(S0\) never printed"),
     ],
 )
 def test_raw_to_trace_is_strict(raw, match):
     with pytest.raises(XutError, match=match):
         raw_to_trace(raw, ["S0"], M, {})
+
+
+def test_raw_to_trace_requires_every_label():
+    """A label the testbench never printed is an error, never a shorter trace."""
+    with pytest.raises(XutError, match=r"sample\(s\) 1 \(S1\) never printed"):
+        raw_to_trace("S 0 1\nS 2 0\n", ["S0", "S1", "S2"], M, {})
+    with pytest.raises(XutError, match=r"1 \(L1\), .*5 \(L5\), \.\.\. \(2 more\)"):
+        raw_to_trace("S 0 1\n", [f"L{i}" for i in range(8)], M, {})
 
 
 def test_raw_to_trace_maps_ports_msb_first():
@@ -768,3 +777,92 @@ def test_tb_on_verilator_matches_icarus(tmp_path, glbl_instance):
         _, raw = _iverilog(iv, vec, m, [dut])
         want = raw_to_trace(raw, compile_vec(vec, m).labels, m, {})
         assert got.samples == want.samples, name
+
+
+# --- 4-state values and wide vectors, end to end on Icarus (Task 7 review) --------------
+
+VEC_XZ = """\
+# xut-vec 2  prim=TOY cfg=c nin=3 nout=1 nclk=1 settle_ps=120000 seed=0
+clock clk0 period=10000 phase=0 duty=50 mode=stepped
+t=120000 sample S0
+t=121000 set in[0]=0bx
+t=122000 edge clk0 r
+t=123000 sample SX
+t=124000 edge clk0 f
+t=125000 set in[0]=0bz
+t=126000 edge clk0 r
+t=127000 sample SZ
+t=128000 edge clk0 f
+t=129000 set in[0]=1
+t=130000 edge clk0 r
+t=131000 sample S1
+"""
+
+
+@needs_sim[0]
+@needs_sim[1]
+def test_tb_captures_x_and_z_4state(tmp_path):
+    """Icarus is 4-state end to end: D=x and D=z are captured into Q, and raw.txt and
+    the trace show x and z (never folded to 0 or 1)."""
+    shutil.copy(FIX / "toy_dut.v", tmp_path / "toy_dut.v")
+    vec = loads(VEC_XZ)
+    log, raw = _iverilog(tmp_path, vec, M, ["toy_dut.v"])
+    assert "XUT_DONE" in log
+    assert raw.splitlines() == ["S 0 1", "S 1 x", "S 2 z", "S 3 1"]
+    t = raw_to_trace(raw, compile_vec(vec, M).labels, M, {})
+    assert {k: v["Q"] for k, v in t.samples.items()} == {
+        "S0": "1",
+        "SX": "x",
+        "SZ": "z",
+        "S1": "1",
+    }
+
+
+W = 100
+WM = DutMap(
+    "WIDE",
+    "7series",
+    "c",
+    {},
+    1,
+    W,
+    W,
+    [Bit("clk", 0, "C", 0, "clock")]
+    + [Bit("in", i, "A", i, "data") for i in range(64)]
+    + [Bit("in", 64 + i, "B", i, "data") for i in range(36)]
+    + [Bit("out", i, "Y", i, "data") for i in range(64)]
+    + [Bit("out", 64 + i, "Z", i, "data") for i in range(36)],
+)
+
+
+@needs_sim[0]
+@needs_sim[1]
+def test_tb_wide_vectors(tmp_path):
+    """NIN = NOUT = 100: one 100-bit set, then co-timed sets of both ports, go through
+    compile_vec, the testbench and raw_to_trace bit for bit (x/z included)."""
+    import random
+
+    rnd = random.Random(9)
+    v1 = "".join(rnd.choice("01xz") for _ in range(W))  # MSB first: in[99] .. in[0]
+    b2 = "".join(rnd.choice("01") for _ in range(36))
+    a2 = "".join(rnd.choice("01") for _ in range(64))
+    vec = loads(f"""\
+# xut-vec 2  prim=WIDE cfg=c nin={W} nout={W} nclk=1 settle_ps=120000 seed=0
+clock clk0 period=10000 phase=0 duty=50 mode=stepped
+t=120000 sample S0
+t=121000 set in[99:0]=0b{v1}
+t=122000 edge clk0 r
+t=123000 sample S1
+t=124000 edge clk0 f
+t=125000 set in[99:64]=0b{b2}
+t=125000 set in[63:0]=0b{a2}
+t=126000 edge clk0 r
+t=127000 sample S2
+""")
+    shutil.copy(FIX / "wide_dut.v", tmp_path / "wide_dut.v")
+    log, raw = _iverilog(tmp_path, vec, WM, ["wide_dut.v"])
+    assert "XUT_DONE" in log, log
+    t = raw_to_trace(raw, compile_vec(vec, WM).labels, WM, {})
+    assert t.samples["S0"] == {"Y": "x" * 64, "Z": "x" * 36}
+    assert t.samples["S1"] == {"Y": v1[36:], "Z": v1[:36]}
+    assert t.samples["S2"] == {"Y": a2, "Z": b2}
