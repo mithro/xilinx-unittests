@@ -140,3 +140,20 @@ def test_end_to_end_python_on_fixture(tmp_path, monkeypatch):
     res = tmp_path / "build/rtl/python/unisim-test/7series.TOYFF.L1.capture/result.json"
     assert res.is_file()
     assert (tmp_path / "build/rtl/summary.json").is_file()
+
+
+def test_selector_matching_nothing_warns(repo):
+    r = CliRunner().invoke(main, ["run", "TOYFF", "NOSUCH"])
+    assert r.exit_code == 0, r.output
+    assert "warning: selector 'NOSUCH' matched no test" in r.output
+    assert "warning: selector 'TOYFF'" not in r.output
+
+
+def test_keyboard_interrupt_exits_130(repo, monkeypatch):
+    def interrupted(cases, runners, ctx):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("xut.run.run_tests", interrupted)
+    r = _run("TOYFF")
+    assert r.exit_code == 130
+    assert "interrupted" in r.output

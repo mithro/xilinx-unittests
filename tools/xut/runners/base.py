@@ -28,7 +28,7 @@ from xut import schemas
 from xut.errors import XutError
 from xut.formats import xtr
 from xut.modelsrc import ModelSource
-from xut.testspec import TestCase, declared
+from xut.testspec import TestCase, declared, exclusions_for
 
 STATUSES = ("pass", "fail", "error", "skip")
 _RANK = {"fail": 3, "error": 2, "pass": 1, "skip": 0}
@@ -237,14 +237,29 @@ class Runner(ABC):
         r.write(d)
         return r
 
+    def stimulus_seed(self, case: TestCase, ctx: RunContext) -> int | None:
+        """The stimulus seed recorded in result.json: for a vector test, the one the
+        python run actually used (its result.json); otherwise ``seed_for``."""
+        if case.style == "vector":
+            try:
+                py = json.loads((python_dir(ctx, case) / "result.json").read_text())
+                seed = py.get("seeds", {}).get("stimulus")
+                if isinstance(seed, int):
+                    return seed
+            except (OSError, ValueError):
+                pass
+        return seed_for(case, ctx)
+
     def run(self, case: TestCase, ctx: RunContext) -> RunResult:
         """Template method. Every exit path writes result.json (spec §14, review #9):
-        any exception outside run_config becomes an ``error`` result with the traceback."""
+        any exception, including failing to reset the run directory, becomes an
+        ``error`` result with the traceback."""
         d = workdir(ctx, self.name, case.id)
-        shutil.rmtree(d, ignore_errors=True)
-        d.mkdir(parents=True)
         t0 = time.monotonic()
         try:
+            if d.exists():
+                shutil.rmtree(d)  # loudly: a stale directory must never leak into a run
+            d.mkdir(parents=True, exist_ok=True)
             return self._run(case, ctx, d)
         except Exception as e:
             return error_result(case, self.name, ctx, e, d, time.monotonic() - t0)
@@ -260,13 +275,18 @@ class Runner(ABC):
             return self._skip(case, ctx, d, f"runner unavailable: {why}")
         t0 = time.monotonic()
         res = self._new_result(case, ctx, "skip", None)
-        res.seeds["stimulus"] = seed_for(case, ctx)
+        # Tool versions first: a broken toolchain fails fast, before any configuration.
+        res.tools, res.container = self.tools(ctx), self.container(ctx)
         parts: list[tuple[str, xtr.Trace]] = []
         logs: list[str] = []
         cfgs = self.configs(case, ctx)
+        res.seeds["stimulus"] = self.stimulus_seed(case, ctx)
         if not cfgs:
             res.status, res.reason = "error", "no configurations (did the python runner fail?)"
-        excluded = case.config_exclusions.get(self.name, {})
+        excluded = exclusions_for(case, self.name)
+        for g in excluded:
+            if not any(fnmatch.fnmatchcase(c, g) for c in cfgs):
+                logs.append(f"warning: config_exclusions glob {g!r} matched no configuration\n")
         for cfg in cfgs:
             cd = d / f"cfg-{cfg}"
             cd.mkdir()
@@ -287,16 +307,14 @@ class Runner(ABC):
                     parts.append((cfg, xtr.load(cd / "trace.xtr")))
                 except xtr.XtrError as e:
                     cr = ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
+            elif cr.status == "pass":  # a pass must leave its evidence
+                cr = ConfigResult(cfg, "error", "reported pass but wrote no trace.xtr")
             res.configs.append(cr)
             log = (cd / "run.log").read_text() if (cd / "run.log").is_file() else ""
             logs.append(f"===== cfg {cfg}: {cr.status} {cr.reason or ''}\n" + log)
         if res.configs:
             res.status = worst([c.status for c in res.configs])
-            # fail/error name their failing configs; an all-skip result names its skips
-            why = [c for c in res.configs if c.status == res.status and c.status != "pass"]
-            res.reason = "; ".join(f"{c.cfg}: {c.reason}" for c in why[:5]) or None
-            if len(why) > 5:
-                res.reason += f"; ... ({len(why) - 5} more)"
+            res.reason = summarize(res.configs, res.status)
         header = {
             "runner": self.name,
             "flow": ctx.flow,
@@ -309,11 +327,30 @@ class Runner(ABC):
             header.update(model="golden", kind="expected")
         xtr.dump(xtr.concat(parts, header), d / "trace.xtr")
         (d / "run.log").write_text("".join(logs))
-        res.tools, res.container = self.tools(ctx), self.container(ctx)
         self.finish(case, ctx, d, res)
         res.duration_s = round(time.monotonic() - t0, 3)
         res.write(d)
         return res
+
+
+def _listing(configs: list[ConfigResult]) -> str:
+    text = "; ".join(f"{c.cfg}: {c.reason}" for c in configs[:5])
+    return text + (f"; ... ({len(configs) - 5} more)" if len(configs) > 5 else "")
+
+
+def summarize(configs: list[ConfigResult], status: str) -> str | None:
+    """The test-level reason: every failing and erroring configuration for fail/error;
+    the skipped ones for an all-skip result; and, for a pass, a note of any skipped
+    configurations, so a partial run is never reported as a bare pass."""
+    bad = [c for c in configs if c.status in ("fail", "error")]
+    skipped = [c for c in configs if c.status == "skip"]
+    if status in ("fail", "error"):
+        return _listing(bad)
+    if status == "skip":
+        return _listing(skipped)
+    if skipped:
+        return f"{len(skipped)} config(s) skipped: {_listing(skipped)}"
+    return None
 
 
 def error_result(
