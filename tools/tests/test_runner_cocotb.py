@@ -303,6 +303,9 @@ def test_launcher_plusargs_and_defines(launcher):
     assert launcher.plusargs("verilator", 7) == ["+verilator+seed+7", "+verilator+rand+reset+2"]
     with pytest.raises(SystemExit):
         launcher.plusargs("verilator", None)
+    for bad in (0, -1):  # +verilator+seed+0 picks a random seed: not reproducible
+        with pytest.raises(SystemExit, match="must be > 0"):
+            launcher.plusargs("verilator", bad)
     assert launcher.defines(["A", "B=3"]) == {"A": 1, "B": "3"}
     a = launcher.parse(
         [
@@ -402,6 +405,30 @@ def test_cocotb_check_classification(tmp_path, cases, rc, status, reason):
     assert (r.status, r.reason) == (status, reason)
 
 
+def test_a_crash_is_never_hidden_by_an_earlier_assertion(tmp_path):
+    cd = tmp_path / "cfg-c"
+    _xml(
+        cd,
+        _tc("a", '<failure error_type="AssertionError" error_msg="Q=0, model 1" />')
+        + _tc("b", '<failure error_type="SimFailure" error_msg="Simulator shut down" />'),
+    )
+    _trace(cd)
+    r = cocotb_check(cd, 1, 3, HDR)
+    assert (r.status, r.reason) == ("error", "mod.b: SimFailure: Simulator shut down")
+
+
+@pytest.mark.parametrize("trace", ["missing", "header-only"])
+def test_a_pass_without_samples_is_an_error(tmp_path, trace):
+    """Review T11 I1: a passing test that recorded nothing is no evidence of a check."""
+    cd = tmp_path / "cfg-c"
+    _xml(cd, _tc())
+    if trace == "header-only":
+        xtr.dump(xtr.Trace(dict(HDR)), cd / "trace.xtr")
+    r = cocotb_check(cd, 0, 3, HDR)
+    assert (r.status, r.reason) == ("error", "cocotb test recorded no samples")
+    assert (r.trace_sha256 is not None) == (trace == "header-only")
+
+
 def test_cocotb_check_errors(tmp_path, launcher):
     cd = tmp_path / "cfg-c"
     cd.mkdir()
@@ -480,6 +507,24 @@ def test_cocotb_toyff_passes(ctx, toy, shared):
     top = xtr.load(d / "trace.xtr")
     assert len(top.samples) == 40 and top.header["seed"] == str(seed)
     assert [c["trace_sha256"] is not None for c in data["configs"]] == [True, True]
+
+
+@pytest.mark.container
+def test_cocotb_seed_reproduces_the_session(tmp_path, toy, shared):
+    """The same --seed reproduces the trace exactly; another seed drives other D values."""
+    ms = make_model_source(tmp_path / "ms")
+    case = _one_cfg(_case())
+
+    def trace(root: str, seed: int) -> xtr.Trace:
+        ctx = RunContext(tmp_path / root, "rtl", ms, seed=seed)
+        res = IverilogRunner().run(case, ctx)
+        assert res.status == "pass", res.reason
+        return xtr.load(workdir(ctx, "iverilog", case.id) / "cfg-init0/trace.xtr")
+
+    a, b, c = trace("a", 7), trace("b", 7), trace("c", 8)
+    assert a == b
+    assert a.samples != c.samples  # 20 random bits: equal only with probability 2**-20
+    assert (a.header["seed"], c.header["seed"]) == ("7", "8")
 
 
 @pytest.mark.container

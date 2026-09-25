@@ -28,6 +28,7 @@ from pathlib import Path
 
 TOP = "xut_cocotb_top"
 #: Exit code when the HDL build fails (no test ran); the runner reports ``compile failed``.
+#: Keep equal to ``xut.runners.iverilog.COCOTB_BUILD_FAILED`` (pinned by test_runner_cocotb).
 BUILD_FAILED = 3
 
 
@@ -56,6 +57,8 @@ def plusargs(sim: str, x_seed: int | None) -> list[str]:
         return []
     if x_seed is None:
         raise SystemExit("cocotb_run: --x-seed is required with --sim verilator")
+    if x_seed <= 0:  # +verilator+seed+0 means "pick a random seed": never reproducible
+        raise SystemExit(f"cocotb_run: --x-seed must be > 0 (got {x_seed})")
     return [f"+verilator+seed+{x_seed}", "+verilator+rand+reset+2"]
 
 
