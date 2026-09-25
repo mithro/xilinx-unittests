@@ -82,7 +82,7 @@ ports:
   direction: input
   width: 64
   cls: data
-  doc_function: use this functionality.
+  doc_function: FIFO data input bus.
 - name: DIP
   direction: input
   width: 8
@@ -127,7 +127,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: use this functionality.
+  doc_function: Write clock and enable input signals.
 - name: WREN
   direction: input
   width: 1

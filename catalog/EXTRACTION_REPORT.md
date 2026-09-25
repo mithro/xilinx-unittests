@@ -9,7 +9,8 @@ difference between the documentation and the model.
 - Names only in one source: 142
 - Width or direction mismatches: 0
 - Tables absent from UG953: 23
-- UG953 values needing review: 15
+- UG953 cells needing review: 17
+- Port class notes: 6
 - Missing UG953 section or model: 0
 
 ## Names only in one source (142)
@@ -187,7 +188,7 @@ None.
 - ROM32X1: no Port Descriptions table in UG953 (ports from unisim only)
 - ROM64X1: no Port Descriptions table in UG953 (ports from unisim only)
 
-## UG953 values needing review (15)
+## UG953 cells needing review (17)
 
 - BUFGCE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - BUFGCE_1: attribute SIM_DEVICE UG953 values need review (no allowed values found)
@@ -197,13 +198,24 @@ None.
 - IBUFDS_DIFF_OUT_IBUFDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IBUFDS_DIFF_OUT_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IBUFDS_IBUFDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
+- IBUFDS_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IDDR_2CLK: attribute DDR_CLK_EDGE UG953 values need review (unparsed ['"SAME_EDGE""SAME_EDGE_PIPELINED"'])
+- IDELAYE2: port LD UG953 function needs review
 - IOBUF_DCIEN: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IOBUF_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IOBUFDS_DCIEN: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IOBUFDS_DIFF_OUT_DCIEN: attribute SIM_DEVICE UG953 values need review (no allowed values found)
 - IOBUFDS_DIFF_OUT_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
-- ISERDESE2: attribute IOBDELAY UG953 values need review (unparsed ['"OVERSAMPLE" "NONE"'])
+- IOBUFDS_INTERMDISABLE: attribute SIM_DEVICE UG953 values need review (no allowed values found)
+
+## Port class notes (6)
+
+- IDDR: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- IDDR: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- IDDR_2CLK: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- IDDR_2CLK: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- ODDR: port R class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
+- ODDR: port S class depends on SRTYPE (data for SYNC, async for ASYNC); needs a per-configuration override
 
 ## Missing UG953 section or model (0)
 

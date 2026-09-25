@@ -32,7 +32,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: • Low = CLKIN2
+  doc_function: Status pin indicating that the input clock has stopped.
 - name: CLKOUT0
   direction: output
   width: 1
@@ -137,12 +137,12 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: When not used, all bits must be assigned zeros.
+  doc_function: The reference clock for the dynamic reconfiguration port.
 - name: DEN
   direction: input
   width: 1
   cls: drp
-  doc_function: control signal to access the dynamic reconfiguration
+  doc_function: Dynamic reconfiguration enable.
 - name: DI
   direction: input
   width: 16
@@ -157,7 +157,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: input clock phase shift).
+  doc_function: Phase shift clock.
 - name: PSEN
   direction: input
   width: 1
@@ -177,7 +177,7 @@ ports:
   direction: input
   width: 1
   cls: async
-  doc_function: enables itself when this signal is released (that is, MMCM
+  doc_function: Asynchronous reset signal.
 attributes:
 - name: BANDWIDTH
   kind: string

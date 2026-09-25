@@ -77,7 +77,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: DOPBDOP is the logical DOP<3:2>.
+  doc_function: Port A RAM enable/Read enable.
 - name: ENBWREN
   direction: input
   width: 1
@@ -97,7 +97,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: SRVAL_A.
+  doc_function: Synchronous data latch set/reset to value indicated by
 - name: RSTRAMB
   direction: input
   width: 1
@@ -117,7 +117,7 @@ ports:
   direction: input
   width: 2
   cls: data
-  doc_function: RAM_MODE="SDP."
+  doc_function: Port A byte-wide write enable.
 - name: WEBWE
   direction: input
   width: 4

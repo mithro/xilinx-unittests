@@ -22,7 +22,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: the input port D1 appears first at OQ.
+  doc_function: The OQ port is the data output port of the module.
 - name: SHIFTOUT1
   direction: output
   width: 1
@@ -42,7 +42,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: ODELAYE2.
+  doc_function: 3-state control output of the module sent to the
 - name: TQ
   direction: output
   width: 1
@@ -102,22 +102,22 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: supported by using a second OSERDESE2 in SLAVE mode.
+  doc_function: OCE is an active-High clock enable for the data path.
 - name: RST
   direction: input
   width: 1
   cls: async
-  doc_function: domain where timing is critical use an internal, dedicated
+  doc_function: The reset input causes the outputs of all data flip-flops
 - name: SHIFTIN1
   direction: input
   width: 1
   cls: data
-  doc_function: be synchronized.
+  doc_function: Cascade Input for data input expansion.
 - name: SHIFTIN2
   direction: input
   width: 1
   cls: data
-  doc_function: be synchronized.
+  doc_function: Cascade Input for data input expansion.
 - name: T1
   direction: input
   width: 1

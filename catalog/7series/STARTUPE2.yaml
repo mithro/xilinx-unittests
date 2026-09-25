@@ -27,7 +27,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: start-up sequence is not supported.
+  doc_function: Active-High output signal indicating the End Of Startup.
 - name: PREQ
   direction: output
   width: 1
@@ -37,7 +37,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: devices, the user-defined CCLK (UserClk value for the
+  doc_function: User start-up clock input.
 - name: GSR
   direction: input
   width: 1

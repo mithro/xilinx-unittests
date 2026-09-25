@@ -31,7 +31,7 @@ ports:
 - name: S
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Clock buffer select input.
 attributes: []
 design_entry:

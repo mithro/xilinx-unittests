@@ -18,7 +18,7 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: power at times when the I/O is idle for a period of time.
+  doc_function: Buffer diff_p output
 - name: OB
   direction: output
   width: 1

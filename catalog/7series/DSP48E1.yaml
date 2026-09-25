@@ -32,7 +32,7 @@ ports:
   direction: output
   width: 4
   cls: data
-  doc_function: with PREG=1
+  doc_function: 4-bit carry output from each 12-bit field of the accumulate/
 - name: MULTSIGNOUT
   direction: output
   width: 1
@@ -77,7 +77,7 @@ ports:
   direction: input
   width: 30
   cls: data
-  doc_function: this constitutes the MSB (upper) bits of the concatenated
+  doc_function: Cascaded data input from ACOUT of previous DSP48E1
 - name: ALUMODE
   direction: input
   width: 4
@@ -107,17 +107,17 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: multiplexer input of the same DSP48E1 slice.
+  doc_function: Carry input from the FPGA logic.
 - name: CARRYINSEL
   direction: input
   width: 3
   cls: data
-  doc_function: '• 1 0 0 - CARRYCASCOUT: For larger add/sub/acc (sequential'
+  doc_function: 'Selects the carry source:'
 - name: CEA1
   direction: input
   width: 1
   cls: data
-  doc_function: port is only used if AREG=2 or INMODE0 = 1.
+  doc_function: Active-High clock enable for the first A (input) register.
 - name: CEA2
   direction: input
   width: 1
@@ -147,7 +147,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: enable.
+  doc_function: Active-High clock enable for the C (input) register
 - name: CECARRYIN
   direction: input
   width: 1

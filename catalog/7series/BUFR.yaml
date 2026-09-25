@@ -21,7 +21,7 @@ ports:
 - name: CE
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Clock enable port.
 - name: CLR
   direction: input
@@ -32,7 +32,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: when BUFR_DIVIDE is set to "BYPASS" or not used.
+  doc_function: Clock input port.
 attributes:
 - name: BUFR_DIVIDE
   kind: string

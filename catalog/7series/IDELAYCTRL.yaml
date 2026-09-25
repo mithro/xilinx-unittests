@@ -26,7 +26,7 @@ ports:
 - name: RST
   direction: input
   width: 1
-  cls: data
+  cls: async
   doc_function: Active-High reset.
 attributes:
 - name: SIM_DEVICE

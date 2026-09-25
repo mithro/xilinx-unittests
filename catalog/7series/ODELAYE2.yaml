@@ -37,17 +37,17 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: the polarity of C pin.
+  doc_function: The CINVCTRL pin is used for dynamically switching
 - name: CLKIN
   direction: input
   width: 1
   cls: data
-  doc_function: to gnd.
+  doc_function: Delayed Clock input into the ODELAYE2.
 - name: CNTVALUEIN
   direction: input
   width: 5
   cls: data
-  doc_function: tap value input when configured in "VAR_LOAD" or
+  doc_function: Counter value from FPGA logic for dynamically loadable
 - name: INC
   direction: input
   width: 1
@@ -57,7 +57,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: VARIABLE, VAR_LOAD, or VAR_LOAD_PIPE mode.
+  doc_function: Load initial value or loaded value to the counter.
 - name: LDPIPEEN
   direction: input
   width: 1
@@ -72,7 +72,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: synchronous to the input clock signal (C).
+  doc_function: The REGRST signal is an active-High reset and is
 attributes:
 - name: CINVCTRL_SEL
   kind: string

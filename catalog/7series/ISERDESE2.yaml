@@ -22,42 +22,42 @@ ports:
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q2
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q3
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q4
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q5
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q6
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q7
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: Q8
   direction: output
   width: 1
   cls: data
-  doc_function: widths greater than eight (up to 14) are supported using
+  doc_function: The output ports Q1 to Q8 are the registered outputs
 - name: SHIFTOUT1
   direction: output
   width: 1
@@ -76,23 +76,23 @@ ports:
 - name: CE1
   direction: input
   width: 1
-  cls: async
-  doc_function: • When NUM_CE = 1, the CE2 input is not used, and the CE1
+  cls: data
+  doc_function: Each ISERDESE2 block contains an input clock enable
 - name: CE2
   direction: input
   width: 1
   cls: data
-  doc_function: • When NUM_CE = 1, the CE2 input is not used, and the CE1
+  doc_function: Each ISERDESE2 block contains an input clock enable
 - name: CLK
   direction: input
   width: 1
   cls: clock
-  doc_function: • When the attribute NUM_CE = 2, the clock enable module is
+  doc_function: The high-speed clock input (CLK) clocks in the input serial
 - name: CLKB
   direction: input
   width: 1
   cls: clock
-  doc_function: clock in the input serial data stream.
+  doc_function: The high-speed secondary clock input (CLKB) is used to
 - name: CLKDIV
   direction: input
   width: 1
@@ -102,7 +102,7 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: CE module.
+  doc_function: Only supported in MIG.
 - name: D
   direction: input
   width: 1
@@ -117,7 +117,7 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: resource.
+  doc_function: Dynamically select CLKDIV inversion.
 - name: DYNCLKSEL
   direction: input
   width: 1
@@ -127,12 +127,12 @@ ports:
   direction: input
   width: 1
   cls: clock
-  doc_function: when INTERFACE_TYPE is set to "MEMORY." The OCLK
+  doc_function: The OCLK clock input synchronizes data transfer in strobe-
 - name: OCLKB
   direction: input
   width: 1
   cls: clock
-  doc_function: Interface Generator (MIG).
+  doc_function: The OCLK clock input synchronizes data transfer in strobe-
 - name: OFB
   direction: input
   width: 1
@@ -147,12 +147,12 @@ ports:
   direction: input
   width: 1
   cls: data
-  doc_function: The internal retiming of the RST input is designed so that all
+  doc_function: If SERDES_MODE="SLAVE", connect SHIFTIN1/2 to the
 - name: SHIFTIN2
   direction: input
   width: 1
   cls: data
-  doc_function: The internal retiming of the RST input is designed so that all
+  doc_function: If SERDES_MODE="SLAVE", connect SHIFTIN1/2 to the
 attributes:
 - name: DATA_RATE
   kind: string
@@ -229,15 +229,15 @@ attributes:
   - MEMORY
   - MEMORY_DDR3
   - MEMORY_QDR
-  - MEMORY
+  - NETWORKING
+  - OVERSAMPLE
   doc_type: STRING
 - name: IOBDELAY
   kind: string
   width: null
   default: NONE
   allowed:
-  - NETWORKING
-  - '"OVERSAMPLE" "NONE"'
+  - NONE
   - BOTH
   - IBUF
   - IFD
