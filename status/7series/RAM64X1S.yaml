@@ -22,5 +22,6 @@ coverage:
   - port:WCLK
   - port:WE
   - attr:INIT
-  - attr:IS_WCLK_INVERTED
+  - attr:IS_WCLK_INVERTED=1'b0
+  - attr:IS_WCLK_INVERTED=1'b1
 notes: ''
