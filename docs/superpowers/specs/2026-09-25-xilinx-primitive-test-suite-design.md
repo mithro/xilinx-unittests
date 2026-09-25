@@ -292,9 +292,15 @@ hard `UNSUPPORTED` error. The construct appears in 40 of 249 UNISIM models.
 **Triggers.** A forced reg's *triggers* are the signals in the sensitivity
 lists of the `always` blocks that contain its `assign`/`deassign`. They are
 **derived from the AST by the tool, never hand-labelled**. A trigger is either
-`glbl.GSR` (through a local alias such as `glblGSR` or `gsr_in`) or a primitive
-input port (through local aliases such as `clr_in` or `rst_int`, followed back
-to the port). Many constructs have several triggers, for example
+`glbl.GSR` or a primitive input port. Each sensitivity-list signal is traced
+through its **full transitive fan-in cone**, crossing continuous assigns,
+combinational logic **and** registered stages, to every root it depends on.
+
+For example, MMCME2_ADV's `rst_int` is a register fed by
+`rst_input = RST | PWRDWN`, so its triggers are **both** `RST` and `PWRDWN`.
+Clocks met while crossing registered stages are recorded as *enablers*, which
+must be running while the stimulus pulses the triggers; they are not triggers
+themselves. Many constructs have several triggers, for example
 `@(gsr_in or clr_in)` in BUFR and `@(gsr_in or r_in or s_in)` in IDDR/ODDR.
 The derived trigger list for each model is recorded in
 `status/PORTABILITY.md`.
