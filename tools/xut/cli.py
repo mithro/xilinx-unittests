@@ -456,3 +456,54 @@ def run_cmd(
         click.echo(f"skip: {why} ({n} result{'s' if n > 1 else ''})")
     if bad:
         raise SystemExit(1)
+
+
+@main.command("crosscheck")
+@click.argument("selectors", nargs=-1)
+@click.option(
+    "--write-findings",
+    is_flag=True,
+    help="write a findings/<PRIM>-<slug>.md stub for every unlisted finding (never "
+    "overwrites; a known-divergence already has its finding)",
+)
+def crosscheck_cmd(selectors: tuple[str, ...], write_findings: bool) -> None:
+    """Cross-check every runner's traces of each selected test (spec §8).
+
+    SELECT is a test-id glob, a primitive name or unit:<name> (default: all). Traces are
+    compared like-for-like, per model source. Prints the matrix, findings and issues,
+    and writes build/crosscheck/<test-id>.json. Exit status: 1 if any finding is not
+    listed in the test's expected_divergence; otherwise 2 if any result is an error, a
+    fail no disagreement explains, or nothing was run at all; otherwise 0.
+    """
+    from xut import crosscheck as xc
+    from xut.paths import repo_root
+    from xut.testspec import discover, select
+
+    root = repo_root()
+    cases = discover(root)
+    if selectors:
+        unmatched = [sel for sel in selectors if not select(cases, [sel])]
+        if unmatched:
+            raise XutError(f"no tests matched selector(s) {unmatched}")
+        cases = select(cases, list(selectors))
+    if not cases:
+        click.echo("no tests selected (no tests under tests/)")
+        return
+    reports = []
+    for case in cases:
+        rep = xc.check(root, case)
+        reports.append(rep)
+        xc.write_report(root, rep)
+        click.echo(xc.render(rep))
+        if write_findings:
+            for f in rep.unlisted:
+                p = xc.write_finding(root, case.prim, f)
+                rel = xc.finding_path(root, case.prim, f).relative_to(root)
+                click.echo(f"wrote {rel}" if p else f"exists: {rel}")
+    verdicts = Counter(r.verdict for r in reports)
+    click.echo("crosscheck: " + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items())))
+    code = max((r.exit_code for r in reports), key=lambda c: (c == 1, c))
+    if code == 0 and all(r.verdict == "not-run" for r in reports):
+        code = 2  # nothing to cross-check is never a clean result
+    if code:
+        raise SystemExit(code)
