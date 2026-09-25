@@ -138,6 +138,26 @@ def test_executor_for(tmp_path, monkeypatch):
     assert isinstance(executor_for(outside), NativeExecutor)
 
 
+def test_executor_for_mounts_a_work_root_outside_the_repository(tmp_path, monkeypatch):
+    """A run rooted outside the checkout (pytest's tmp_path) is mounted read-write at
+    /xut-root; the model source keeps its own read-only mount, even inside that root."""
+    monkeypatch.delenv("XUT_NATIVE", raising=False)
+    ms = ModelSource("toy", tmp_path / "ms")
+    ex = executor_for(ms, tmp_path)
+    assert ex.mounts == (
+        Mount((tmp_path / "ms").resolve(), "/models/toy"),
+        Mount(tmp_path.resolve(), "/xut-root", ro=False),
+    )
+    assert ex.guest(tmp_path / "ms/glbl.v") == "/models/toy/glbl.v"
+    assert ex.guest(tmp_path / "build/x") == "/xut-root/build/x"
+    argv = ex.argv(["true"], tmp_path, "n", None)
+    assert f"{tmp_path.resolve()}:/xut-root" in argv
+    assert f"{(tmp_path / 'ms').resolve()}:/models/toy:ro" in argv
+    # the repository itself is /work already: no extra mount
+    inside = ModelSource("unisim-gh-2020.1", repo_root() / "third_party")
+    assert executor_for(inside, repo_root() / "build").mounts == ()
+
+
 def test_image_digest_missing_image():
     if shutil.which("docker") is None:
         pytest.skip("docker not installed")

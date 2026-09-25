@@ -186,17 +186,25 @@ class _HasModelSrc(Protocol):
     def src(self) -> Path: ...
 
 
-def executor_for(model_source: _HasModelSrc) -> Executor:
+def executor_for(model_source: _HasModelSrc, work_root: Path | None = None) -> Executor:
     """The executor for runs against `model_source` (an `xut.modelsrc.ModelSource`).
 
     `XUT_NATIVE=1` selects `NativeExecutor`. Otherwise a model source outside the
-    repository (the Vivado install) is mounted read-only at `/models/<name>`."""
+    repository (the Vivado install) is mounted read-only at `/models/<name>`, and a
+    `work_root` (the run's `RunContext.root`) outside the repository -- a pytest
+    `tmp_path` -- is mounted read-write at `/xut-root`. The model mount comes first, so
+    a model source inside that root still resolves to its read-only mount."""
     if os.environ.get("XUT_NATIVE") == "1":
         return NativeExecutor()
+    repo = repo_root().resolve()
     src = model_source.src.resolve()
     mounts: tuple[Mount, ...] = ()
-    if not src.is_relative_to(repo_root().resolve()):
+    if not src.is_relative_to(repo):
         mounts = (Mount(src, f"/models/{model_source.name}"),)
+    if work_root is not None:
+        w = Path(work_root).resolve()
+        if not w.is_relative_to(repo):
+            mounts += (Mount(w, "/xut-root", ro=False),)
     return DockerExecutor(mounts=mounts)
 
 
