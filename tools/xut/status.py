@@ -8,6 +8,7 @@ and validates a status file, and builds a fresh stub.
 """
 
 import json
+import subprocess
 from pathlib import Path
 
 import jsonschema
@@ -21,6 +22,29 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "status.schema.json"
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
 
 HEADER = "# SPDX-License-Identifier: Apache-2.0\n"
+
+#: Runner display order for a PROGRESS.md level cell (spec §11 layout, Task 7 brief).
+RUNNER_ORDER = ("python", "xsim", "iverilog", "verilator", "hw")
+
+#: Test levels, in column order.
+LEVELS = ("L0", "L1", "L2", "L3")
+
+#: Compact one-character marks for a runner's aggregated result at one level.
+_MARKS = {
+    "fail": "✗",
+    "error": "!",
+    "pass": "✓",
+    "unsupported": "∅",
+    "n/a": "·",
+    "skip": "–",
+}
+_NOT_RUN_MARK = "–"
+
+#: Precedence when several flows of one runner disagree (worst/most-informative first):
+#: "fail beats error beats pass" (brief), extended to the remaining RESULT_VALUES so
+#: every legal `results` value maps to exactly one mark. `skip` shares the `not-run`
+#: mark: neither one is a real measurement.
+_PRECEDENCE = ("fail", "error", "pass", "unsupported", "n/a", "skip")
 
 
 def _schema() -> dict:
@@ -76,3 +100,140 @@ def dump_stub(entry: CatalogEntry, unit: str) -> str:
     data = new_stub(entry, unit)
     validate(data)
     return HEADER + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+
+def current_branch() -> str:
+    """The current git branch name (``git rev-parse --abbrev-ref HEAD``).
+
+    A thin, separately-mockable wrapper so ``xut status generate`` can be tested
+    without depending on the actual checked-out branch.
+    """
+    from xut.paths import repo_root
+
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def _runner_mark(results: dict, level: str, runner: str) -> str:
+    """The single mark for `runner` at `level`, aggregated over every flow.
+
+    ``–`` (not-run) if `results` has no ``<level>/<runner>/<flow>`` entry at all;
+    otherwise the mark for whichever value present has the highest `_PRECEDENCE`.
+    """
+    prefix = f"{level}/{runner}/"
+    values = {v for k, v in results.items() if k.startswith(prefix)}
+    if not values:
+        return _NOT_RUN_MARK
+    for value in _PRECEDENCE:
+        if value in values:
+            return _MARKS[value]
+    return _NOT_RUN_MARK  # defensive: an unrecognised value never validates
+
+
+def _level_cell(results: dict, level: str) -> str:
+    """The compact runner-mark string for one level cell (spec §11, Task 7 brief)."""
+    return "".join(_runner_mark(results, level, runner) for runner in RUNNER_ORDER)
+
+
+def _coverage_pct(coverage: dict) -> str:
+    covered = len(coverage["covered"])
+    total = covered + len(coverage["uncovered"])
+    if total == 0:
+        return "n/a"
+    return f"{round(covered / total * 100)}%"
+
+
+def _has_pass(status: dict, level: str) -> bool:
+    prefix = level + "/"
+    return any(v == "pass" for k, v in status["results"].items() if k.startswith(prefix))
+
+
+def render_progress(statuses: list[dict], units: dict) -> str:
+    """Render PROGRESS.md: a per-group summary table, then a per-primitive table
+    (spec §11; Task 7 brief). `units` is `xut.workunits.load_units`'s result."""
+    unit_of = {p: name for name, u in units.items() for p in u.primitives}
+    group_of = {p: u.group_dirs[0] for u in units.values() for p in u.primitives}
+
+    by_group: dict[str, list[dict]] = {}
+    for s in statuses:
+        by_group.setdefault(group_of.get(s["primitive"], "?"), []).append(s)
+
+    lines = ["# Progress", ""]
+    lines.append("| Group | Primitives | L0 pass | L1 pass | L2 pass | L3 pass |")
+    lines.append("|---|---|---|---|---|---|")
+    for group in sorted(by_group):
+        entries = by_group[group]
+        counts = [str(sum(_has_pass(s, level) for s in entries)) for level in LEVELS]
+        lines.append(f"| {group} | {len(entries)} | " + " | ".join(counts) + " |")
+    lines.append("")
+
+    lines.append(
+        "| Primitive | Unit | Model | L0 | L1 | L2 | L3 | Coverage | Uncovered | Findings |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    for s in sorted(statuses, key=lambda s: s["primitive"]):
+        prim = s["primitive"]
+        cells = " | ".join(_level_cell(s["results"], level) for level in LEVELS)
+        lines.append(
+            f"| {prim} | {unit_of.get(prim, s['work_unit'])} | {s['model_library']} | "
+            f"{cells} | {_coverage_pct(s['coverage'])} | {len(s['coverage']['uncovered'])} | "
+            f"{len(s['findings'])} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def render_todo(statuses: list[dict], entries: dict) -> str:
+    """Render TODO.md: per unit, per primitive, its uncovered bins, unsupported
+    cells (with the primitive's `notes` as the reason, if any) and open findings.
+    `entries` is `xut.workunits.load_units`'s result. Primitives with nothing
+    outstanding are omitted, as are units with no outstanding primitive."""
+    unit_of = {p: name for name, u in entries.items() for p in u.primitives}
+    by_unit: dict[str, list[dict]] = {}
+    for s in statuses:
+        by_unit.setdefault(unit_of.get(s["primitive"], s["work_unit"]), []).append(s)
+
+    lines = ["# TODO", ""]
+    for unit in sorted(by_unit):
+        unit_lines: list[str] = []
+        for s in sorted(by_unit[unit], key=lambda s: s["primitive"]):
+            item_lines: list[str] = []
+            uncovered = s["coverage"]["uncovered"]
+            if uncovered:
+                item_lines.append("  - Uncovered bins: " + ", ".join(f"`{b}`" for b in uncovered))
+            unsupported = sorted(k for k, v in s["results"].items() if v == "unsupported")
+            if unsupported:
+                reason = f" — {s['notes']}" if s["notes"] else ""
+                item_lines.append(
+                    "  - Unsupported: " + ", ".join(f"`{k}`" for k in unsupported) + reason
+                )
+            if s["findings"]:
+                item_lines.append(
+                    "  - Open findings: "
+                    + ", ".join(f"[{f}](../findings/{f}.md)" for f in s["findings"])
+                )
+            if item_lines:
+                unit_lines.append(f"- **{s['primitive']}**")
+                unit_lines.extend(item_lines)
+        if unit_lines:
+            lines.append(f"## {unit}")
+            lines.append("")
+            lines.extend(unit_lines)
+            lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def render_log(log_dir: Path) -> str:
+    """Render LOG.md: every `log/*.md`, sorted by filename (its timestamp prefix),
+    as a link showing its first heading line (spec §11, Task 7 brief)."""
+    lines = ["# Log", ""]
+    for f in sorted(Path(log_dir).glob("*.md")):
+        entry_lines = f.read_text().splitlines()
+        title = entry_lines[0].lstrip("#").strip() if entry_lines else f.stem
+        lines.append(f"- [{title}](../log/{f.name})")
+    return "\n".join(lines) + "\n"
