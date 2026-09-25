@@ -46,7 +46,8 @@ class Mismatch:
     expected: str
     actual: str
     prov: str | None = None
-    kind: str = "value"  # value | missing-sample | missing-port | extra-sample
+    kind: str = "value"
+    # value | missing-sample | extra-sample | missing-port | port-width | sample-order
 
     def __str__(self) -> str:
         where = f"{self.label} {self.port}" + (f"[{self.bit}]" if self.bit >= 0 else "")
@@ -118,7 +119,10 @@ def loads(text: str) -> Trace:
             if not eq or not tag:
                 raise XtrError(f"line {n}: bad provenance token {tok!r}")
             prov[port] = _check_prov(tag)
-        t.add(toks[0], values, prov or None)
+        try:
+            t.add(toks[0], values, prov or None)
+        except XtrError as e:
+            raise XtrError(f"line {n}: {e}") from e
     return t
 
 
@@ -140,6 +144,23 @@ def dump(t: Trace, path: Path) -> None:
     Path(path).write_text(dumps(t))
 
 
+def _order_mismatch(a_order: list[str], b_order: list[str]) -> Mismatch | None:
+    """Samples are points in simulated time, so a missing/extra sample aside, the
+    labels common to both traces must appear in the same relative order in each.
+    Returns the *first* offending label, with its 0-based position among the common
+    labels in each trace's own order (``expected``/``actual``), or None if the
+    common-label subsequences already agree. A label absent from one trace is not
+    itself an order problem (that is `missing-sample`/`extra-sample`) -- only the
+    labels present in both are compared here."""
+    a_set, b_set = set(a_order), set(b_order)
+    common_a = [lbl for lbl in a_order if lbl in b_set]
+    common_b = [lbl for lbl in b_order if lbl in a_set]
+    for i, lbl in enumerate(common_a):
+        if common_b[i] != lbl:
+            return Mismatch(lbl, "*", -1, str(i), str(common_b.index(lbl)), None, "sample-order")
+    return None
+
+
 def compare(expected: Trace, actual: Trace, *, x_observable: bool = True) -> list[Mismatch]:
     """Expected (golden, may hold '-') against one runner's actual trace."""
     out: list[Mismatch] = []
@@ -151,8 +172,11 @@ def compare(expected: Trace, actual: Trace, *, x_observable: bool = True) -> lis
         for port, exp in ports.items():
             prov = expected.prov.get(label, {}).get(port)
             act = got.get(port)
-            if act is None or len(act) != len(exp):
-                out.append(Mismatch(label, port, -1, exp, act or "missing", prov, "missing-port"))
+            if act is None:
+                out.append(Mismatch(label, port, -1, exp, "missing", prov, "missing-port"))
+                continue
+            if len(act) != len(exp):
+                out.append(Mismatch(label, port, -1, exp, act, prov, "port-width"))
                 continue
             for i, (e, a) in enumerate(zip(reversed(exp), reversed(act), strict=True)):
                 if e == "-" or (e in "xz" and not x_observable):
@@ -162,6 +186,8 @@ def compare(expected: Trace, actual: Trace, *, x_observable: bool = True) -> lis
     for label in actual.samples:
         if label not in expected.samples:
             out.append(Mismatch(label, "*", -1, "none", "sample", None, "extra-sample"))
+    if m := _order_mismatch(list(expected.samples), list(actual.samples)):
+        out.append(m)
     return out
 
 
@@ -186,17 +212,22 @@ def diff(a: Trace, b: Trace, *, a_x: bool = True, b_x: bool = True) -> list[Mism
             continue
         for port in pa.keys() | pb.keys():
             va, vb = pa.get(port), pb.get(port)
-            if va is None or vb is None or len(va) != len(vb):
+            if va is None or vb is None:
                 out.append(
                     Mismatch(
                         label, port, -1, va or "missing", vb or "missing", None, "missing-port"
                     )
                 )
                 continue
+            if len(va) != len(vb):
+                out.append(Mismatch(label, port, -1, va, vb, None, "port-width"))
+                continue
             for i, (ca, cb) in enumerate(zip(reversed(va), reversed(vb), strict=True)):
                 if ca == cb or (ca in "xz" and not b_x) or (cb in "xz" and not a_x):
                     continue
                 out.append(Mismatch(label, port, i, ca, cb))
+    if m := _order_mismatch(list(a.samples), list(b.samples)):
+        out.append(m)
     return sorted(out, key=lambda m: (m.label, m.port, m.bit))
 
 
