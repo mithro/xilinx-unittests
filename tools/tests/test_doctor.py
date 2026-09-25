@@ -106,7 +106,16 @@ def test_docker_command_failure_reported_not_raised():
     assert docker.detail == "docker info: exit 1"
     runners = available_runners(checks)
     assert "iverilog" not in runners
-    assert "vpr" not in runners
+    assert "verilator" not in runners
+
+
+def test_docker_enables_only_spec_3_1_runner_names():
+    """Controller ruling: docker only enables iverilog/verilator. cocotb is a test
+    style run inside those runners, not a runner; yosys/nextpnr-xilinx/vpr containers
+    don't exist yet (a later step adds them, under the flow name `openxc7`, not
+    `nextpnr-xilinx`)."""
+    docker = _by_name(run_checks(FakeProbe()))["docker"]
+    assert docker.enables == ("iverilog", "verilator")
 
 
 def test_docs_falls_back_to_http_when_pdf_missing():
@@ -193,16 +202,30 @@ def test_raising_probe_never_crashes_run_checks():
 
 
 def test_default_probe_used_when_none_given(monkeypatch):
-    """`run_checks()` with no args must not touch the network/docker/ssh in CI — it
-    uses the real `Probe`, but every external call fails fast/harmlessly here since
-    none of vivado/docker/gh/ssh are expected to be configured in this sandbox."""
+    """`run_checks()` with no `probe` argument must construct and use `doctor.Probe` —
+    never real subprocesses/network calls during this test. Monkeypatches the `Probe`
+    name in `xut.doctor` with a fake class and asserts `run_checks` instantiated it."""
+    instances = []
+
+    class FakeDefaultProbe(FakeProbe):
+        def __init__(self):
+            super().__init__()
+            instances.append(self)
+
+    monkeypatch.setattr("xut.doctor.Probe", FakeDefaultProbe)
     checks = run_checks()
+    assert len(instances) == 1
     assert len(checks) == 7
     for c in checks:
         assert c.detail
+        assert c.ok is True
 
 
-def test_doctor_cli_always_exits_zero():
+def test_doctor_cli_always_exits_zero(monkeypatch):
+    """The CLI wires up the real `Probe` internally — patch it here too, so this stays
+    hermetic (e.g. a CI checkout has no cached UG953 PDF, which would otherwise make
+    the docs check fetch over the real network)."""
+    monkeypatch.setattr("xut.doctor.Probe", FakeProbe)
     result = CliRunner().invoke(main, ["doctor"])
     assert result.exit_code == 0
     assert "available runners" in result.output
