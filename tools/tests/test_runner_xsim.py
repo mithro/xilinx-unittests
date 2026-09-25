@@ -33,7 +33,9 @@ from xut.runners import RUNNERS
 from xut.runners.base import RunContext, workdir
 from xut.runners.iverilog import ParamError, sv_check
 from xut.runners.python import PythonRunner
+from xut.runners.reject import reject_result
 from xut.runners.xsim import (
+    LIBRARY_PATH_GUARD,
     MODEL_SOURCE,
     RUN_MARKER,
     XsimRunner,
@@ -148,6 +150,7 @@ def test_render_script_glbl_instance():
 def test_split_log():
     out = split_log("INFO: analyzing\nERROR: [VRFC 10-1] boom\n", 1)
     assert (out.compiled_ok, out.run_rc, out.run_text) == (False, None, "")
+    assert out.compile_text == "ERROR: [VRFC 10-1] boom\n"
     out = split_log(f"WARNING: fine\n{RUN_MARKER}\nXUT_DONE\n", 0)
     assert (out.compiled_ok, out.compile_text, out.run_rc, out.run_text) == (
         True,
@@ -210,6 +213,28 @@ def test_unavailable_for_another_model_source(tmp_path, monkeypatch):
     assert XsimRunner().available(dataclasses.replace(ctx, model_source=VIVADO_MS)) == (True, "")
 
 
+def test_split_log_without_marker_is_not_reject_evidence():
+    """Review I1: a compile that never reached xsim -R, with an unrelated syntax error
+    and an INFO line whose path holds "illegal" and the primitive's name, is an
+    error, never a rejection."""
+    d = "/w/build/rtl/xsim/unisim-2025.2/7series.FDRE.L0.illegal_init/cfg-init_x"
+    log = (
+        f'INFO: [VRFC 10-2263] Analyzing SystemVerilog file "{d}/xut_vector_tb.sv" into work\n'
+        f"ERROR: [VRFC 10-4982] syntax error near 'endmodule' [{d}/dut/xut_dut.v:9]\n"
+    )
+    out = split_log(log, 1)
+    assert "INFO" not in out.compile_text
+    r = reject_result("init_x", out, [], "FDRE")
+    assert r.status == "error", r.reason
+
+
+def test_render_script_config_dir_comment_is_one_line():
+    text = _script(cd=Path("/w/evil\nrm -rf x/cfg-a"))
+    assert "\nrm -rf" not in text
+    p = subprocess.run(["bash", "-n"], input=text, text=True, capture_output=True)
+    assert p.returncode == 0, p.stderr
+
+
 def test_unavailable_without_vivado(tmp_path, monkeypatch):
     monkeypatch.setattr("xut.runners.xsim.VIVADO_SETTINGS", tmp_path / "nope.sh")
     ok, why = XsimRunner().available(RunContext(tmp_path, "rtl", VIVADO_MS))
@@ -235,38 +260,61 @@ def test_cocotb_is_a_skip(tmp_path):
 
 P_TOP = (
     "// SPDX-License-Identifier: Apache-2.0\nmodule top;\n  parameter [0:0] P = 1'b0;\n"
-    '  initial $display("P=%b", P);\nendmodule\n'
+    '  parameter real R = 0.0;\n  parameter S = "abc";\n'
+    '  initial $display("P=%b R=%f S=%s", P, R, S);\nendmodule\n'
 )
 
 
-def _xelab(work: Path, generic: str) -> str:
-    """Elaborate and run ``P_TOP`` with ``-generic_top <generic>``; the log."""
+def _xelab(work: Path, generic: str) -> tuple[int, str]:
+    """Elaborate and run ``P_TOP`` with ``-generic_top <generic>`` (with the runner's
+    own LIBRARY_PATH guard); the exit code and the log."""
     (work / "top.v").write_text(P_TOP)
     inner = (
-        f"source {VIVADO_SETTINGS} && export LIBRARY_PATH=/usr/lib/x86_64-linux-gnu && "
+        f"source {VIVADO_SETTINGS} && {LIBRARY_PATH_GUARD} && "
         "xvlog -sv top.v && xelab --debug off -generic_top "
         f"{shlex.quote(generic)} -s snap work.top && xsim snap -R"
     )
     log = work / "run.log"
     with log.open("w") as f:
-        subprocess.run(["bash", "-c", inner], cwd=work, stdout=f, stderr=subprocess.STDOUT)
-    return log.read_text()
+        rc = subprocess.run(
+            ["bash", "-c", inner], cwd=work, stdout=f, stderr=subprocess.STDOUT
+        ).returncode
+    return rc, log.read_text()
 
 
 @pytest.mark.vivado
 def test_xelab_generic_top_keeps_x_digits(work):
     """Unlike Icarus -P, xelab takes a sized literal with x digits as written."""
-    assert "P=x" in _xelab(work, "P=1'bx")
+    rc, log = _xelab(work, "P=1'bx")
+    assert rc == 0 and "P=x R=0.000000 S=abc" in log, log
 
 
 @pytest.mark.vivado
 def test_xelab_generic_top_bare_word_is_a_silent_string(work):
     """Why generic_value refuses bare words: `P=x` is the string "x" (0x78), truncated
     to P's one bit, with no error and no warning (other than LIBRARY_PATH's 43-3431)."""
-    log = _xelab(work, "P=x")
-    assert "P=0" in log
+    rc, log = _xelab(work, "P=x")
+    assert rc == 0 and "P=0 " in log, log
     diags = [ln for ln in log.splitlines() if ("ERROR" in ln or "WARNING" in ln)]
     assert all("43-3431" in ln for ln in diags), diags
+
+
+@pytest.mark.vivado
+@pytest.mark.parametrize(
+    ("generic", "shown"),
+    [("R=1.5", "R=1.500000"), ("R=2e3", "R=2000.000000"), ('S="xyz"', "S=xyz")],
+)
+def test_xelab_generic_top_takes_reals_and_quoted_strings(work, generic, shown):
+    """What generic_value lets through arrives as written."""
+    rc, log = _xelab(work, generic)
+    assert rc == 0 and shown in log, log
+
+
+@pytest.mark.vivado
+def test_xelab_generic_top_unknown_name_is_a_hard_error(work):
+    """A misspelt attribute is never silently ignored: XSIM 43-3281, exit code 1."""
+    rc, log = _xelab(work, "NOPE=1")
+    assert rc == 1 and "ERROR: [XSIM 43-3281]" in log, log
 
 
 # --- vector style ----------------------------------------------------------------------
@@ -493,6 +541,8 @@ def test_cli_python_iverilog_xsim_on_the_toyff_fixture(work, toy, monkeypatch, c
     fixture tree: iverilog gets a toy model source (named unisim-2025.2, so xsim is
     available), xsim compiles the same TOYFF.v as an extra file."""
     _copy_toy(work)
+    # Test-only label: the toy model source is NAMED unisim-2025.2 so that xsim is
+    # available at all; it holds only TOYFF.v and a toy glbl, never real UNISIM.
     ms = dataclasses.replace(make_model_source(work / "ms"), name=MODEL_SOURCE)
     toyff = ms.unisims / "TOYFF.v"
 
