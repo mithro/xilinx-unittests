@@ -14,7 +14,7 @@ def test_load_schema_is_cached():
     assert a["type"] == "object"
 
 
-@pytest.mark.parametrize("name", ["catalog", "status", "test"])
+@pytest.mark.parametrize("name", ["catalog", "status", "test", "result"])
 def test_every_schema_loads(name):
     assert "$schema" in schemas.load_schema(name)
 

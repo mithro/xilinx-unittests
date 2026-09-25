@@ -1,0 +1,200 @@
+# SPDX-License-Identifier: Apache-2.0
+"""The ``python`` runner: stimulus generation and golden-model expected traces.
+
+For a vector test it imports the generator named by ``source`` (or loads a frozen
+``.xvec``), and for every configuration writes ``cfg-<cfg>/dut/`` (the wrapper),
+``stim.xvec`` (validated and marked for hw renderability) and ``expected.xtr`` (the
+golden replay; header-only for ``expect=reject``). ``configs.json`` lists every
+configuration generated, errored ones included: the other runners read their
+configuration list, stimuli and expectations from this directory (review #10).
+
+- An invalid stimulus is a generator bug: ``error``.
+- No golden model for the primitive, or a stimulus the model does not describe
+  (``ModelUnsupported``): ``skip`` with the reason. The other runners then report
+  ``error "no expected trace (python: skip: ...)"`` for that configuration.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import platform
+import shutil
+import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import ClassVar
+
+from xut.errors import XutError
+from xut.formats import xtr, xvec
+from xut.formats.common import is_cfg
+from xut.formats.xvec import Vec
+from xut.golden import InvalidStimulus, replay
+from xut.runners.base import (
+    ConfigResult,
+    RunContext,
+    Runner,
+    RunResult,
+    seed_for,
+    sha256_file,
+    workdir,
+)
+from xut.stimgen import GenContext
+from xut.testspec import TestCase
+from xut.validate import mark, validate
+from xut.wrap import DutSpec, spec_from_catalog, write_dut
+from xut_models import registry
+from xut_models.base import ModelUnsupported
+
+
+class SourceError(XutError, ValueError):
+    """A vector test's ``source`` cannot be used."""
+
+
+@contextmanager
+def _on_path(dirs: list[Path]) -> Iterator[None]:
+    added = [str(d) for d in dirs if str(d) not in sys.path]
+    sys.path[:0] = added
+    try:
+        yield
+    finally:
+        for d in added:
+            sys.path.remove(d)
+
+
+def _import_generator(case: TestCase, spec: str) -> Callable[[GenContext], Iterator[Vec]]:
+    file, _, func = spec.partition(":")
+    path = case.test_dir / file
+    if not func or not path.is_file():
+        raise SourceError(
+            f"{case.id}: source {spec!r} must be vectors/<file>.py:<function> naming an "
+            f"existing file (looked for {path})"
+        )
+    modname = "xut_gen_" + "".join(ch if ch.isalnum() else "_" for ch in f"{case.id}_{file}")
+    mspec = importlib.util.spec_from_file_location(modname, path)
+    if mspec is None or mspec.loader is None:
+        raise SourceError(f"{case.id}: cannot import {path}")
+    mod = importlib.util.module_from_spec(mspec)
+    mspec.loader.exec_module(mod)
+    gen = getattr(mod, func, None)
+    if not callable(gen):
+        raise SourceError(f"{case.id}: {path} has no generator function {func!r}")
+    return gen
+
+
+def generate(case: TestCase, ctx: RunContext) -> list[tuple[Vec, DutSpec]]:
+    """Every configuration of vector test ``case``: its stimulus and wrapper spec."""
+    from xut.catalog import model as catalog_model
+
+    src = case.source
+    if not src:
+        raise SourceError(f"{case.id}: test.yaml has no source")
+    if src.endswith(".xvec"):
+        path = case.test_dir / src
+        vec = xvec.load(path)
+        spec = spec_from_catalog(
+            catalog_model.load_entry(case.family, case.prim, ctx.root),
+            vec.cfg,
+            vec.attrs,
+            allow_illegal=vec.expect == "reject",
+        )
+        return [(vec, spec)]
+    with _on_path(case.shared_dirs):
+        gen = _import_generator(case, src)
+        gctx = GenContext(case.family, case.prim, seed_for(case, ctx), root=ctx.root)
+        vecs = list(gen(gctx))
+    out = []
+    for v in vecs:
+        if not isinstance(v, Vec):
+            raise SourceError(f"{case.id}: generator yielded {type(v).__name__}, not a Vec")
+        if v.cfg not in gctx.specs:
+            raise SourceError(f"{case.id}: configuration {v.cfg!r} was not built with ctx.dut(...)")
+        out.append((v, gctx.specs[v.cfg]))
+    return out
+
+
+class PythonRunner(Runner):
+    name: ClassVar[str] = "python"
+    x_observable: ClassVar[bool] = True
+    styles: ClassVar[frozenset[str]] = frozenset({"vector"})
+
+    def __init__(self) -> None:
+        self._gen: dict[str, tuple[Vec, DutSpec]] = {}
+        self._bins: set[str] = set()
+
+    def tools(self, ctx: RunContext) -> dict:
+        return {"python": platform.python_version()}
+
+    def configs(self, case: TestCase, ctx: RunContext) -> list[str]:
+        """Run the generator; write ``configs.json`` before any configuration runs, so a
+        configuration that later errors is still listed (review #10)."""
+        gen = generate(case, ctx)
+        names = [v.cfg for v, _ in gen]
+        bad = [n for n in names if not is_cfg(n)]
+        dups = sorted({n for n in names if names.count(n) > 1})
+        if bad or dups:
+            raise SourceError(f"{case.id}: bad configuration names {bad} / duplicates {dups}")
+        self._gen = {v.cfg: (v, s) for v, s in gen}
+        self._bins = set()
+        d = workdir(ctx, self.name, case.id)
+        (d / "configs.json").write_text(json.dumps(names, indent=1) + "\n")
+        return names
+
+    def run_config(self, case: TestCase, cfg: str, cfgdir: Path, ctx: RunContext) -> ConfigResult:
+        vec, spec = self._gen[cfg]
+        log: list[str] = [f"python golden run of {case.id} cfg {cfg}\n"]
+        try:
+            m = write_dut(spec, cfgdir / "dut")
+            report = validate(vec, m)
+            if report.errors:
+                return ConfigResult(
+                    cfg,
+                    "error",
+                    "stimulus violates class rules (a generator bug): "
+                    + "; ".join(report.errors[:3]),
+                )
+            mark(vec, report)
+            xvec.dump(vec, cfgdir / "stim.xvec")
+            stim_sha = sha256_file(cfgdir / "stim.xvec")
+            log.append(f"stim.xvec: hw_renderable={vec.hw_renderable} {vec.hw_reason}\n")
+            if vec.expect == "reject":
+                # No behaviour to model: a header-only expectation, so the other runners
+                # find the configuration and apply the reject rule (Task 9).
+                trace = xtr.Trace(
+                    {
+                        "runner": self.name,
+                        "flow": ctx.flow,
+                        "model": "golden",
+                        "seed": str(vec.seed),
+                        "kind": "expected",
+                        "prim": vec.prim,
+                        "cfg": vec.cfg,
+                        "expect": "reject",
+                    }
+                )
+            else:
+                try:
+                    model_cls = registry.get(case.family, case.prim)
+                except LookupError as e:
+                    return ConfigResult(cfg, "skip", f"no golden model: {e}", stim_sha)
+                try:
+                    trace, reach = replay(model_cls, vec, m)
+                except ModelUnsupported as e:
+                    return ConfigResult(cfg, "skip", f"model unsupported: {e}", stim_sha)
+                except InvalidStimulus as e:
+                    return ConfigResult(cfg, "error", str(e), stim_sha)
+                trace.header["flow"] = ctx.flow
+                self._bins |= reach.bins()
+            xtr.dump(trace, cfgdir / "expected.xtr")
+            shutil.copyfile(cfgdir / "expected.xtr", cfgdir / "trace.xtr")
+            log.append(f"expected.xtr: {len(trace.samples)} sample(s)\n")
+            return ConfigResult(
+                cfg, "pass", None, stim_sha, sha256_file(cfgdir / "expected.xtr"), 0
+            )
+        finally:
+            with (cfgdir / "run.log").open("a") as f:
+                f.write("".join(log))
+
+    def finish(self, case: TestCase, ctx: RunContext, d: Path, res: RunResult) -> None:
+        res.bins_reached = sorted(self._bins)
