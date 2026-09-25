@@ -36,6 +36,11 @@
           },
           "level": {"enum": ["L0", "L1", "L2", "L3"]},
           "style": {"enum": ["vector", "sv", "cocotb"]},
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "$comment": "Relative to the test directory. vector: vectors/<file>.py:<function> (a generator) or vectors/<file>.xvec (frozen); sv: sv/<file>.sv (top module = file stem); cocotb: cocotb/<file>.py (test module = file stem)."
+          },
           "exercises": {"type": "array", "items": {"type": "string"}},
           "attr_sampling": {
             "type": "object",
@@ -49,9 +54,58 @@
             },
             "$comment": "Values are always the strings yes|no|unsupported, never YAML's bare yes/no booleans. Quote them in test.yaml (runners: {xsim: \"yes\"}), not runners: {xsim: yes}, or PyYAML's YAML-1.1 resolver silently turns it into the boolean true and this schema rejects it."
           },
+          "unsupported_reasons": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "minLength": 1},
+            "$comment": "{<runner>: <reason>}. Every runner declared \"no\" (deliberately not run there) or \"unsupported\" (cannot run this test) needs an entry: xut lint rule runner-reasons."
+          },
+          "config_exclusions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {"type": "string", "minLength": 1}
+            },
+            "$comment": "{<runner>: {<cfg glob>: <reason>}}. The runner stays declared \"yes\"; configurations whose name matches a glob are skipped with the result reason \"excluded: <reason>\", never silently."
+          },
           "flows": {"type": "array", "items": {"type": "string"}},
           "related": {"type": "array", "items": {"type": "string"}},
-          "gaps": {"type": "array", "items": {"type": "string"}}
+          "gaps": {"type": "array", "items": {"type": "string"}},
+          "configs": {
+            "type": "array",
+            "$comment": "sv and cocotb styles only: a vector test's configurations come from its generator.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cfg"],
+              "properties": {
+                "cfg": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+                "attrs": {
+                  "type": "object",
+                  "additionalProperties": {"type": ["string", "integer", "number"]}
+                }
+              }
+            }
+          },
+          "expected_divergence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["finding", "cls", "runners"],
+              "properties": {
+                "finding": {"type": "string", "pattern": "^findings/[A-Z0-9_]+-[A-Za-z0-9_.-]+\\.md$"},
+                "cls": {
+                  "enum": [
+                    "doc-vs-model", "doc-gap", "sim-divergence", "x-dependence", "transform-bug",
+                    "flow-mismatch", "silicon-mismatch", "nondeterminism", "harness-error"
+                  ]
+                },
+                "runners": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          },
+          "timeout_s": {"type": "integer", "minimum": 1},
+          "sv_deviations": {"type": "array", "items": {"type": "string"}}
         }
       }
     }

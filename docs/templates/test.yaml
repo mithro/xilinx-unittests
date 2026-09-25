@@ -7,9 +7,36 @@ tests:
   - id: 7series.<PRIM>.L1.reset_over_ce
     level: L1
     style: vector                  # vector | sv | cocotb
+    # Relative to this directory. vector: vectors/<file>.py:<function> (generator) or
+    # vectors/<file>.xvec (frozen); sv: sv/<file>.sv; cocotb: cocotb/<file>.py.
+    source: vectors/gen.py:l1_reset_over_ce
     exercises: [port:R, port:CE, claim:<PRIM>.C3]
     attr_sampling: {INIT: [0, 1]}
-    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}
+    # Always the quoted strings "yes" | "no" | "unsupported" (a bare yes is a boolean).
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    # Required for every runner declared "no" or "unsupported" (lint rule runner-reasons).
+    unsupported_reasons: {hw: "free-running clock needs the step-3 real-time harness"}
+    # A runner declared "yes" can still skip some configurations, with a reason:
+    # config_exclusions: {hw: {"*_dinv1_*": "IS_D_INVERTED=1 is not hw-renderable"}}
     flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
     gaps: ["setup/hold timing out of scope"]
+    # Optional:
+    # timeout_s: 1200             # per runner; default --timeout, else 600
+    # expected_divergence:        # still reported, as known-divergence (spec §8)
+    #   - {finding: findings/<PRIM>-<slug>.md, cls: sim-divergence, runners: [verilator]}
+  - id: 7series.<PRIM>.L2.gsr_checkpoints
+    level: L2
+    style: sv
+    source: sv/tb_<prim>_gsr.sv   # top module = file stem
+    configs:                      # sv and cocotb only; attributes become top parameters
+      - {cfg: init0, attrs: {INIT: "1'b0"}}
+      - {cfg: init1, attrs: {INIT: "1'b1"}}
+    exercises: [port:GSR]
+    attr_sampling: {INIT: [0, 1]}
+    runners: {python: "no", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "no"}
+    unsupported_reasons:
+      python: "self-checking sv testbench: no golden trace"
+      hw: "GSR pulses are not hw-renderable until step 3"
+    sv_deviations: []             # departures from the common SV subset (spec §4.3)
+    flows: [rtl]
