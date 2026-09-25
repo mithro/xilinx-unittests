@@ -21,6 +21,8 @@ import json
 import platform
 import shutil
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,6 +40,7 @@ from xut.runners.base import (
     RunResult,
     seed_for,
     sha256_file,
+    timeout_for,
     workdir,
 )
 from xut.stimgen import GenContext
@@ -50,6 +53,32 @@ from xut_models.base import ModelUnsupported
 
 class SourceError(XutError, ValueError):
     """A vector test's ``source`` cannot be used."""
+
+
+class PythonTimeout(XutError, TimeoutError):
+    """The generator or the golden model exceeded the test's timeout."""
+
+
+def _watchdog[T](fn: Callable[[], T], deadline: float, what: str, limit_s: int) -> T:
+    """``fn()`` in a daemon thread, abandoned with ``PythonTimeout`` at ``deadline``
+    (time.monotonic). A Python thread cannot be killed: a runaway generator keeps
+    spinning in the background, but the run reports ``error`` and moves on."""
+    box: dict[str, object] = {}
+
+    def target() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # re-raised in the caller's thread
+            box["error"] = e
+
+    t = threading.Thread(target=target, name=f"xut-python-{what}", daemon=True)
+    t.start()
+    t.join(max(0.0, deadline - time.monotonic()))
+    if t.is_alive():
+        raise PythonTimeout(f"timeout: {what} exceeded the {limit_s} s limit")
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box["value"]  # type: ignore[return-value]
 
 
 @contextmanager
@@ -122,6 +151,9 @@ class PythonRunner(Runner):
     def __init__(self) -> None:
         self._gen: dict[str, tuple[Vec, DutSpec]] = {}
         self._bins: set[str] = set()
+        self._seed: int | None = None
+        self._deadline = float("inf")
+        self._limit_s = 0
 
     def tools(self, ctx: RunContext) -> dict:
         return {"python": platform.python_version()}
@@ -129,8 +161,14 @@ class PythonRunner(Runner):
     def configs(self, case: TestCase, ctx: RunContext) -> list[str]:
         """Run the generator; write ``configs.json`` before any configuration runs, so a
         configuration that later errors is still listed (review #10)."""
-        gen = generate(case, ctx)
+        self._limit_s = timeout_for(case, ctx)
+        self._deadline = time.monotonic() + self._limit_s
+        gen = _watchdog(lambda: generate(case, ctx), self._deadline, "generator", self._limit_s)
         names = [v.cfg for v, _ in gen]
+        seeds = sorted({v.seed for v, _ in gen})
+        if len(seeds) > 1:
+            raise SourceError(f"{case.id}: configurations use different seeds {seeds}")
+        self._seed = seeds[0] if seeds else None
         bad = [n for n in names if not is_cfg(n)]
         dups = sorted({n for n in names if names.count(n) > 1})
         if bad or dups:
@@ -179,7 +217,12 @@ class PythonRunner(Runner):
                 except LookupError as e:
                     return ConfigResult(cfg, "skip", f"no golden model: {e}", stim_sha)
                 try:
-                    trace, reach = replay(model_cls, vec, m)
+                    trace, reach = _watchdog(
+                        lambda: replay(model_cls, vec, m),
+                        self._deadline,
+                        f"golden model ({cfg})",
+                        self._limit_s,
+                    )
                 except ModelUnsupported as e:
                     return ConfigResult(cfg, "skip", f"model unsupported: {e}", stim_sha)
                 except InvalidStimulus as e:
@@ -195,6 +238,10 @@ class PythonRunner(Runner):
         finally:
             with (cfgdir / "run.log").open("a") as f:
                 f.write("".join(log))
+
+    def stimulus_seed(self, case: TestCase, ctx: RunContext) -> int | None:
+        """The seed the stimuli were generated with (a frozen .xvec keeps its own)."""
+        return self._seed
 
     def finish(self, case: TestCase, ctx: RunContext, d: Path, res: RunResult) -> None:
         res.bins_reached = sorted(self._bins)

@@ -407,6 +407,9 @@ def run_cmd(
     root = repo_root()
     cases = discover(root)
     if selectors:
+        for sel in selectors:
+            if not select(cases, [sel]):
+                click.echo(f"warning: selector {sel!r} matched no test", err=True)
         cases = select(cases, list(selectors))
     cases = [
         c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
@@ -417,7 +420,14 @@ def run_cmd(
         return
 
     ctx = RunContext(root, flow, modelsrc.resolve(model_source), seed, {}, timeout, jobs)
-    results = run_mod.run_tests(cases, names, ctx)
+    try:
+        results = run_mod.run_tests(cases, names, ctx)
+    except KeyboardInterrupt:
+        click.echo(
+            f"interrupted: queued runs cancelled; partial summary in build/{flow}/summary.json",
+            err=True,
+        )
+        raise SystemExit(130) from None
 
     ran = list(dict.fromkeys(r.runner for r in results))
     status = {(r.test_id, r.runner): r.status for r in results}
