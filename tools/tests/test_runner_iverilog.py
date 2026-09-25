@@ -113,7 +113,7 @@ def test_sv_check(tmp_path):
     cd = tmp_path / "cfg-c"
     cd.mkdir()
     (cd / "trace.body").write_text("a  Q=1\nb  Q=0\n")
-    r = sv_check(cd, "XUT_CHECKS 2\nXUT_PASS\n", HDR)
+    r = sv_check(cd, "XUT_SEED 0\nXUT_CHECKS 2\nXUT_PASS\n", HDR)
     assert (r.status, r.reason) == ("pass", None)
     t = xtr.load(cd / "trace.xtr")
     assert t.header == HDR and t.samples == {"a": {"Q": "1"}, "b": {"Q": "0"}}
@@ -646,3 +646,28 @@ def test_sv_checkpoints_without_checks_is_error(ctx, work):
     tb.write_text(text)
     res = IverilogRunner().run(case, ctx)
     assert res.status == "error" and "0 XUT_CHECK(s) executed" in res.configs[0].reason
+
+
+# --- PR B gate (a) N1: sv seed provenance ------------------------------------------------
+
+
+@pytest.mark.container
+def test_sv_testbench_receives_the_recorded_seed(ctx):
+    """The seed in the configuration trace header, the test trace header and
+    result.json seeds.stimulus is the one the testbench saw (XUT_SEED define)."""
+    import dataclasses
+
+    from xut.runners.base import seed_for
+
+    case = _case("7series.TOYFF.L1.sv_basic")
+    for c, want in (
+        (ctx, seed_for(case, ctx)),
+        (dataclasses.replace(ctx, seed=4000000000), 4000000000),
+    ):
+        res = IverilogRunner().run(case, c)
+        d = workdir(c, "iverilog", case.id)
+        assert res.status == "pass", (res.reason, (d / "run.log").read_text())
+        assert f"XUT_SEED {want}" in (d / "run.log").read_text()
+        assert xtr.load(d / "cfg-default/trace.xtr").header["seed"] == str(want)
+        assert xtr.load(d / "trace.xtr").header["seed"] == str(want)
+        assert _result(d)["seeds"]["stimulus"] == want

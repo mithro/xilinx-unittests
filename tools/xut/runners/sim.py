@@ -46,6 +46,8 @@ COCOTB_BUILD_FAILED = 3
 _COCOTB_HEADER_KEYS = ("runner", "flow", "model", "seed", "prim", "cfg")
 #: ``xut_finish``'s count of executed XUT_CHECK/XUT_CHECKN (hdl/xut_trace.svh).
 _CHECKS = re.compile(r"^\s*XUT_CHECKS (\d+)\s*$", re.MULTILINE)
+#: ``xut_finish``'s report of the seed the testbench received.
+_SEED = re.compile(r"^\s*XUT_SEED (\d+)\s*$", re.MULTILINE)
 
 __all__ = [
     "COCOTB_BUILD_FAILED",
@@ -62,6 +64,7 @@ __all__ = [
     "cocotb_command",
     "fatal_line",
     "sv_check",
+    "sv_seed_define",
     "tool_versions",
     "vector_check",
 ]
@@ -156,6 +159,8 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
       ``XUT_CHECK``/``XUT_CHECKN`` executed): ``error``;
     - zero checks executed or zero checkpoints in ``trace.body``: ``error`` ("sv test
       recorded no checks/samples", ruling S15: zero evidence is never a pass);
+    - the ``XUT_SEED`` the testbench printed is not ``header["seed"]``: ``error`` (the
+      recorded seed must be the one the testbench received, ``sv_seed_define``);
     - otherwise ``pass``."""
     cfg = cfg_of(header)
     body = cd / "trace.body"
@@ -193,7 +198,25 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
             None,
             sha,
         )
+    seen = _SEED.findall(log_text)
+    if seen[-1:] != [header.get("seed")]:
+        return ConfigResult(
+            cfg,
+            "error",
+            f"testbench saw seed {seen[-1] if seen else '(none: no XUT_SEED line)'}, but "
+            f"this run records seed {header.get('seed')}",
+            None,
+            sha,
+        )
     return ConfigResult(cfg, "pass", None, None, sha)
+
+
+def sv_seed_define(seed: int) -> str:
+    """The ``XUT_SEED`` define an sv testbench receives (``xut_seed`` in
+    ``xut_trace.svh``, 64 bits): the seed recorded in its trace and result.json."""
+    if not 0 <= seed < 1 << 64:
+        raise ParamError(f"seed {seed}: an sv testbench takes a seed in 0 .. 2**64-1")
+    return f"64'd{seed}"
 
 
 def cocotb_command(

@@ -62,6 +62,7 @@ from xut.runners.base import (
     RunContext,
     Runner,
     prepare_vector,
+    seed_for,
     timeout_for,
     trace_header,
 )
@@ -72,6 +73,7 @@ from xut.runners.sim import (
     cfg_attrs,
     classify_run,
     sv_check,
+    sv_seed_define,
     tool_versions,
     vector_check,
 )
@@ -281,8 +283,10 @@ class XsimRunner(Runner):
         params: dict[str, str],
         ctx: RunContext,
         timeout: int,
+        defines: dict[str, str] | None = None,
     ) -> SimOutcome:
-        text = render_script(cd, files, top, incs, params, ctx.defines, self.glbl_instance)
+        defs = ctx.defines if defines is None else defines
+        text = render_script(cd, files, top, incs, params, defs, self.glbl_instance)
         (cd / "xsim.sh").write_text(text)
         rc = run_script(cd, timeout)
         return split_log((cd / "run.log").read_text(errors="replace"), rc)
@@ -307,7 +311,11 @@ class XsimRunner(Runner):
         params = {k: generic_value(k, v) for k, v in attrs.items()}
         incs = [str(p) for p in (HDL, *case.shared_dirs, source.parent)]
         files = [str(source), *map(str, self.extra_files)]
-        out = self._build_and_run(cd, files, source.stem, incs, params, ctx, timeout)
+        seed = seed_for(case, ctx)
+        defines = {**ctx.defines, "XUT_SEED": sv_seed_define(seed)}
+        out = self._build_and_run(cd, files, source.stem, incs, params, ctx, timeout, defines)
         if (r := classify_run(cfg, out, need_done=False)) is not None:
             return r
-        return sv_check(cd, out.run_text, {**trace_header(self.name, case, cfg, ctx), "seed": "0"})
+        return sv_check(
+            cd, out.run_text, {**trace_header(self.name, case, cfg, ctx), "seed": str(seed)}
+        )
