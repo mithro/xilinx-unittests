@@ -100,7 +100,15 @@
                     "flow-mismatch", "silicon-mismatch", "nondeterminism", "harness-error"
                   ]
                 },
-                "runners": {"type": "array", "items": {"type": "string"}}
+                "runners": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                "model_sources": {
+                  "$comment": "optional scope (ruling S17): matches only findings on these model sources",
+                  "type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1
+                },
+                "flows": {
+                  "$comment": "optional scope (ruling S17): matches only findings on these flows",
+                  "type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1
+                }
               }
             }
           },

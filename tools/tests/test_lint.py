@@ -840,3 +840,44 @@ def test_exclusion_glob_matching_no_sv_config_is_warning(tmp_path):
     issues = check_tests_documented(tmp_path)
     assert [(i.rule, i.severity) for i in issues] == [("config-exclusions", "warning")]
     assert "nomatch*" in issues[0].message
+
+
+# --- expected-divergence (ruling S17) ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entry,problems",
+    [
+        ("{finding: findings/FDRE-doc-gap-L1-reset.md, cls: doc-gap, runners: [xsim]}", []),
+        (
+            "{finding: findings/FDRE-doc-gap-L1-reset.md, cls: doc-gap, runners: [iverilog-vz],"
+            " flows: [rtl], model_sources: [unisim-gh-2020.1]}",
+            [],
+        ),
+        (
+            "{finding: findings/FDRE-doc-gap-L1-other.md, cls: doc-gap, runners: [xsim]}",
+            ["is not the doc-gap finding id 'findings/FDRE-doc-gap-L1-reset.md'"],
+        ),
+        (
+            "{finding: findings/FDRE-doc-gap-L1-reset.md, cls: sim-divergence, runners: [xsim]}",
+            ["is not the sim-divergence finding id"],
+        ),
+        (
+            "{finding: findings/FDRE-doc-gap-L1-reset.md, cls: doc-gap, runners: [modelsim]}",
+            ["unknown runner 'modelsim'"],
+        ),
+        (
+            "{finding: findings/FDRE-doc-gap-L1-reset.md, cls: doc-gap, runners: [xsim],"
+            " flows: [vivado]}",
+            ["flow 'vivado' is not one of the test's flows"],
+        ),
+    ],
+)
+def test_expected_divergence_lint(tmp_path, entry, problems):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML + f"    expected_divergence: [{entry}]\n"
+    )
+    issues = check_tests_documented(tmp_path)
+    assert [i.rule for i in issues] == ["expected-divergence"] * len(problems)
+    for i, p in zip(issues, problems, strict=True):
+        assert p in i.message and i.severity == "error"

@@ -147,3 +147,19 @@ def exclusions_for(case: TestCase, runner: str) -> dict[str, str]:
     """``{cfg glob: reason}`` excluded for ``runner``; ``iverilog-vz`` inherits
     ``verilator``'s exclusions exactly as it inherits its declaration."""
     return dict(case.config_exclusions.get(DECLARATION_OF.get(runner, runner), {}))
+
+
+def prim_of(test_id: str) -> str:
+    """``<family>.<PRIM>.<level>.<name>`` -> ``<PRIM>``."""
+    return test_id.split(".")[1]
+
+
+def finding_slug(cls: str, test_id: str) -> str:
+    """``<cls>-<level>-<name>``, dots in the name as ``-`` (spec §8 "Recording")."""
+    return f"{cls}-{test_id.split('.', 2)[2].replace('.', '-')}"
+
+
+def finding_id(prim: str, cls: str, test_id: str) -> str:
+    """The id (``findings/<id>.md`` stem) of a ``cls`` finding of ``test_id``: the one
+    name an ``expected_divergence`` entry for it may use (ruling S17)."""
+    return f"{prim}-{finding_slug(cls, test_id)}"
