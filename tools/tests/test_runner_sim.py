@@ -36,3 +36,46 @@ def test_classify_run_ladder():
     assert "Fatal: x" in classify_run("c", SimOutcome(True, "", 0, "Fatal: x\n" + ok)).reason
     assert "no XUT_DONE" in classify_run("c", SimOutcome(True, "", 0, "")).reason
     assert classify_run("c", SimOutcome(True, "", 0, ""), need_done=False) is None
+
+
+# --- ruling S15(b): an sv pass needs >= 1 executed XUT_CHECK and >= 1 checkpoint --------
+
+
+def _sv(tmp_path: Path, body: str, log: str):
+    from xut.runners.sim import sv_check
+
+    cd = tmp_path / "cfg-c"
+    cd.mkdir(exist_ok=True)
+    (cd / "trace.body").write_text(body)
+    return sv_check(cd, log, HDR)
+
+
+def test_sv_pass_needs_checks_and_samples(tmp_path):
+    assert _sv(tmp_path, "a  Q=1\n", "XUT_CHECKS 2\nXUT_PASS\n").status == "pass"
+
+
+def test_sv_testbench_that_only_calls_xut_finish_is_error(tmp_path):
+    """PR B gate (a) M1 / (b) #2: xut_finish alone printed XUT_PASS with no evidence."""
+    r = _sv(tmp_path, "", "XUT_CHECKS 0\nXUT_PASS\n")
+    assert r.status == "error" and "recorded no checks/samples" in r.reason
+
+
+def test_sv_checks_without_checkpoints_is_error(tmp_path):
+    r = _sv(tmp_path, "", "XUT_CHECKS 3\nXUT_PASS\n")
+    assert r.status == "error" and "recorded no checks/samples" in r.reason
+
+
+def test_sv_checkpoints_without_checks_is_error(tmp_path):
+    r = _sv(tmp_path, "a  Q=1\n", "XUT_CHECKS 0\nXUT_PASS\n")
+    assert r.status == "error" and "recorded no checks/samples" in r.reason
+
+
+def test_sv_without_a_check_count_is_error(tmp_path):
+    """A testbench that prints XUT_PASS itself (not through xut_finish) proves nothing."""
+    r = _sv(tmp_path, "a  Q=1\n", "XUT_PASS\n")
+    assert r.status == "error" and "XUT_CHECKS" in r.reason
+
+
+def test_sv_failure_still_wins(tmp_path):
+    r = _sv(tmp_path, "", "XUT_FAIL gsr: got 0 expected 1 at 5\nXUT_CHECKS 1\n")
+    assert r.status == "fail"
