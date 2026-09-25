@@ -110,3 +110,109 @@ Toy template.
 UG953 v2026.1                                                                                                   22
                                                                             Send Feedback
 June 23, 2026
+                                                                                          Design Elements
+TOYPLL
+Primitive: Toy clock generator
+
+    PRIMITIVE_GROUP: CLOCK
+    PRIMITIVE_SUBGROUP: PLL
+
+Available Attributes
+
+     Attribute   Type          Allowed Values        Default                  Description
+CLKFBOUT_MULT DECIMAL         2 to 64           5              Toy multiply.
+CLKFBOUT_PHAS 3 significant   -360.000 to                      Toy phase with a
+                                                0.000          description over
+E             digit FLOAT     360.000                          three lines.
+                                                               Toy period words.
+CLKIN1_PERIOD      FLOAT(nS)       0.000 to     0.000
+                                   100.000                     More toy words.
+CLKIN2_PERIOD,
+                 FLOAT (nS)   0.000 to 52.631   0.000          Toy period.
+CLKIN3_PERIOD
+CLKOUT0_PHASE,
+CLKOUT1_PHASE,                                                   Toy phase list.
+CLKOUT2_PHASE, 3 significant     -360.000 to
+CLKOUT3_PHASE, digit FLOAT       360.000         0.000           More toy words.
+CLKOUT4_PHASE
+TAB_58           HEX          16'h0000 to 16'hffff          16'h0000    Toy threshold
+TAB_59,
+TAB_5A,
+TAB_5B,          HEX          16'h0000 to 16'hffff          16'h0000    Toy reserved
+TAB_5D,
+TAB_5E, TAB_5F
+A value of one here is toy prose and not a row.
+STARTUP_WAIT     STRING          "FALSE", "TRUE"   "FALSE"     Toy wait.
+CLKFBOUT_USE
+_FINE_PS to                                                    Toy fine shift
+                 BOOLEAN      FALSE, TRUE       FALSE
+CLKOUT2_USE                                                    enable.
+_FINE_PS
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   23
+                                                                            Send Feedback
+June 23, 2026
+                                                                                          Design Elements
+TOYIO
+Primitive: Toy I/O register
+
+    PRIMITIVE_GROUP: I/O
+    PRIMITIVE_SUBGROUP: SDR
+
+Available Attributes
+
+     Attribute      Type         Allowed Values           Default                       Description
+                              "OPPOSITE_EDGE",
+                              "SAME_EDGE",     "OPPOSITE_E Toy edge mode words that run
+CLK_EDGE     STRING
+                              "SAME_EDGE_PIPEL DGE"        on for two lines.
+                              INED"
+INIT_Q1             BINARY    0, 1                   0                     Toy initial value.
+                                                                           Toy words for the frequency
+REF                   1 significant 190-210, 290-310                       attribute that run on for
+                                                     200.0
+_FREQ                 digit FLOAT MHz                                      three lines.
+ALMOST
+             DECIMAL 1, 2                            1                     Toy almost.
+_EMPTY
+                                                                           Toy spread words.
+                                "CENTER_HIGH",
+SPREAD           STRING         "CENTER_LOW", "CENTER                      More toy words.
+                                "DOWN_HIGH", _HIGH"
+                                "DOWN_LOW"                                 Last toy words.
+
+
+
+
+UG953 v2026.1                                                                                                   24
+                                                                            Send Feedback
+June 23, 2026
+                                                                                                  Design Elements
+
+
+     Attribute        Type              Allowed Values           Default                        Description
+                                                                             Toy write mode words that fill
+                                                                             several lines of the cell.
+                                   "WRITE_FIRST",
+WMODE_A,                                                      "WRITE         More toy words.
+                      STRING       "NO_CHANGE",
+WMODE_B                                                       _FIRST"        More toy words.
+                                   "READ_FIRST"
+                                                                             More toy words.
+                                                                             Last toy words.
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   25
+                                                                            Send Feedback
+June 23, 2026

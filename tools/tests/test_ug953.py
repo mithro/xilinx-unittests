@@ -130,3 +130,69 @@ def test_attribute_cells():
     assert a["CLKOUT1_PHASE"]["allowed"] == ["-360.000 to 360.000"]
     assert a["CLKOUT1_PHASE"]["default"] == "0.000"
     assert a["CLKOUT4_CASCADE"]["default"] == "FALSE"
+
+
+def test_attribute_lists_and_mid_word_wraps():
+    a = split_sections(LAY, ["TOYPLL"])["TOYPLL"].attributes
+    assert set(a) == {
+        "CLKFBOUT_MULT",
+        "CLKFBOUT_PHASE",
+        "CLKIN1_PERIOD",
+        "CLKIN2_PERIOD",
+        "CLKIN3_PERIOD",
+        *(f"CLKOUT{i}_PHASE" for i in range(5)),
+        "TAB_58",
+        *(f"TAB_5{c}" for c in "9ABDEF"),
+        "STARTUP_WAIT",
+        # "CLKFBOUT_USE_FINE_PS to CLKOUT2_USE_FINE_PS": feedback plus CLKOUT0..2
+        "CLKFBOUT_USE_FINE_PS",
+        *(f"CLKOUT{i}_USE_FINE_PS" for i in range(3)),
+    }
+    assert a["CLKFBOUT_PHASE"] == {
+        "type": "FLOAT",
+        "allowed": ["-360.000 to 360.000"],
+        "default": "0.000",
+    }
+    assert a["CLKIN1_PERIOD"]["type"] == "FLOAT"
+    assert a["CLKIN1_PERIOD"]["allowed"] == ["0.000 to 100.000"]
+    assert a["CLKIN3_PERIOD"]["allowed"] == ["0.000 to 52.631"]
+    assert a["CLKOUT4_PHASE"]["default"] == "0.000"
+    assert a["TAB_58"]["allowed"] == ["16'h0000 to 16'hffff"]
+    assert a["TAB_5F"]["type"] == "HEX"
+    assert a["STARTUP_WAIT"]["allowed"] == ['"FALSE"', '"TRUE"']
+
+
+def test_attribute_values_wrapped_mid_word_and_shifted_columns():
+    a = split_sections(LAY, ["TOYIO"])["TOYIO"].attributes
+    assert set(a) == {
+        "CLK_EDGE",
+        "INIT_Q1",
+        "REF_FREQ",
+        "ALMOST_EMPTY",
+        "SPREAD",
+        "WMODE_A",
+        "WMODE_B",
+    }
+    assert a["CLK_EDGE"] == {
+        "type": "STRING",
+        "allowed": ['"OPPOSITE_EDGE"', '"SAME_EDGE"', '"SAME_EDGE_PIPELINED"'],
+        "default": '"OPPOSITE_EDGE"',
+    }
+    assert a["REF_FREQ"] == {"type": "FLOAT", "allowed": ["190-210", "290-310"], "default": "200.0"}
+    assert a["ALMOST_EMPTY"] == {"type": "DECIMAL", "allowed": ["1", "2"], "default": "1"}
+    assert a["SPREAD"]["allowed"] == ['"CENTER_HIGH"', '"CENTER_LOW"', '"DOWN_HIGH"', '"DOWN_LOW"']
+    assert a["SPREAD"]["default"] == '"CENTER_HIGH"'
+    assert a["WMODE_B"] == {
+        "type": "STRING",
+        "allowed": ['"WRITE_FIRST"', '"NO_CHANGE"', '"READ_FIRST"'],
+        "default": '"WRITE_FIRST"',
+    }
+
+
+def test_names_from_text_skips_macros():
+    from xut.catalog.ug953 import names_from_text
+
+    macro = "XPM_TOY\nParameterized Macro: Toy macro\n\n    MACRO_GROUP: XPM\n\n"
+    unimacro = "BRAM_TOY\nMacro: Toy unimacro\n\n    MACRO_GROUP: BRAM\n\n"
+    assert names_from_text(macro + unimacro + TXT) == ["TOYFF", "TOYLUT"]
+    assert names_from_text(LAY) == ["TOYRAM", "TOYPLL", "TOYIO"]
