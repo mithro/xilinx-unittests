@@ -9,7 +9,7 @@ tests:
     style: vector                  # vector | sv | cocotb
     exercises: [port:R, port:CE, claim:<PRIM>.C3]
     attr_sampling: {INIT: [0, 1]}
-    runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: yes}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}
     flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
     gaps: ["setup/hold timing out of scope"]

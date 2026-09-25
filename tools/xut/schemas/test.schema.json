@@ -43,8 +43,11 @@
           },
           "runners": {
             "type": "object",
-            "additionalProperties": {"enum": [true, false, "unsupported"]},
-            "$comment": "YAML 1.1 (PyYAML) parses bare yes/no as booleans, so test.yaml's yes|no|unsupported becomes true|false|\"unsupported\" once loaded"
+            "additionalProperties": {
+              "enum": ["yes", "no", "unsupported"],
+              "type": "string"
+            },
+            "$comment": "Values are always the strings yes|no|unsupported, never YAML's bare yes/no booleans. Quote them in test.yaml (runners: {xsim: \"yes\"}), not runners: {xsim: yes}, or PyYAML's YAML-1.1 resolver silently turns it into the boolean true and this schema rejects it."
           },
           "flows": {"type": "array", "items": {"type": "string"}},
           "related": {"type": "array", "items": {"type": "string"}},
