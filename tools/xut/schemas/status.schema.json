@@ -29,7 +29,11 @@
         }
       }
     },
-    "findings": {"type": "array", "items": {"type": "string"}},
+    "findings": {
+      "type": "array",
+      "description": "Open findings, referenced by finding file stem (findings/<PRIM>-<slug>.md without the directory or .md suffix), e.g. \"FDRE-reset-glitch\" for findings/FDRE-reset-glitch.md.",
+      "items": {"type": "string"}
+    },
     "coverage": {
       "type": "object",
       "additionalProperties": false,

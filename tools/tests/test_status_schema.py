@@ -101,6 +101,31 @@ def test_template_test_yaml_validates_for_fdre():
     jsonschema.validate(data, TEST_SCHEMA)
 
 
+def test_template_runner_values_are_quoted_strings_not_yaml_booleans():
+    """`runners: {xsim: "yes"}`, never `runners: {xsim: yes}`: PyYAML's YAML-1.1
+    resolver parses a bare `yes`/`no` as a boolean, and the schema requires a string."""
+    text = TEMPLATE.read_text().replace("<PRIM>", "FDRE")
+    data = yaml.safe_load(text)
+    for t in data["tests"]:
+        for runner, value in t["runners"].items():
+            assert isinstance(value, str), (
+                f"runners.{runner} loaded as {value!r} ({type(value).__name__}); "
+                f'quote it in test.yaml (e.g. {runner}: "yes") so it stays a string'
+            )
+
+
+def test_unquoted_yaml_boolean_runner_value_fails_validation():
+    """A bare `yes`/`no` in test.yaml is loaded by PyYAML as the boolean True/False, not
+    the string "yes"/"no" the schema requires — this must fail validation, loudly."""
+    text = TEMPLATE.read_text().replace("<PRIM>", "FDRE").replace('"yes"', "yes")
+    data = yaml.safe_load(text)
+    assert data["tests"][0]["runners"]["python"] is True  # sanity: PyYAML coerced it
+    with pytest.raises(
+        jsonschema.ValidationError, match=r"True is not one of \['yes', 'no', 'unsupported'\]"
+    ):
+        jsonschema.validate(data, TEST_SCHEMA)
+
+
 def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
     root = repo_root()
     units = load_units(root)
