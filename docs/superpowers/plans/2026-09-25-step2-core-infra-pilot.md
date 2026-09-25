@@ -96,7 +96,7 @@ Expected: three help/doctor outputs and `step-1 interfaces OK (...)`. If a name 
 
 - **Merge order** is A → B → {C, D} → E.
 - **Stacked PRs.** A child PR's base is its parent branch while the parent's PR is open; `gh pr create --base <parent-branch>`. After the parent merges (rebase-merge), the **orchestrator** rebases the child onto `main`, re-runs its tests, force-pushes it with `git push --force-with-lease`, and retargets the PR: `gh pr edit <N> --base main`. That force-push is sanctioned only for the orchestrator, and only on its own feature branches; Task 1 amends AGENTS.md to say so.
-- **Per-task review.** On the unit branch, each task's commits are still reviewed (reviewer (a), then reviewer (b)) before the next task starts; the single PR E is the merge vehicle.
+- **Two review levels.** *Per-task reviews* happen on local commits, through the subagent-driven-development workflow: after each task, a reviewer checks that task's commits and writes a report file (not a PR comment), and must-fix items are addressed before the next task. The *PR-level gate* of spec §13.4 (two fresh reviewers with the `docs/review/` prompts, posting `gh pr review`) happens once, when the branch's PR opens. On the unit branch the single PR E is that gate.
 - **Two-agent limit** (spec §13.5). With one implementer running, reviewers (a) and (b) run **sequentially**, never together.
 - **Expected conflict.** Tasks 16 (C) and 18 (D) both edit `status.py`, `lint.py`, `test_lint.py` and `cli.py`. Whichever merges second gets a rebase conflict; the orchestrator resolves it during the rebase onto `main` and re-runs the tests.
 - The pilot touches **only** `flops`-owned paths (spec §13). Task 18 adds `tests/<family>/<group>/_shared/<unit>/**` to a unit's owned paths, so the four flops can share test code.
@@ -3397,7 +3397,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
 ### Task 8: Runner framework, test discovery, python runner and `xut run`
 
 **Files:**
-- Create: `tools/xut/testspec.py`, `tools/xut/runners/__init__.py`, `tools/xut/runners/base.py`, `tools/xut/runners/python.py`, `tools/xut/run.py`, `tools/xut/schemas/result.schema.json`, `tools/tests/test_testspec.py`, `tools/tests/test_runner_base.py`, `tools/tests/fixtures/tests/7series/register/TOYFF/{test.yaml,README.md,vectors/gen.py}`
+- Create: `tools/xut/testspec.py`, `tools/xut/runners/__init__.py`, `tools/xut/runners/base.py`, `tools/xut/runners/python.py`, `tools/xut/run.py`, `tools/xut/schemas/result.schema.json`, `tools/tests/test_testspec.py`, `tools/tests/test_runner_base.py`, `tools/tests/test_run_cli.py`, `tools/tests/fixtures/tests/7series/register/TOYFF/{test.yaml,README.md,vectors/gen.py}` (`gen.py` also defines `l0_reject`, used in Task 9)
 - Modify: `tools/xut/schemas/test.schema.json`, `tools/xut/cli.py`
 
 **Interfaces:**
@@ -3422,7 +3422,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
   - `load_generated(ctx, case) -> list[tuple[str, Path, Path]]`: the `(cfg, cfgdir_of_python, expected_trace)` list for vector tests, read from the python run's directory
   - `xut.runners.RUNNERS: dict[str, type[Runner]]`
   - `xut.run.run_tests(cases, runners, ctx) -> list[RunResult]`
-  - CLI `xut run [SELECT...] [--runner R]... [--flow rtl] [--model-source auto] [--style S] [--level L] [--seed N] [--jobs N] [--timeout S]`
+  - CLI `xut run [SELECT...] [--runner R]... [--flow rtl] [--model-source auto] [--style S]... [--level L]... [--seed N] [--jobs N] [--timeout S]`: `--runner`, `--style` and `--level` are all `multiple=True` (a test matches if its level is any given level and its style any given style)
 
 **`test.yaml` additions** (the schema in `tools/xut/schemas/test.schema.json` gains these; spec §11 keys stay as they are):
 
@@ -3780,7 +3780,9 @@ class Runner(ABC):
 - Write `build/<flow>/summary.json`.
 - Return the results.
 
-The CLI prints a table (test id × runner → status) and exits 1 if any status is `fail` or `error`.
+The CLI prints a table (test id × runner → status) and exits 1 if any status is `fail` or `error`. If the selection matches no test, it prints `no tests selected (<selectors and filters>)` and exits 0: CI steps for units that have not merged yet are then harmless, and the message makes the empty selection visible.
+
+CLI tests (`tools/tests/test_run_cli.py`): `--level L0 --level L1` selects both levels of the TOYFF fixture and not L2; `--style vector --style sv` selects both; a selector that matches nothing prints `no tests selected` and exits 0.
 
 `--runner` defaults to every runner in `RUNNERS` except `iverilog-vz`, which is added automatically whenever `verilator` is selected.
 
@@ -3881,7 +3883,8 @@ endtask
 - corrupting one line of `cfg-init1/expected.xtr` flips the result to `fail`, with `mismatches: 1`;
 - the sv fixture passes, and its `trace.xtr` holds both checkpoints;
 - an sv fixture that calls `` `XUT_CHECK `` with a wrong expectation gives `fail`;
-- a syntax error in the sv fixture gives `error` with reason `compile failed`.
+- a syntax error in the sv fixture gives `error` with reason `compile failed`;
+- **reject path, end to end** (review (b) round 2, N1): a fixture test `7series.TOYFF.L0.reject` (`vectors/gen.py:l0_reject`, one config with `expect=reject` and `INIT=1'bx`, `runners: {python: "yes", iverilog: "yes", ...}`) runs python, then iverilog. The fixture's `TOYFF.v` model has `initial if (INIT !== 1'b0 && INIT !== 1'b1) begin $display("Attribute Syntax Error"); $finish; end`. Expected: python `pass` (its `cfg-init_x/` holds `dut/`, `stim.xvec`, a header-only `expected.xtr` and `configs.json` lists `init_x`); iverilog `pass` ("rejected"). With the rejection line removed from the fixture model, iverilog gives `fail` "illegal attribute was accepted".
 
 So that the TOYFF vector test needs no UNISIM model, add a `ModelSource` fixture whose `unisims/` directory holds a `TOYFF.v` written in the test: a plain DFF with a `glbl.GSR` preset. Its `glbl.v` is `toy_dut.v`'s glbl module.
 
@@ -5681,15 +5684,16 @@ def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
 ### Task 18: `xut status record`, bins-accounted lint, shared unit test paths, pytest over `tests/`
 
 **Files:**
-- Modify: `tools/xut/status.py`, `tools/xut/cli.py`, `tools/xut/workunits.py`, `tools/xut/testspec.py`, `tools/xut/lint.py`, `pyproject.toml`, `AGENTS.md`, `docs/templates/test.yaml`, `.github/workflows/ci.yml`
+- Modify: `tools/xut/status.py`, `tools/xut/schemas/status.schema.json`, `tools/xut/cli.py`, `tools/xut/workunits.py`, `tools/xut/testspec.py`, `tools/xut/lint.py`, `pyproject.toml`, `AGENTS.md`, `docs/templates/test.yaml`, `.github/workflows/ci.yml`
 - Create: `tools/tests/test_status_record.py`
 - Modify tests: `tools/tests/test_workunits.py`, `tools/tests/test_lint.py`
 
 **Interfaces:**
 - Consumes: `load_status`, `coverage_bins`, `RESULT_VALUES` (step 1); `discover` (Task 8); `result.json` (Task 8); `load_entry`
 - Produces:
-  - `xut.status.record(root, prim, family="7series") -> dict`, which writes and returns the new status
-  - CLI `xut status record PRIM... | --unit NAME`
+  - `xut.status.record(root, prim, family="7series", model_source="unisim-2025.2") -> dict`, which writes and returns the new status
+  - CLI `xut status record PRIM... | --unit NAME [--model-source NAME]`, default `unisim-2025.2`
+  - **Model source in status** (review (b) round 2, N2). The step-1 key pattern `<level>/<runner>/<flow>` is kept. The reference source (`unisim-2025.2`) fills `results` as before. Any other source fills `results_by_model_source.<source>` with the same key shape, and `measured.model_sources` lists every source recorded. Recording one source never touches another's results, so both coexist. Task 18 amends `tools/xut/schemas/status.schema.json` (new optional `results_by_model_source` object, whose values use the `results` schema, and `measured.model_sources`), and `render_progress` shows the reference source's marks with a `+gh` suffix when the submodule source disagrees in pass/fail for the same cell.
   - `owned_paths(unit)` also returns `tests/<family>/<group>/_shared/<unit>/**`
   - `TestCase.shared_dirs` = `[root/tests/<family>/<group>/_shared/<work_unit>]` when that directory exists
   - `xut.lint.check_bins_accounted(root) -> list[LintIssue]`
@@ -5736,6 +5740,7 @@ In AGENTS.md, add a line under "Only touch owned paths": shared test code for a 
   - `record` on a tmp repo (`git init`, a committed fixture test dir, fabricated `build/rtl/*/<model-source>/…/result.json` files) produces the expected `results` keys and values, `tree_hash` equals `git rev-parse`, and `covered` follows the reach intersection.
   - A dirty test dir is refused, and so is a dirty `_shared/<unit>` file or `_common/<unit>.py`.
   - Committing a change to a `_shared/<unit>` file changes the primitive's `tree_hash`.
+  - `record(..., model_source="unisim-gh-2020.1")` writes only `results_by_model_source["unisim-gh-2020.1"]` and leaves `results` untouched; recording `unisim-2025.2` afterwards leaves the gh results untouched; both files validate against the amended schema, and a bare `results_by_model_source` entry with a bad key fails validation.
   - `owned_paths(flops)` contains `tests/7series/register/_shared/flops/**`.
   - `check_bins_accounted` flags a missing bin and accepts one listed in `gaps`.
   - `check_gaps_present` flags a test with `gaps: []` and one with no `gaps` key.
@@ -6559,7 +6564,6 @@ X_VL = ("unsupported", "2-state simulator: x stimulus is randomised per X seed (
 CO_XS = ("unsupported", "cocotb has no xsim backend (spec §4.3)")
 CO_HW = ("unsupported", "cocotb runs in simulation; failing seeds are frozen into vector tests")
 CO_PY = ("no", "the cocotb test compares against the golden model itself")
-PY_REJ = ("no", "expect=reject: there is no behaviour to model")
 VL_REJ = ("unsupported", "a 2-state simulator cannot represent the 1'bx attribute value")
 HW_REJ = ("unsupported", "rejection of an illegal attribute is a simulation-model check")
 
@@ -6634,7 +6638,9 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
     add("L0", "illegal_init", "vector", "vectors/gen.py:l0_illegal_init", [],
         f"INIT=1'bx is outside UG953's 1'b0/1'b1 (p{ap}); the simulation must reject it "
         "(expect=reject), which exercises the runtime-rejection path of spec §4.1.",
-        runners=_runners(python=PY_REJ, verilator=VL_REJ, hw=HW_REJ),
+        # python stays "yes": it prepares dut/, stim.xvec, an empty expected.xtr and
+        # configs.json for every vector test, reject tests included (Task 8 "Reject tests").
+        runners=_runners(verilator=VL_REJ, hw=HW_REJ),
         gaps=["only INIT=1'bx is tried; over-width literals are truncated at elaboration "
               "and IS_*_INVERTED illegal values are not tried",
               "whether UNISIM rejects it is observed, not documented (see Task 24)"],
@@ -7299,7 +7305,7 @@ uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 
 Expected: lint has no errors. Its warnings are only the `related` targets for FDSE, FDCE and FDPE.
 
-Write `log/<ts>-unit-7series-flops-fdre-pilot.md`: the result matrix (paste `xut crosscheck`'s matrix), findings, run durations, and next steps (FDSE, FDCE, FDPE). Commit it with `flops: log FDRE pilot`. Do **not** open a PR yet: the unit has one PR (opened in Task 27). Run the per-task review on the local commits (reviewer (a), then reviewer (b), sequentially). Reviewer (b) checks the clean-room rule and every claim against UG953 pages 375–376. Address must-fix items in new commits before Task 25.
+Write `log/<ts>-unit-7series-flops-fdre-pilot.md`: the result matrix (paste `xut crosscheck`'s matrix), findings, run durations, and next steps (FDSE, FDCE, FDPE). Commit it with `flops: log FDRE pilot`. Do **not** open a PR yet: the unit has one PR (opened in Task 27). Run the per-task review on the local commits through the subagent-driven-development workflow (reviewer (a), then reviewer (b), sequentially; each writes a report file). Reviewer (b) checks the clean-room rule and every claim against UG953 pages 375–376. Address must-fix items in new commits before Task 25.
 
 ---
 
@@ -7635,6 +7641,7 @@ The second run is the open-source model source (the submodule). Its results land
 
 ```bash
 uv run xut status record --unit flops > .cache/status-flops.log 2>&1; cat .cache/status-flops.log
+uv run xut status record --unit flops --model-source unisim-gh-2020.1 >> .cache/status-flops.log 2>&1; cat .cache/status-flops.log
 uv run pytest -v > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 git status --porcelain > .cache/git-status.log 2>&1; cat .cache/git-status.log
@@ -7642,7 +7649,7 @@ git status --porcelain > .cache/git-status.log 2>&1; cat .cache/git-status.log
 
 Expected:
 - no lint errors or warnings (every `related` target now exists);
-- `git status` shows only the four status files as modified;
+- `git status` shows only the four status files as modified; each has `results` (unisim-2025.2) and `results_by_model_source.unisim-gh-2020.1`, and `measured.model_sources` lists both;
 - `status/PROGRESS.md` is **not** modified (it is generated on `main` only).
 
 - [ ] **Step 3: Commit, log, PR E**
