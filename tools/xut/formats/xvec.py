@@ -134,8 +134,14 @@ class Vec:
         raise KeyError(name)
 
 
-def decode_value(text: str, width: int, line: int | None = None) -> str:
-    """Return ``text`` as exactly ``width`` MSB-first characters of ``01xz``."""
+def decode_value(text: str, width: int, line: int | None = None, field: str | None = None) -> str:
+    """Return ``text`` as exactly ``width`` MSB-first characters of ``01xz``.
+
+    Leading zeros are fine (``0x00f`` fits in 4 bits), but any non-zero,
+    ``x`` or ``z`` bit at or above ``width`` is a fit error, not a silent
+    truncation. ``field`` (e.g. ``"in[3:0]"``), when given, names the
+    over-wide field in the error message.
+    """
     t = text.lower()
     if t.startswith("0b"):
         bits = t[2:]
@@ -150,7 +156,8 @@ def decode_value(text: str, width: int, line: int | None = None) -> str:
     else:
         raise XvecError(f"bad value {text!r}", line)
     if len(bits) > width and set(bits[: len(bits) - width]) != {"0"}:
-        raise XvecError(f"value {text!r} does not fit in {width} bit(s)", line)
+        where = f"{field}: " if field else ""
+        raise XvecError(f"{where}value {text!r} does not fit in {width} bit(s)", line)
     return bits[-width:].rjust(width, "0")
 
 
@@ -184,7 +191,9 @@ def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: 
             raise XvecError(f"in[{msb}:{lsb}]: msb < lsb", n)
         if msb >= vec.nin:
             raise XvecError(f"in[{msb}] out of range (nin={vec.nin})", n)
-        return Event(t, "set", "in", lsb, msb, decode_value(m.group(3), msb - lsb + 1, n), sim)
+        rng = str(msb) if lsb == msb else f"{msb}:{lsb}"
+        value = decode_value(m.group(3), msb - lsb + 1, n, field=f"in[{rng}]")
+        return Event(t, "set", "in", lsb, msb, value, sim)
     if op == "edge":
         m = _EDGE.match(arg)
         if not m or m.group(1) not in declared:
