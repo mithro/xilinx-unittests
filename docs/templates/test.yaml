@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+primitive: <PRIM>
+family: 7series
+work_unit: flops
+doc_refs: [{guide: UG953, version: "2026.1", section: <PRIM>, page: 562}]
+tests:
+  - id: 7series.<PRIM>.L1.reset_over_ce
+    level: L1
+    style: vector                  # vector | sv | cocotb
+    exercises: [port:R, port:CE, claim:<PRIM>.C3]
+    attr_sampling: {INIT: [0, 1]}
+    runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: yes}
+    flows: [rtl, vivado, yosys, openxc7, vpr]
+    related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
+    gaps: ["setup/hold timing out of scope"]
