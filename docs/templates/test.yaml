@@ -24,7 +24,10 @@ tests:
     # Optional:
     # timeout_s: 1200             # per runner; default --timeout, else 600
     # expected_divergence:        # still reported, as known-divergence (spec §8)
-    #   - {finding: findings/<PRIM>-<slug>.md, cls: sim-divergence, runners: [verilator]}
+    #   - {finding: findings/<PRIM>-<slug>.md, cls: sim-divergence, runners: [verilator, xsim]}
+    #     # <slug> = <cls>-<level>-<name> (the finding id xut crosscheck prints); runners
+    #     # must include every runner of the finding; optional scope:
+    #     # model_sources: [unisim-gh-2020.1], flows: [rtl]
   - id: 7series.<PRIM>.L2.gsr_checkpoints
     level: L2
     style: sv

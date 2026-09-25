@@ -18,7 +18,7 @@ import yaml
 from xut.errors import GitError
 from xut.schemas import validate as validate_schema
 from xut.status import load_status
-from xut.testspec import DECLARED_RUNNERS
+from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, finding_id
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
 
 #: Tracked-file extensions checked for the SPDX header (global constraints; controller
@@ -223,7 +223,10 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     `unsupported_reasons` or `config_exclusions` is an error (`runner-unknown`); an
     sv/cocotb exclusion glob matching none of the test's configs is a warning
     (`config-exclusions`; vector configs are only known at run time, where the runner
-    logs the same warning)."""
+    logs the same warning). Every `expected_divergence` entry names its finding by the
+    exact id `xut crosscheck` gives it (`findings/<PRIM>-<cls>-<level>-<name>.md`), lists
+    only known runners, and scopes `flows` only to flows the test declares (rule
+    `expected-divergence`, error; ruling S17)."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -305,6 +308,7 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
                             "error",
                         )
                     )
+            issues += _expected_divergence_issues(rel, data["primitive"], t)
             if readme_text is not None and tid not in readme_text:
                 issues.append(
                     LintIssue(
@@ -325,6 +329,26 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
                         )
                     )
     return issues
+
+
+def _expected_divergence_issues(rel: str, prim: str, t: dict) -> list[LintIssue]:
+    tid = t["id"]
+    known = (*DECLARED_RUNNERS, *DECLARATION_OF)
+    out = []
+    for e in t.get("expected_divergence", []):
+        want = f"findings/{finding_id(prim, e['cls'], tid)}.md"
+        problems = []
+        if e["finding"] != want:
+            problems.append(f"finding {e['finding']!r} is not the {e['cls']} finding id {want!r}")
+        for r in sorted(set(e["runners"]) - set(known)):
+            problems.append(f"unknown runner {r!r}")
+        for f in sorted(set(e.get("flows", [])) - set(t["flows"]) - {"rtl"}):
+            problems.append(f"flow {f!r} is not one of the test's flows")
+        out += [
+            LintIssue(rel, "expected-divergence", f"{tid}: expected_divergence: {p}", "error")
+            for p in problems
+        ]
+    return out
 
 
 # --- status-schema -------------------------------------------------------------------

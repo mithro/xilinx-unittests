@@ -71,7 +71,14 @@ def test_test_schema_accepts_task8_keys():
                     "finding": "findings/FDRE-gsr-order.md",
                     "cls": "sim-divergence",
                     "runners": ["verilator"],
-                }
+                },
+                {
+                    "finding": "findings/FDRE-doc-gap-L1-x.md",
+                    "cls": "doc-gap",
+                    "runners": ["iverilog"],
+                    "model_sources": ["unisim-gh-2020.1"],
+                    "flows": ["rtl"],
+                },
             ],
             timeout_s=1200,
             sv_deviations=["uses $urandom"],
@@ -103,6 +110,21 @@ def test_test_schema_bare_yes_runner_still_fails():
         {
             "expected_divergence": [
                 {"finding": "findings/FDRE-a.md", "cls": "known-divergence", "runners": []}
+            ]
+        },
+        {
+            "expected_divergence": [
+                {
+                    "finding": "findings/FDRE-a.md",
+                    "cls": "doc-gap",
+                    "runners": ["x"],
+                    "model_sources": [],
+                }
+            ]
+        },
+        {
+            "expected_divergence": [
+                {"finding": "findings/FDRE-a.md", "cls": "doc-gap", "runners": ["x"], "flows": []}
             ]
         },
         {"timeout_s": 0},
