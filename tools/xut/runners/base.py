@@ -232,6 +232,11 @@ def error_reason(e: BaseException) -> str:
 
 
 class Runner(ABC):
+    """One simulator/oracle. Contract: ``xut.run`` constructs a FRESH runner for every
+    (test, runner) pair, and pairs run concurrently in threads; so a runner may keep
+    per-test state on ``self`` (``PythonRunner`` does) but never share it across
+    instances (no mutable class state)."""
+
     name: ClassVar[str]
     x_observable: ClassVar[bool] = True
     styles: ClassVar[frozenset[str]] = frozenset({"vector", "sv", "cocotb"})
@@ -361,14 +366,9 @@ class Runner(ABC):
         if res.configs:
             res.status = worst([c.status for c in res.configs])
             res.reason = summarize(res.configs, res.status)
-        header = {
-            "runner": self.name,
-            "flow": ctx.flow,
-            "model": ctx.model_source.name,
-            "seed": str(res.seeds["stimulus"]),
-            "prim": case.prim,
-            "test": case.id,
-        }
+        header = trace_header(self.name, case, "", ctx)
+        del header["cfg"]  # the test-level trace spans every configuration
+        header.update(seed=str(res.seeds["stimulus"]), test=case.id)
         if case.style == "vector" and self.name == "python":
             header.update(model="golden", kind="expected")
         xtr.dump(xtr.concat(parts, header), d / "trace.xtr")
