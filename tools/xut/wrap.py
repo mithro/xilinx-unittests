@@ -391,11 +391,17 @@ def spec_from_hdl(
     attrs: dict,
     *,
     raw_clock_out: bool = False,
-    family: str = "7series",
+    family: str | None = None,
 ) -> DutSpec:
     """The wrapper spec for a parsed HDL module (no catalog entry): ports get their
-    default §5.1 class, attributes are rendered by the parameter's kind."""
+    default §5.1 class, attributes are rendered by the parameter's kind. ``family``
+    defaults to the one in ``docs/work-units.yaml``."""
     _check_cfg(cfg)
+    if family is None:
+        from xut.paths import repo_root
+        from xut.workunits import load_family
+
+        family = load_family(repo_root())
     declared = [{"name": p.name, "kind": p.kind, "width": p.width} for p in mod.params]
     rendered = _render_attrs(mod.name, declared, attrs, allow_illegal=True)
     ports = tuple(
