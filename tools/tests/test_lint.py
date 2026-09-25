@@ -763,3 +763,24 @@ def test_lint_cli_unresolvable_base_is_a_clean_error_not_a_traceback(tmp_path, m
     assert "Traceback" not in result.output
     assert "Error:" in result.output
     assert "not found" in result.output
+
+
+def test_runner_declared_unsupported_without_reason_is_error(tmp_path):
+    """Every runner declared "no"/"unsupported" names its reason (rule runner-reasons)."""
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace('{python: "yes"}', '{python: "yes", hw: "unsupported"}')
+    )
+    issues = check_tests_documented(tmp_path)
+    assert [(i.rule, i.severity) for i in issues] == [("runner-reasons", "error")]
+    assert "hw" in issues[0].message and "7series.FDRE.L1.reset" in issues[0].message
+
+
+def test_runner_declared_no_with_reason_is_clean(tmp_path):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace(
+            '{python: "yes"}',
+            '{python: "no", hw: "unsupported"}\n'
+            '    unsupported_reasons: {python: "self-checking sv", hw: "free clock"}',
+        )
+    )
+    assert check_tests_documented(tmp_path) == []
