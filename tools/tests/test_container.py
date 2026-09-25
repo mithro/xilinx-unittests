@@ -348,3 +348,20 @@ def test_cli_container_versions(monkeypatch):
     assert result.output == "iverilog: Icarus Verilog version 12.0 (stable) ()\ncocotb: 2.0.1\n"
     assert isinstance(seen[0][0], DockerExecutor)
     assert seen[0][1] == repo_root() / "build"
+
+
+def test_ci_builds_the_current_sim_image():
+    """CI builds the image with build-push-action (layer cache); its tag must track
+    SIM_IMAGE, or the `container` tests would silently skip in CI."""
+    import yaml
+
+    steps = yaml.safe_load((repo_root() / ".github/workflows/ci.yml").read_text())["jobs"]["sim"][
+        "steps"
+    ]
+    builds = [s for s in steps if s.get("uses", "").startswith("docker/build-push-action@")]
+    assert len(builds) == 1
+    w = builds[0]["with"]
+    assert w["tags"] == SIM_IMAGE
+    assert w["context"] == "containers/sim"
+    assert w["load"] is True
+    assert w["cache-from"] == "type=gha" and w["cache-to"] == "type=gha,mode=max"

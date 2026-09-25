@@ -88,7 +88,7 @@ def test_all_ok_enables_every_runner():
     assert "vivado" in runners
     assert "iverilog" in runners
     assert "verilator" in runners
-    assert "cocotb" in runners
+    assert "cocotb" not in runners  # a test style, not a runner (Ruling 23)
     assert "CI UNISIM" in runners
     assert "catalog" in runners
     assert "hw" in runners
@@ -133,10 +133,11 @@ def test_docker_command_failure_reported_not_raised():
 def test_docker_enables_nothing_itself():
     """The docker daemon alone runs nothing: the `sim-container` check (the built
     xut-sim image) carries the simulator runners. yosys/openxc7/vpr containers don't
-    exist yet (a later step adds them)."""
+    exist yet (a later step adds them). cocotb is a test style run inside those
+    runners, not a runner (controller Ruling 23)."""
     checks = _by_name(run_checks(FakeProbe()))
     assert checks["docker"].enables == ()
-    assert checks["sim-container"].enables == ("iverilog", "verilator", "cocotb")
+    assert checks["sim-container"].enables == ("iverilog", "verilator")
 
 
 def test_docker_ok_but_no_image_disables_simulators():
@@ -148,7 +149,6 @@ def test_docker_ok_but_no_image_disables_simulators():
     runners = available_runners(checks)
     assert "iverilog" not in runners
     assert "verilator" not in runners
-    assert "cocotb" not in runners
 
 
 def test_sim_container_detail_is_digest():
