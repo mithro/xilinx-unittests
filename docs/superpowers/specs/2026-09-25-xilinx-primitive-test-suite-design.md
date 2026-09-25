@@ -287,22 +287,31 @@ Either way, hardware remains the final arbiter.
 ### 6.2 Verilator and UNISIM (`xut verilatorize`)
 
 Verilator 5 rejects the Verilog-1995 procedural `assign`/`deassign`. This is a
-hard `UNSUPPORTED` error. The construct appears in 40 of 249 UNISIM models, and
-it is triggered in two ways:
+hard `UNSUPPORTED` error. The construct appears in 40 of 249 UNISIM models.
 
-- **GSR-triggered (≈21 models):** FDRE/FDCE/FDSE/FDPE, RAMB18E1/36E1,
-  FIFO18E1/36E1, MMCME2_ADV and others.
-- **Local-reset-triggered (≈19 models):** SRL16E, SRLC32E, CFGLUT5,
-  IDDR/ODDR, ISERDESE2/OSERDESE2, IDELAYE2/ODELAYE2, DSP48E1, PLLE2_ADV,
-  BUFR and others.
+**Triggers.** A forced reg's *triggers* are the signals in the sensitivity
+lists of the `always` blocks that contain its `assign`/`deassign`. They are
+**derived from the AST by the tool, never hand-labelled**. A trigger is either
+`glbl.GSR` (through a local alias such as `glblGSR` or `gsr_in`) or a primitive
+input port (through local aliases such as `clr_in` or `rst_int`, followed back
+to the port). Many constructs have several triggers, for example
+`@(gsr_in or clr_in)` in BUFR and `@(gsr_in or r_in or s_in)` in IDDR/ODDR.
+The derived trigger list for each model is recorded in
+`status/PORTABILITY.md`.
 
 `xut verilatorize` rewrites the construct with a **generic shadow-register
 transform**. It works on the pyslang AST, never on regex text, so it cannot
 false-match identifiers that merely contain `assign` or `deassign`. For each
 procedurally-forced reg `X`:
 
-1. Every ordinary procedural write to `X`, in **any** `always` block, is
-   redirected to a new reg `X__base`.
+1. Every ordinary procedural write to `X` is redirected to a new reg
+   `X__base`. This covers every `always`/`initial` block and task body, whole
+   and bit/part-select lvalues, and self-referencing writes (for example the
+   SRL shift chain, which reads `data` while writing it).
+   - Reads of `X` are left alone, so they see the overridden value exactly as
+     before.
+   - Blocking vs non-blocking form and intra-assignment delays are preserved
+     exactly, so scheduling order is unchanged.
 2. Each `assign X = e_k;` is replaced by `X__ovr_sel = k;`, and each
    `deassign X;` by `X__base = X; X__ovr_sel = 0;`. The second form preserves
    the Verilog rule that a reg keeps its forced value after `deassign`.
@@ -322,16 +331,23 @@ Transformed copies go to `build/verilatorized/<model-source>/` and are
 - multiple writers;
 - `deassign` value retention;
 - non-constant override expressions;
+- multiple triggers;
+- bit/part-select writes;
+- task-body writes;
+- self-referencing writes;
+- non-blocking writes with delays;
 - interaction with asynchronous CLR/PRE.
 
 **Equivalence validation** is a cross-check in its own right:
 
-- The portability table lists every transformed model with its trigger
-  (`gsr` or `<port>`).
-- For each one, a **mandatory equivalence stimulus** runs on Icarus against
-  both the original and the transformed model. Each trigger (GSR through the
-  glbl channel, or the local reset port) is pulsed **mid-simulation**, several
-  times. The pulses are timed both with and without coincident clock edges and
+- The portability table lists every transformed model with its derived
+  triggers.
+- For each one, a **generated, mandatory equivalence stimulus** runs on Icarus
+  against both the original and the transformed model.
+- Every trigger (GSR through the glbl channel; ports directly) is pulsed
+  **mid-simulation**, several times. Each is pulsed **independently**, and
+  every pair of triggers is pulsed **in overlapping combination**.
+- The pulses are timed both with and without coincident clock edges and
   asynchronous-control activity.
 - Additionally, every ordinary test on the `verilator` runner also runs on
   Icarus against the transformed model.
