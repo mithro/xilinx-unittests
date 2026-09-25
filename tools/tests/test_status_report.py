@@ -242,8 +242,10 @@ def test_generate_cli_wraps_current_branch_failure_cleanly(monkeypatch):
     """A `current_branch()` failure must surface as a clean, non-traceback CLI
     error, consistent with every other user-facing failure in this command."""
 
+    from xut.errors import GitError
+
     def _boom():
-        raise RuntimeError("current_branch(): git is not installed")
+        raise GitError("current_branch(): git is not installed")
 
     monkeypatch.setattr("xut.status.current_branch", _boom)
     result = CliRunner().invoke(main, ["status", "generate"])

@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from xut import schemas
+from xut.errors import OverrideError, OverrideTypeError
 
 
 def is_enumerated(values: list[str]) -> bool:
@@ -52,7 +53,7 @@ def _merge_named(items: list[dict], patch: dict, what: str, prim: str) -> list[d
     by_name = {it["name"]: it for it in items}
     for name, upd in patch.items():
         if name not in by_name:
-            raise KeyError(f"{prim}.overrides.yaml: unknown {what} {name!r}")
+            raise OverrideError(f"{prim}.overrides.yaml: unknown {what} {name!r}")
         by_name[name].update(upd)
     return items
 
@@ -64,7 +65,9 @@ def merge(generated: dict, overrides: dict, prim: str = "?") -> dict:
     for key, val in (overrides or {}).items():
         if key in ("ports", "attributes"):
             if not isinstance(val, dict):
-                raise TypeError(f"{prim}.overrides.yaml: {key} must be a mapping keyed by name")
+                raise OverrideTypeError(
+                    f"{prim}.overrides.yaml: {key} must be a mapping keyed by name"
+                )
             out[key] = _merge_named(out.get(key, []), val, key[:-1], prim)
         else:
             out[key] = copy.deepcopy(val)

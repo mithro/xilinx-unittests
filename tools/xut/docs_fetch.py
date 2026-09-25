@@ -8,6 +8,8 @@ from pathlib import Path
 
 import requests
 
+from xut.errors import FetchError
+
 API = "https://docs.amd.com/api/khub/maps"
 
 
@@ -38,11 +40,11 @@ def fetch(spec: DocSpec, dest_dir: Path, session=None, local: Path | None = None
     r.raise_for_status()
     pdfs = [a for a in r.json() if a.get("mimeType") == "application/pdf"]
     if len(pdfs) != 1:
-        raise ValueError(f"expected exactly one PDF attachment for {spec}, got {pdfs}")
+        raise FetchError(f"expected exactly one PDF attachment for {spec}, got {pdfs}")
     r = s.get(f"{API}/{spec.map_id}/attachments/{pdfs[0]['id']}/content", timeout=300)
     r.raise_for_status()
     if not r.content.startswith(b"%PDF"):
-        raise ValueError(f"downloaded content for {spec} is not a PDF")
+        raise FetchError(f"downloaded content for {spec} is not a PDF")
     out.write_bytes(r.content)
     return out
 
