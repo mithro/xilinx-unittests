@@ -141,6 +141,10 @@ class NoExpectedTrace(XutError, LookupError):
     """A configuration the python run listed has no ``expected.xtr``."""
 
 
+class NoPythonRun(XutError, RuntimeError):
+    """A vector test has no (usable) python run to take its configurations from."""
+
+
 def python_dir(ctx: RunContext, case: TestCase) -> Path:
     return workdir(ctx, "python", case.id)
 
@@ -152,14 +156,14 @@ def load_generated(ctx: RunContext, case: TestCase) -> list[tuple[str, Path, Pat
     d = python_dir(ctx, case)
     listing = d / "configs.json"
     if not listing.is_file():
-        raise RuntimeError(f"no python run for this test (configs.json missing in {d})")
+        raise NoPythonRun(f"no python run for this test (configs.json missing in {d})")
     return [(c, d / f"cfg-{c}", d / f"cfg-{c}" / "expected.xtr") for c in _read_cfgs(listing)]
 
 
 def _read_cfgs(listing: Path) -> list[str]:
     cfgs = json.loads(listing.read_text())
     if not (isinstance(cfgs, list) and all(isinstance(c, str) for c in cfgs)):
-        raise RuntimeError(f"{listing} is not a list of configuration names")
+        raise NoPythonRun(f"{listing} is not a list of configuration names")
     return cfgs
 
 
