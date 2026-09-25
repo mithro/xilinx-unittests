@@ -114,11 +114,6 @@ def test_x_and_glbl_make_sim_only(fdce_map):
     ]
 
 
-def test_gsr_is_hw_renderable(fdce_map):
-    r = validate(_v("t=121000 glbl GSR=1\nt=123000 glbl GSR=0\nt=125000 sample S0\n"), fdce_map)
-    assert r.errors == [] and r.hw_renderable
-
-
 def test_x_at_initialisation_is_sim_only(fdce_map):
     r = validate(_v("t=0 set in[2]=0bx\nt=121000 sample S0\n"), fdce_map)
     assert r.errors == [] and r.hw_reasons == ["t=0: x/z stimulus"]
@@ -128,7 +123,9 @@ def test_pad_class_is_sim_only():
     m = build_map(spec_from_catalog(load_entry("7series", "FDCE", repo_root()), "c", {}))
     m.bits = [dataclasses.replace(b, cls="pad") if b.port == "D" else b for b in m.bits]
     r = validate(_v("t=121000 set in[2]=1\nt=122000 sample S0\n"), m)
-    assert r.errors == [] and any("pad harness" in x for x in r.hw_reasons)
+    assert r.errors == [] and r.hw_reasons == [
+        "pad-class or inout port(s) D need the pad harness (spec §7.3)"
+    ]
 
 
 def test_set_on_clock_class_bit_is_an_error():
@@ -227,7 +224,7 @@ def test_cli_vec_check(tmp_path, fdce_map):
     good.write_text(HDR + "t=121000 set in[2]=0bx\nt=123000 sample S0\n")
     r = CliRunner().invoke(main, ["vec", "check", str(good), "--map", str(mp)])
     assert r.exit_code == 0, r.output
-    assert r.output == "hw_renderable: no\n  reason: t=121000: x/z stimulus\n"
+    assert r.output == "hw_renderable: no\n  reason: t=121000: x/z stimulus\nx_inputs: yes\n"
 
     bad = tmp_path / "bad.xvec"
     bad.write_text(HDR + "t=121000 edge clk0 f\n")
@@ -267,9 +264,10 @@ def test_header_async_sep_below_minimum(fdce_map):
     assert any("below the minimum 1000" in e for e in validate(v, fdce_map).errors)
 
 
-# --- Ruling S8: hw_renderable is order-renderable; free clocks are the exception.
+# --- Ruling S8-prime: hw_renderable is order-renderable on stepped clocks only.
 
 FREE = HDR.replace("mode=stepped", "mode=free") + "t=120000 clock_start clk0\n"
+FREE_REASON = "free-running clocks need real-time rendering (step 3): clk0"
 
 
 def test_close_spacing_on_stepped_clocks_stays_hw_renderable(fdce_map):
@@ -277,39 +275,37 @@ def test_close_spacing_on_stepped_clocks_stays_hw_renderable(fdce_map):
     r = validate(
         _v(
             "t=120000 set in[2]=1\nt=121000 edge clk0 r\nt=122000 set in[1]=1\n"
-            "t=123000 glbl GSR=1\nt=124000 edge clk0 f\nt=125000 sample S0\n"
+            "t=123000 set in[0]=1\nt=124000 edge clk0 f\nt=125000 sample S0\n"
         ),
         fdce_map,
     )
     assert r.errors == [] and r.hw_renderable
 
 
-def test_data_change_near_free_clock_edge_is_sim_only(fdce_map):
-    r = validate(loads(FREE + "t=125500 set in[2]=1\nt=127000 sample S0\n"), fdce_map)
+@pytest.mark.parametrize(
+    "body",
+    [
+        "t=127500 set in[2]=1\nt=129000 sample S0\n",  # clear of every free edge
+        "t=125500 set in[2]=1\nt=127000 sample S0\n",  # 500 ps from a free edge
+        "t=126000 sample S0\n",  # no input change at all
+    ],
+)
+def test_any_free_clock_is_hw_no(fdce_map, body):
+    """B1 (Ruling S8-prime): the stepped harness re-times events, so it would change how
+    many free-clock edges fall between two events: any mode=free clock is hw no."""
+    r = validate(loads(FREE + body), fdce_map)
     assert r.errors == []
-    assert r.hw_reasons == [
-        "t=125500: set in[2] is 500 ps from free-running clk0 edge f at t=125000 "
-        "(< async_sep_ps=1000; spec §5.1, Ruling S8)"
-    ]
+    assert r.hw_reasons == [FREE_REASON]
 
 
-def test_data_change_clear_of_free_clock_edges_is_hw_renderable(fdce_map):
-    r = validate(loads(FREE + "t=127500 set in[2]=1\nt=129000 sample S0\n"), fdce_map)
-    assert r.errors == [] and r.hw_renderable
+def test_free_clock_declared_but_never_started_is_hw_no(fdce_map):
+    r = validate(loads(HDR.replace("mode=stepped", "mode=free") + "t=121000 sample S0\n"), fdce_map)
+    assert r.errors == [] and r.hw_reasons == [FREE_REASON]
 
 
-def test_free_clock_separation_uses_the_recorded_async_sep(fdce_map):
-    body = "t=127000 set in[2]=1\nt=128500 sample S0\n"  # 2000 ps from 125000 f
-    assert validate(loads(FREE + body), fdce_map).hw_renderable
-    v = loads(FREE.replace("seed=0", "seed=0 async_sep_ps=2500") + body)
-    r = validate(v, fdce_map)
-    assert r.errors == [] and any("< async_sep_ps=2500" in x for x in r.hw_reasons)
-
-
-def test_gsr_near_free_clock_edge_is_error_and_sim_only(fdce_map):
+def test_gsr_near_free_clock_edge_is_still_a_sim_error(fdce_map):
     r = validate(loads(FREE + "t=125500 glbl GSR=1\nt=127000 sample S0\n"), fdce_map)
     assert any("GSR change 500 ps from a clock edge" in e for e in r.errors)
-    assert any("glbl GSR is 500 ps from free-running clk0" in x for x in r.hw_reasons)
     assert not r.hw_renderable
 
 
@@ -325,6 +321,157 @@ def test_gsr_is_async_for_stepped_edge_separation(fdce_map, before):
         "t=121%s: GSR change 500 ps from a clock edge (< async_sep_ps=1000)"
         % ("000" if before else "500")
     ]
+
+
+# --- B2: every inter-event gap >= max(async_sep_ps, the primitive's min_event_gap_ps)
+
+
+def test_sub_gap_data_events_are_hw_no(fdce_map):
+    r = validate(_v("t=121000 set in[2]=1\nt=121400 set in[0]=1\nt=123000 sample S0\n"), fdce_map)
+    assert r.errors == []
+    assert r.hw_reasons == [
+        "t=121400: 400 ps after the previous event at t=121000 (< min event gap 1000 ps; "
+        "stepped rendering preserves order only, Ruling S8-prime)"
+    ]
+
+
+def test_event_gap_uses_the_recorded_async_sep(fdce_map):
+    body = "t=121000 set in[2]=1\nt=123000 set in[0]=1\nt=126000 sample S0\n"
+    assert validate(_v(body), fdce_map).hw_renderable
+    v = loads(HDR.replace("seed=0", "seed=0 async_sep_ps=2500") + body)
+    r = validate(v, fdce_map)
+    assert r.errors == [] and any("< min event gap 2500 ps" in x for x in r.hw_reasons)
+
+
+def test_event_gap_uses_the_primitive_min_event_gap(fdce_map):
+    m = dataclasses.replace(fdce_map, min_event_gap_ps=5000)
+    body = "t=121000 set in[2]=1\nt=124000 set in[0]=1\nt=130000 sample S0\n"
+    assert validate(_v(body), fdce_map).hw_renderable
+    r = validate(_v(body), m)
+    assert r.errors == []
+    assert r.hw_reasons == [
+        "t=124000: 3000 ps after the previous event at t=121000 (< min event gap 5000 ps; "
+        "stepped rendering preserves order only, Ruling S8-prime)"
+    ]
+
+
+def test_initialisation_is_not_an_event_gap(fdce_map):
+    r = validate(_v("t=0 set in[2]=1\nt=120000 set in[0]=1\nt=121000 sample S0\n"), fdce_map)
+    assert r.errors == [] and r.hw_renderable
+
+
+# --- B3: pad outputs and inout ports need the pad harness
+
+
+def _map_of(prim):
+    return build_map(spec_from_catalog(load_entry("7series", prim, repo_root()), "c", {}))
+
+
+@pytest.mark.parametrize("prim", ["OBUF", "IOBUF"])
+def test_pad_output_or_inout_makes_file_hw_no(prim):
+    m = _map_of(prim)
+    hdr = (
+        f"# xut-vec 2  prim={prim} cfg=c nin={m.nin} nout={m.nout} nclk=0 settle_ps=120000 seed=0\n"
+    )
+    r = validate(loads(hdr + "t=121000 sample S0\n"), m)
+    assert r.errors == []
+    assert len(r.hw_reasons) == 1 and "pad harness (spec §7.3)" in r.hw_reasons[0]
+
+
+# --- B4: GSR on hardware needs the GSR-immune harness
+
+
+def test_gsr_makes_file_hw_no(fdce_map):
+    r = validate(_v("t=121000 glbl GSR=1\nt=123000 glbl GSR=0\nt=125000 sample S0\n"), fdce_map)
+    assert r.errors == []
+    assert r.hw_reasons == [
+        "t=121000: glbl GSR on hardware needs the GSR-immune harness (spec §7.2; step 3)",
+        "t=123000: glbl GSR on hardware needs the GSR-immune harness (spec §7.2; step 3)",
+    ]
+
+
+# --- B5: x_inputs flags stimuli 2-state runners must skip
+
+
+@pytest.mark.parametrize(
+    "body,x",
+    [
+        ("t=121000 set in[2]=1\nt=122000 sample S0\n", False),
+        ("t=121000 set in[2]=0bx\nt=122000 sample S0\n", True),
+        ("t=0 set in[2:0]=0b0z1\nt=121000 sample S0\n", True),
+    ],
+)
+def test_x_inputs_flag(fdce_map, body, x):
+    assert validate(_v(body), fdce_map).x_inputs is x
+
+
+def test_cli_vec_check_prints_x_inputs(tmp_path, fdce_map):
+    mp = _write_map(tmp_path, fdce_map)
+    f = tmp_path / "x.xvec"
+    f.write_text(HDR + "t=121000 set in[2]=0bx\nt=123000 sample S0\n")
+    r = CliRunner().invoke(main, ["vec", "check", str(f), "--map", str(mp)])
+    assert r.exit_code == 0 and "x_inputs: yes" in r.output.splitlines()
+
+
+# --- B6: settle covers glbl's GSR and GTS/GRESTORE pulses, from named constants
+
+
+def test_settle_bound_is_max_of_roc_and_gres_end_plus_margin():
+    from xut.validate import (
+        GRES_START_PS,
+        GRES_WIDTH_PS,
+        MIN_SETTLE_PS,
+        ROC_WIDTH_PS,
+        SETTLE_MARGIN_PS,
+    )
+
+    assert max(ROC_WIDTH_PS, GRES_START_PS + GRES_WIDTH_PS) + SETTLE_MARGIN_PS == MIN_SETTLE_PS
+
+
+def test_settle_below_bound_is_an_error(fdce_map):
+    from xut.validate import MIN_SETTLE_PS
+
+    ok = loads(HDR.replace("settle_ps=120000", f"settle_ps={MIN_SETTLE_PS}"))
+    bad = loads(HDR.replace("settle_ps=120000", f"settle_ps={MIN_SETTLE_PS - 1}"))
+    assert validate(ok, fdce_map).errors == []
+    assert any("settle_ps" in e for e in validate(bad, fdce_map).errors)
+
+
+def _glbl_params(path):
+    import re
+
+    text = path.read_text()
+    assert re.search(r"`timescale\s+1\s*ps\s*/\s*1\s*ps", text), path
+    return {
+        k: int(re.search(rf"parameter\s+{k}\s*=\s*(\d+)\s*;", text).group(1))
+        for k in ("ROC_WIDTH", "GRES_START", "GRES_WIDTH")
+    }
+
+
+def _check_glbl(path):
+    from xut.validate import GRES_START_PS, GRES_WIDTH_PS, ROC_WIDTH_PS
+
+    assert _glbl_params(path) == {
+        "ROC_WIDTH": ROC_WIDTH_PS,
+        "GRES_START": GRES_START_PS,
+        "GRES_WIDTH": GRES_WIDTH_PS,
+    }
+
+
+def test_glbl_constants_match_submodule_glbl():
+    from xut.paths import submodule_src
+
+    glbl = submodule_src() / "glbl.v"
+    if not glbl.is_file():
+        pytest.skip("XilinxUnisimLibrary submodule not initialised")
+    _check_glbl(glbl)
+
+
+@pytest.mark.vivado
+def test_glbl_constants_match_vivado_glbl():
+    from xut.paths import VIVADO_SRC
+
+    _check_glbl(VIVADO_SRC / "glbl.v")
 
 
 def test_in_memory_parser_illegal_cotiming_is_an_error(fdce_map):

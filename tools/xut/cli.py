@@ -354,3 +354,5 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
     click.echo(f"hw_renderable: {'yes' if r.hw_renderable else 'no'}")
     for h in r.hw_reasons:
         click.echo(f"  reason: {h}")
+    # 2-state runners (Verilator, hw) must skip a stimulus that drives x/z.
+    click.echo(f"x_inputs: {'yes' if r.x_inputs else 'no'}")

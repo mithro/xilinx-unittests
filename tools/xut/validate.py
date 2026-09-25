@@ -3,30 +3,65 @@
 
 ``xut.formats.xvec`` checks syntax and co-timing (Ruling S6: co-timed ``set``s on
 disjoint bits are one atomic input change; any other co-timed group must be all
-``simultaneous``). This module adds the §5.1 class rules on top, using the DUT map
-for each ``in_vec`` bit's class, and decides whether the file can be rendered for
-hardware. ``simultaneous`` makes a file legal for simulation but never
-hardware-renderable.
+``simultaneous``, and marking is all-or-nothing). This module adds the §5.1 class
+rules on top, using the DUT map for each ``in_vec`` bit's class, and decides whether
+the file can be rendered for hardware. ``simultaneous`` makes a file legal for
+simulation but never hardware-renderable.
 
 ``clock_start``/``clock_stop`` are not changes in their own right: the changes they
 cause are the free-clock edges from ``free_clock_edges``, which are merged into the
 timeline (so a ``clock_start`` does not collide with its own first rising edge).
 
-What ``hw_renderable`` means (Ruling S8): *order-renderable*. The stepped hardware
-harness renders the ORDER of events, not their picosecond times: it re-times every
-event with a guaranteed gap of N system cycles, and the functional UNISIM models are
-order-dependent only. So events at distinct times on ``stepped`` clocks stay
-renderable however closely they are spaced in the file. The exception is a
-``free``-running clock, whose edges the harness cannot re-time: any data, async/gate
-or ``glbl GSR`` change closer than the recorded ``async_sep_ps`` to a free-clock edge
-makes the file ``hw_renderable no`` (it stays legal for simulation). ``glbl GSR`` is
-treated as an async input for every separation rule. The hardware harness must also
-wait for the STARTUPE2 GSR release before the first event (a Step 3 requirement).
+What ``hw_renderable`` means (Ruling S8-prime): *order-renderable on the stepped
+harness*. The stepped hardware harness renders the ORDER of events, not their
+picosecond times: it re-times every event with a gap of N system cycles. That
+preserves behaviour only under two conditions, both enforced here:
+
+- **No free-running clock.** A ``mode=free`` clock keeps running while the harness
+  inserts its system cycles, so re-timing would change how many free-clock edges
+  fall between two events. Any file declaring a ``mode=free`` clock is ``hw no``
+  ("free-running clocks need real-time rendering (step 3)") until step 3 defines
+  real-time rendering. The free-clock separation rules stay as simulation errors.
+- **Every model-internal delay is shorter than the event gap.** Stepped rendering is
+  order-preserving only when all of the primitive's model-internal delays (UNISIM
+  ``#`` delays, tap chains, ...) are shorter than the smallest gap between distinct
+  event times. So every such gap (``t=0`` initialisation excluded) must be at least
+  ``min_event_gap(async_sep_ps, map)`` = ``max(async_sep_ps, the primitive's
+  catalog min_event_gap_ps)``, where the catalog value defaults to ``MIN_SEP_PS``
+  (1 ns clears FDRE's 100 ps clock-to-Q); a smaller gap is ``hw no``. Units whose
+  primitives have longer internal delays MUST set ``min_event_gap_ps`` in
+  ``<PRIM>.overrides.yaml`` (e.g. IDELAYE2: 31 taps x 78 ps plus DELAY_D is about
+  2.4 ns). ``xut.stimgen.VecBuilder`` uses the same value as its gap.
+
+Further ``hw no`` reasons: x/z stimulus; ``glbl GTS``/``GRESTORE`` (sim-only, spec
+§5.2); any ``glbl GSR`` event (GSR on hardware needs the GSR-immune harness of spec
+§7.2, step 3; GSR is still an async input for every simulation separation rule); and
+any ``pad``-class bit or ``inout`` port in the map, input or output (they are only
+realisable through the pad harness, spec §7.3). The hardware harness must also wait
+for the STARTUPE2 GSR release before the first event (a step 3 requirement).
+
+``Report.x_inputs`` is true when any ``set`` (initialisation included) drives an
+``x`` or ``z`` bit. 2-state runners (Verilator, hardware) cannot represent such a
+stimulus and must skip it with a reason rather than run it (the runners of PR B
+implement that).
+
+Explicitly deferred, not supported yet:
+
+- the ``JTAG_*`` signals of glbl's channel (spec §5.2; used by BSCANE2): the grammar
+  has only ``GSR``/``GTS``/``GRESTORE``; they arrive with the configuration group;
+- DRP transactions (spec §5.5): ``drp``-class bits are validated as ``data`` for
+  now, so a cycle-exact DRDY expectation is NOT refused here yet; the DRP
+  transaction layer that §5.5 requires builds on the map's class record.
+
+The settle window covers glbl's start-up pulses: ``settle_ps >= MIN_SETTLE_PS =
+max(ROC_WIDTH, GRES_START + GRES_WIDTH) + SETTLE_MARGIN_PS``, from constants that a
+test checks against every model source's ``glbl.v``.
 
 A file with any error is never hardware-renderable: ``Report.hw_renderable`` is
 false whenever ``errors`` is non-empty, and ``mark`` refuses such a report. A ``Vec``
-built in memory is also checked against the parser's structural rules
-(``xvec.check_structure``), so parser-illegal co-timing is an error, not a silent yes.
+built in memory is held to every rule the parser applies (``xvec.check_structure``),
+so an in-memory Vec that would not parse back is an error, never a silent yes;
+validation then continues on its well-formed part (``xvec.checkable``).
 """
 
 from __future__ import annotations
@@ -53,8 +88,17 @@ from xut.wrap import DutMap
 MIN_SEP_PS = 1_000
 DEFAULT_GAP_PS = MIN_SEP_PS
 DEFAULT_ASYNC_SEP_PS = MIN_SEP_PS
-ROC_WIDTH_PS = 100_000  # glbl.v: GSR released after ROC_WIDTH
-GRES_END_PS = 20_000  # glbl.v: GRES_START + GRES_WIDTH
+#: glbl.v parameters (1 ps timescale), checked against every model source's glbl.v by
+#: tools/tests/test_validate.py.
+ROC_WIDTH_PS = 100_000  # GSR released after ROC_WIDTH
+GRES_START_PS = 10_000  # GTS/GRESTORE (PRLD) pulse starts
+GRES_WIDTH_PS = 10_000  # ... and lasts GRES_WIDTH
+GRES_END_PS = GRES_START_PS + GRES_WIDTH_PS
+SETTLE_MARGIN_PS = MIN_SEP_PS
+#: The shortest legal settle_ps: every glbl start-up pulse is over, plus a margin.
+MIN_SETTLE_PS = max(ROC_WIDTH_PS, GRES_END_PS) + SETTLE_MARGIN_PS
+
+FREE_CLOCK_REASON = "free-running clocks need real-time rendering (step 3)"
 
 #: Ops that are not input changes (clock_start/stop act through their computed edges).
 _NOT_CHANGES = ("sample", "end", "clock_start", "clock_stop")
@@ -64,10 +108,19 @@ class ValidationError(XutError, ValueError):
     """An invalid stimulus was used where a valid one is required (``mark``)."""
 
 
+def min_event_gap(async_sep_ps: int, m: DutMap) -> int:
+    """THE minimum gap between distinct event times for stepped hw rendering (Ruling
+    S8-prime), shared with ``xut.stimgen.VecBuilder``: ``max(async_sep_ps, the
+    primitive's min_event_gap_ps)``, the latter defaulting to ``MIN_SEP_PS``."""
+    return max(async_sep_ps, m.min_event_gap_ps or MIN_SEP_PS)
+
+
 @dataclass
 class Report:
     errors: list[str] = field(default_factory=list)
     hw_reasons: list[str] = field(default_factory=list)
+    #: Some ``set`` drives x or z: 2-state runners (Verilator, hw) must skip the file.
+    x_inputs: bool = False
 
     @property
     def ok(self) -> bool:
@@ -75,7 +128,7 @@ class Report:
 
     @property
     def hw_renderable(self) -> bool:
-        """Order-renderable on the stepped hw harness (Ruling S8); never with errors."""
+        """Order-renderable on the stepped hw harness (Ruling S8-prime); never with errors."""
         return not self.errors and not self.hw_reasons
 
 
@@ -100,9 +153,10 @@ def _check_header(vec: Vec, m: DutMap, r: Report) -> None:
                 f"header attr.{k}={have if have is not None else '(absent)'} but the "
                 f"wrapper has {want if want is not None else '(not set)'}"
             )
-    if vec.settle_ps < ROC_WIDTH_PS + MIN_SEP_PS:
+    if vec.settle_ps < MIN_SETTLE_PS:
         r.errors.append(
-            f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {MIN_SEP_PS} margin"
+            f"settle_ps={vec.settle_ps} < {MIN_SETTLE_PS} = max(glbl ROC_WIDTH {ROC_WIDTH_PS}, "
+            f"GRES_START+GRES_WIDTH {GRES_END_PS}) + {SETTLE_MARGIN_PS} margin"
         )
 
 
@@ -136,9 +190,32 @@ def _check_set_classes(t: int, e: Event, cls: dict[int, str], r: Report) -> set[
         r.errors.append(f"t={t}: set touches a clock-class bit")
     if set(e.value) - {"0", "1"}:
         r.hw_reasons.append(f"t={t}: x/z stimulus")
-    if "pad" in classes:
-        r.hw_reasons.append(f"t={t}: pad-class port needs the pad harness (spec §7.3)")
+        r.x_inputs = True
     return classes
+
+
+def _check_map_hw(vec: Vec, m: DutMap, r: Report) -> None:
+    """File-level hw reasons that do not depend on the events."""
+    pads = [b.port for b in m.bits if b.cls in ("pad", "inout") or b.role]
+    if pads:
+        r.hw_reasons.append(
+            f"pad-class or inout port(s) {', '.join(dict.fromkeys(pads))} need the pad "
+            "harness (spec §7.3)"
+        )
+    free = [c.name for c in vec.clocks if c.mode == "free"]
+    if free:
+        r.hw_reasons.append(f"{FREE_CLOCK_REASON}: {', '.join(free)}")
+
+
+def _check_event_gaps(vec: Vec, gap: int, r: Report) -> None:
+    """Every gap between distinct event times (initialisation excluded) >= ``gap``."""
+    ts = sorted({e.t for e in vec.events if not (e.t == 0 and e.op == "set")})
+    for prev, t in zip(ts, ts[1:], strict=False):
+        if t - prev < gap:
+            r.hw_reasons.append(
+                f"t={t}: {t - prev} ps after the previous event at t={prev} (< min event "
+                f"gap {gap} ps; stepped rendering preserves order only, Ruling S8-prime)"
+            )
 
 
 def _nearest(ts: list[int], t: int) -> tuple[int, int] | None:
@@ -165,6 +242,8 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
     if sep < MIN_SEP_PS:
         r.errors.append(f"header async_sep_ps={sep} is below the minimum {MIN_SEP_PS}")
     cls = {b.bit: b.cls for b in m.of("in")}
+    _check_map_hw(vec, m, r)
+    _check_event_gaps(vec, min_event_gap(sep, m), r)
     _check_free_stops(vec, r)
     for e in vec.events:
         if e.t == 0 and e.op == "set":
@@ -178,7 +257,6 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
         key=lambda e: e.t,
     )  # stable: file order within a time
     edges = [e.t for e in timed if e.op == "edge"]
-    free_ts = [e.t for e in computed]  # sorted
     level: dict[str, str] = {c.name: "f" for c in vec.clocks}
     last_change: int | None = None
     for t, group in groupby(timed, key=lambda e: e.t):
@@ -232,6 +310,10 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
             if e.op == "glbl" and not gsr:
                 r.hw_reasons.append(f"t={t}: glbl {e.target} is sim-only (spec §5.2)")
                 continue
+            if gsr:
+                r.hw_reasons.append(
+                    f"t={t}: glbl GSR on hardware needs the GSR-immune harness (spec §7.2; step 3)"
+                )
             is_async = gsr
             if e.op == "set":
                 is_async = bool(_check_set_classes(t, e, cls, r) & {"async", "gate"})
@@ -242,13 +324,6 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
                         f"t={t}: {'GSR' if gsr else 'async/gate'} change {d[0]} ps from a "
                         f"clock edge (< async_sep_ps={sep})"
                     )
-            d = _nearest(free_ts, t)
-            if d is not None and d[0] < sep:
-                edge = next(x for x in computed if x.t == d[1])
-                r.hw_reasons.append(
-                    f"t={t}: {_desc(e)} is {d[0]} ps from free-running {edge.target} edge "
-                    f"{edge.value} at t={edge.t} (< async_sep_ps={sep}; spec §5.1, Ruling S8)"
-                )
         if changes:
             last_change = t
     return r
