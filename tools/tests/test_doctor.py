@@ -6,6 +6,7 @@ ssh."""
 from click.testing import CliRunner
 from xut.cli import main
 from xut.doctor import Check, available_runners, run_checks
+from xut.paths import VIVADO_SETTINGS
 
 
 class FakeProbe:
@@ -74,7 +75,7 @@ def test_all_ok_enables_every_runner():
 
 
 def test_missing_vivado_removes_xsim_and_vivado_from_runners():
-    probe = FakeProbe(exists={"/opt/xilinx/Vivado/2025.2/settings64.sh": False})
+    probe = FakeProbe(exists={str(VIVADO_SETTINGS): False})
     checks = run_checks(probe)
     vivado = _by_name(checks)["vivado"]
     assert vivado.ok is False
