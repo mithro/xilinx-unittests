@@ -216,3 +216,96 @@ Toy template.
 UG953 v2026.1                                                                                                   25
                                                                             Send Feedback
 June 23, 2026
+                                                                                          Design Elements
+TOYSER
+Primitive: Toy deserializer
+
+    PRIMITIVE_GROUP: I/O
+    PRIMITIVE_SUBGROUP: SERDES
+
+Port Descriptions
+
+           Port          Direction       Width                                Function
+                                                  Toy slip first line that runs on over
+                                                  several lines while the row name sits
+TSLIP                    Input       1            in the middle of the cell as the pdf
+                                                  renderer centres it vertically on the
+                                                  row (toy ends here).
+                                                  Toy enable module first line.
+                                                  module.
+                                                  •   When toy is one, the second input is not
+                                                      used at all by the toy.
+                                                      and so on for the toy.
+                                                  •   When toy is two, both inputs are used,
+                                                      with the first input for half a
+TCE1, TCE2               Input       1                cycle, and the second for the other half.
+                                                      The toy module converts two to one and
+                                                      is clocked by the toy divided clock and
+                                                      is needed for toy memory interfaces
+                                                      in toy mode.
+                                                  •   When the toy attribute is two, both
+                                                      ports are available.
+                                                  •   When toy is one, only the first is
+                                                      a regular clock enable.
+                                                  The toy high-speed clock input clocks in
+TCLK                     Input       1
+                                                  the toy data stream.
+                                                  Toy divided clock with a five line
+                                                  cell whose last line is a single word
+TDIV                     Input       1            on its own line so that the cell is
+                                                  longer below the row than above
+                                                  it.
+TSEL                     Input       1            Toy select.
+                                                  toy lowercase start that cannot be
+TODD                     Input       1
+                                                  resolved.
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   26
+                                                                            Send Feedback
+June 23, 2026
+                                                                                          Design Elements
+TOYDUP
+Primitive: Toy duplicate defaults
+
+    PRIMITIVE_GROUP: I/O
+    PRIMITIVE_SUBGROUP: SERDES
+
+Available Attributes
+
+      Attribute         Type       Allowed Values        Default                          Description
+                                                                     Toy device version for simulation
+SIM_DEV                 STRING
+                                                                     functionality.
+                               "TRUE",
+                                                                     Toy words to enable the
+USE_DIS                 STRING "FALSE"            "TRUE"
+                                                                     toy pin.
+                              "MEM",
+                                                     Toy mode of operation for the
+                              "MEM_DDR3",
+                                                     toy block, see the toy
+IFACE               STRING    "MEM_QDR", "MEM"
+                                                     user guide for the toy.
+                              "NET",
+                                                     Guide.
+                              "OVER"
+                                                                 Toy input source words that
+                                                                 run on for a while.
+                              "NONE", "BOTH"
+IODLY               STRING                         "NONE"        More toy words.
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   27
+                                                                            Send Feedback
+June 23, 2026

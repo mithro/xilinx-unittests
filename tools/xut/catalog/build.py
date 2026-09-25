@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from xut.catalog.model import CatalogEntry, validate
-from xut.catalog.portclass import default_class
+from xut.catalog.portclass import class_note, default_class
 from xut.catalog.ug953 import DocSection, split_sections
 from xut.catalog.unisim import find_model, parse_module
 from xut.docs_fetch import UG953
@@ -39,14 +39,44 @@ def _looks_malformed(kind: str, v: str) -> bool:
     return '"' in v
 
 
-def value_issues(name: str, sec: DocSection) -> list[str]:
-    """Report lines for UG953 attribute cells the parser could not read cleanly."""
+_ENUM_TYPES = ("STRING", "BOOLEAN", "DECIMAL")
+
+
+def _enumerated(values: list[str]) -> bool:
+    """A list of single values (not a range such as ``1 to 128`` or ``190-210``)."""
+    return bool(values) and all(
+        re.fullmatch(r'"[^"]*"|[A-Za-z0-9_.]+', v) and not re.fullmatch(r"\d+-\d+", v)
+        for v in values
+    )
+
+
+def value_issues(name: str, sec: DocSection, model=None) -> list[str]:
+    """Report lines for UG953 attribute cells the parser could not read cleanly, or that
+    disagree with the model: malformed or missing allowed values, duplicates within the
+    list, or the UNISIM default missing from an enumerated list."""
+    defaults = {p.name: p.default for p in model.params} if model is not None else {}
     out = []
     for attr, d in sec.attributes.items():
-        bad = [v for v in d["allowed"] if _looks_malformed(d["type"], v)]
-        if not d["allowed"] or bad:
-            what = f"unparsed {bad}" if bad else "no allowed values found"
-            out.append(f"{name}: attribute {attr} UG953 values need review ({what})")
+        allowed = d["allowed"]
+        bad = [v for v in allowed if _looks_malformed(d["type"], v)]
+        plain = [_unquote(v) for v in allowed]
+        dups = sorted({v for v in plain if plain.count(v) > 1})
+        problems = []
+        if not allowed:
+            problems.append("no allowed values found")
+        if bad:
+            problems.append(f"unparsed {bad}")
+        if dups:
+            problems.append(f"duplicate {dups}")
+        if (
+            attr in defaults
+            and d["type"] in _ENUM_TYPES
+            and _enumerated(allowed)
+            and str(defaults[attr]) not in plain
+        ):
+            problems.append(f"unisim default {defaults[attr]!s} not in {plain}")
+        if problems:
+            out.append(f"{name}: attribute {attr} UG953 values need review ({'; '.join(problems)})")
     return out
 
 
@@ -185,7 +215,14 @@ def build_all(text_path: Path, names: list[str], out_dir: Path, search: list[Pat
         if sec is not None and model is not None:
             report.extend(_compare(name, sec, model))
         if sec is not None:
-            report.extend(value_issues(name, sec))
+            report.extend(value_issues(name, sec, model))
+            for item in sec.review:
+                kind, what, cell = item.split()
+                report.append(f"{name}: {kind} {what} UG953 {cell} needs review")
+        for p in model.ports if model is not None else []:
+            note = class_note(name, p.name)
+            if note:
+                report.append(f"{name}: port {p.name} {note}")
         entry = _entry(name, sec, model, library)
         validate(entry.to_dict())
         (out_dir / f"{name}.yaml").write_text(_dump(entry))
@@ -196,7 +233,8 @@ _CATEGORIES = (
     ("Names only in one source", lambda x: " only in " in x),
     ("Width or direction mismatches", lambda x: " width unisim=" in x or " direction unisim=" in x),
     ("Tables absent from UG953", lambda x: ": no Port Descriptions" in x or ": no Available" in x),
-    ("UG953 values needing review", lambda x: " values need review " in x),
+    ("UG953 cells needing review", lambda x: " need review " in x or " needs review" in x),
+    ("Port class notes", lambda x: " class depends on " in x),
     ("Missing UG953 section or model", lambda x: True),
 )
 

@@ -195,4 +195,26 @@ def test_names_from_text_skips_macros():
     macro = "XPM_TOY\nParameterized Macro: Toy macro\n\n    MACRO_GROUP: XPM\n\n"
     unimacro = "BRAM_TOY\nMacro: Toy unimacro\n\n    MACRO_GROUP: BRAM\n\n"
     assert names_from_text(macro + unimacro + TXT) == ["TOYFF", "TOYLUT"]
-    assert names_from_text(LAY) == ["TOYRAM", "TOYPLL", "TOYIO"]
+    assert names_from_text(LAY) == ["TOYRAM", "TOYPLL", "TOYIO", "TOYSER", "TOYDUP"]
+
+
+def test_port_functions_from_vertically_centred_cells():
+    s = split_sections(LAY, ["TOYSER"])["TOYSER"]
+    f = {n: p["function"] for n, p in s.ports.items()}
+    assert f["TSLIP"] == "Toy slip first line that runs on over"
+    assert f["TCE1"] == f["TCE2"] == "Toy enable module first line."
+    assert f["TCLK"] == "The toy high-speed clock input clocks in"
+    assert f["TDIV"] == "Toy divided clock with a five line"
+    assert f["TSEL"] == "Toy select."
+    # a first line that starts lowercase cannot be trusted: blank + flagged
+    assert f["TODD"] == ""
+    assert s.review == ["port TODD function"]
+
+
+def test_open_list_fragment_goes_down_and_duplicate_is_the_default():
+    a = split_sections(LAY, ["TOYDUP"])["TOYDUP"].attributes
+    assert a["SIM_DEV"]["allowed"] == []
+    assert a["USE_DIS"]["allowed"] == ['"TRUE"', '"FALSE"']
+    assert a["IFACE"]["allowed"] == ['"MEM"', '"MEM_DDR3"', '"MEM_QDR"', '"NET"', '"OVER"']
+    assert a["IFACE"]["default"] == '"MEM"'
+    assert a["IODLY"]["allowed"] == ['"NONE"', '"BOTH"']
