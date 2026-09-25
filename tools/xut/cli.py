@@ -418,6 +418,32 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
     click.echo(f"x_inputs: {'yes' if r.x_inputs else 'no'}")
 
 
+def _select_cases(root: Path, cases: list, selectors: tuple[str, ...]) -> list:
+    """The cases ``selectors`` match (all of them when there are none), for ``xut run``
+    and ``xut crosscheck``. A selector matching no test is an error (a typo must not pass
+    in CI), except ``unit:<name>`` for a work unit of docs/work-units.yaml that has no
+    tests yet: that selects nothing, like a --level/--style filter leaving nothing."""
+    from xut.testspec import select
+    from xut.workunits import load_units
+
+    if not selectors:
+        return cases
+    unmatched = [sel for sel in selectors if not select(cases, [sel])]
+    if any(sel.startswith("unit:") for sel in unmatched):
+        try:
+            units = load_units(root)
+        except FileNotFoundError:
+            units = {}
+        unmatched = [
+            sel
+            for sel in unmatched
+            if not (sel.startswith("unit:") and sel.removeprefix("unit:") in units)
+        ]
+    if unmatched:
+        raise XutError(f"no tests matched selector(s) {unmatched}")
+    return select(cases, list(selectors))
+
+
 @main.command("run")
 @click.argument("selectors", nargs=-1)
 @click.option(
@@ -454,7 +480,8 @@ def run_cmd(
     Every selected (test, runner) pair writes
     build/<flow>/<runner>/<model-source>/<test-id>/result.json, and the run writes
     build/<flow>/summary-<model-source>.json. Exits 1 if any result is fail or error,
-    or if a SELECT matches no test at all (filters leaving nothing selected exit 0).
+    or if a SELECT matches no test at all (filters leaving nothing selected exit 0, and
+    so does unit:<name> for a work unit with no tests yet).
     Skip reasons are printed, one line per distinct reason.
     """
     from xut import modelsrc
@@ -462,7 +489,7 @@ def run_cmd(
     from xut.paths import repo_root
     from xut.runners import RUNNERS
     from xut.runners.base import RunContext
-    from xut.testspec import discover, select
+    from xut.testspec import discover
 
     unknown = sorted(set(runner_names) - set(RUNNERS))
     if unknown:
@@ -472,14 +499,9 @@ def run_cmd(
         names.append("iverilog-vz")  # it exists only to guard the Verilator results
 
     root = repo_root()
-    cases = discover(root)
-    if selectors:
-        # A selector matching no test at all is an error (a typo must not pass in CI);
-        # --level/--style filtering the matches down to nothing is not (exit 0 below).
-        unmatched = [sel for sel in selectors if not select(cases, [sel])]
-        if unmatched:
-            raise XutError(f"no tests matched selector(s) {unmatched}")
-        cases = select(cases, list(selectors))
+    # A selector matching no test at all is an error (a typo must not pass in CI);
+    # --level/--style filtering the matches down to nothing is not (exit 0 below).
+    cases = _select_cases(root, discover(root), selectors)
     cases = [
         c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
     ]
@@ -525,7 +547,13 @@ def run_cmd(
     help="write a findings/<PRIM>-<slug>.md stub for every unlisted finding (never "
     "overwrites; a known-divergence already has its finding)",
 )
-def crosscheck_cmd(selectors: tuple[str, ...], write_findings: bool) -> None:
+@click.option(
+    "--model-source",
+    help="restrict the report to this model source's results (default: every source)",
+)
+def crosscheck_cmd(
+    selectors: tuple[str, ...], write_findings: bool, model_source: str | None
+) -> None:
     """Cross-check every runner's traces of each selected test (spec §8).
 
     SELECT is a test-id glob, a primitive name or unit:<name> (default: all). Traces are
@@ -537,21 +565,16 @@ def crosscheck_cmd(selectors: tuple[str, ...], write_findings: bool) -> None:
     """
     from xut import crosscheck as xc
     from xut.paths import repo_root
-    from xut.testspec import discover, select
+    from xut.testspec import discover
 
     root = repo_root()
-    cases = discover(root)
-    if selectors:
-        unmatched = [sel for sel in selectors if not select(cases, [sel])]
-        if unmatched:
-            raise XutError(f"no tests matched selector(s) {unmatched}")
-        cases = select(cases, list(selectors))
+    cases = _select_cases(root, discover(root), selectors)
     if not cases:
-        click.echo("no tests selected (no tests under tests/)")
+        click.echo(f"no tests selected ({' '.join(selectors) or 'no tests under tests/'})")
         return
     reports = []
     for case in cases:
-        rep = xc.check(root, case)
+        rep = xc.check(root, case, model_source=model_source)
         reports.append(rep)
         xc.write_report(root, rep)
         click.echo(xc.render(rep))

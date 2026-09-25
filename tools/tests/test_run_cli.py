@@ -180,3 +180,38 @@ def test_keyboard_interrupt_exits_130(repo, monkeypatch):
     r = _run("TOYFF")
     assert r.exit_code == 130
     assert "interrupted" in r.output
+
+
+def _work_units(root: Path) -> None:
+    (root / "docs").mkdir(exist_ok=True)
+    (root / "docs/work-units.yaml").write_text(
+        "family: 7series\nunits:\n"
+        "  toy: {group: register, primitives: [TOYFF]}\n"
+        "  flops: {group: register, primitives: [FDRE]}\n"
+    )
+
+
+def test_unit_without_tests_selects_nothing_exit_0(repo, tmp_path):
+    """CI runs `unit:flops` before the flops unit has tests: like a filter leaving
+    nothing, that is exit 0 with a message, not a selector error."""
+    _work_units(tmp_path)
+    r = _run("unit:flops", "--level", "L0", "--model-source", "unisim-gh-2020.1")
+    assert r.exit_code == 0, r.output
+    assert "no tests selected (unit:flops --level L0)" in r.output
+    assert repo == []
+    r = _run("unit:flops", "TOYFF", "--level", "L0")
+    assert r.exit_code == 0 and repo[0][0] == ["7series.TOYFF.L0.a"]
+
+
+@pytest.mark.parametrize(
+    ("args", "with_units"),
+    [
+        (["unit:nosuch"], True),  # not a unit of docs/work-units.yaml: a typo
+        (["unit:flops"], False),  # no docs/work-units.yaml at all: no unit is known
+    ],
+)
+def test_unknown_unit_is_still_an_error(repo, tmp_path, args, with_units):
+    if with_units:
+        _work_units(tmp_path)
+    r = _run(*args)
+    assert r.exit_code == 1 and f"no tests matched selector(s) {args}" in r.output
