@@ -117,7 +117,13 @@ def sha256_file(p: Path) -> str:
 
 
 def seed_for(case: TestCase, ctx: RunContext) -> int:
-    """``--seed`` if given, else ``zlib.crc32(test_id)``: stable across runs and hosts."""
+    """``--seed`` if given, else ``zlib.crc32(test_id)``: stable across runs and hosts.
+
+    The default never changes, so repeated runs replay the same stimulus; exploring
+    other seeds takes ``--seed``. A cocotb fail/error reason names its seed
+    (``[seed N]``), and ``xut run <id> --seed N`` reproduces it. Freezing a failing
+    seed into a vector test (spec §4.3, ``xut freeze-seed``) is deferred: no tooling
+    yet."""
     return ctx.seed if ctx.seed is not None else zlib.crc32(case.id.encode())
 
 
@@ -215,7 +221,7 @@ def prepare_vector(
 # --- the runner template ------------------------------------------------------------
 
 
-def _reason(e: BaseException) -> str:
+def error_reason(e: BaseException) -> str:
     """A ``XutError``'s message is user-facing already; anything else gets its type."""
     text = str(e) if isinstance(e, XutError) else f"{type(e).__name__}: {e}"
     return text.strip() or type(e).__name__
@@ -337,7 +343,7 @@ class Runner(ABC):
             except Exception as e:  # recorded as error with the traceback in the log
                 with (cd / "run.log").open("a") as f:
                     f.write(traceback.format_exc())
-                cr = ConfigResult(cfg, "error", _reason(e))
+                cr = ConfigResult(cfg, "error", error_reason(e))
             if (cd / "trace.xtr").is_file():
                 try:
                     parts.append((cfg, xtr.load(cd / "trace.xtr")))
@@ -410,7 +416,7 @@ def error_result(
         ctx.flow,
         case.style,
         "error",
-        _reason(e),
+        error_reason(e),
         model_source=ctx.model_source.name,
         defines=dict(ctx.defines),
         duration_s=round(duration_s, 3),

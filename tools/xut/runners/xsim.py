@@ -301,7 +301,7 @@ class XsimRunner(Runner):
             return reject_check(cd, out, vec.illegal, header)
         if (r := classify_run(cfg, out)) is not None:
             return r
-        return vector_check(cd, m, comp.labels, exp, header, self.x_observable)
+        return vector_check(cd, m, comp.labels, exp, header, self.x_observable, out.run_text)
 
     def _run_sv(
         self, case: TestCase, cfg: str, cd: Path, ctx: RunContext, timeout: int

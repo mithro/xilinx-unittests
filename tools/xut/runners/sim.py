@@ -29,7 +29,7 @@ from xut.container import Executor
 from xut.errors import XutError
 from xut.formats import xtr
 from xut.runners.base import ConfigResult, RunContext, sha256_file
-from xut.runners.reject import SimOutcome
+from xut.runners.reject import SimOutcome, is_error_line
 from xut.stimcompile import raw_to_trace
 from xut.testspec import TestCase
 from xut.wrap import DutMap
@@ -63,10 +63,12 @@ __all__ = [
     "cocotb_check",
     "cocotb_command",
     "fatal_line",
+    "model_errors",
     "sv_check",
     "sv_seed_define",
     "tool_versions",
     "vector_check",
+    "with_seed",
 ]
 
 
@@ -115,6 +117,19 @@ def classify_run(cfg: str, out: SimOutcome, *, need_done: bool = True) -> Config
     return None
 
 
+def model_errors(run_text: str) -> list[str]:
+    """The lines of a simulation's output with error/fatal severity (``Error:``,
+    ``ERROR:``, ``Fatal:``, ``$error``, UNISIM's ``Attribute Syntax Error``, ...; see
+    ``xut.runners.reject.is_error_line``), except the testbench's own ``XUT_`` lines."""
+    return [ln.strip() for ln in run_text.splitlines() if "XUT_" not in ln and is_error_line(ln)]
+
+
+def _errors_reason(errors: list[str]) -> str:
+    shown = " | ".join(ln[:200] for ln in errors[:3])
+    more = f" | ... ({len(errors) - 3} more)" if len(errors) > 3 else ""
+    return f"model reported errors: {shown}{more}"
+
+
 def vector_check(
     cd: Path,
     m: DutMap,
@@ -122,10 +137,14 @@ def vector_check(
     expected: xtr.Trace,
     header: dict[str, str],
     x_observable: bool,
+    run_text: str = "",
 ) -> ConfigResult:
     """``raw.txt`` -> ``trace.xtr``, compared with ``expected``: pass or fail, each
     mismatch in ``mismatches.txt`` and the first three in the reason. An ``expected``
-    without samples is an ``error``: zero evidence is never a pass (ruling S15)."""
+    without samples is an ``error``: zero evidence is never a pass (ruling S15). Any
+    error/fatal line of the run's output (``model_errors``) makes it a ``fail``
+    ("model reported errors: ...", then any mismatches) even when the trace matches: a
+    model diagnostic is never silently ignored."""
     cfg = cfg_of(header)
     if not expected.samples:  # validate refuses such a stimulus; never pass on nothing
         return ConfigResult(cfg, "error", "expected trace has no samples (ruling S15)")
@@ -136,12 +155,12 @@ def vector_check(
     xtr.dump(actual, cd / "trace.xtr")
     mm = xtr.compare(expected, actual, x_observable=x_observable)
     (cd / "mismatches.txt").write_text("".join(f"{x}\n" for x in mm))
-    status = "fail" if mm else "pass"
-    reason = "; ".join(str(x) for x in mm[:3]) or None
+    errors = model_errors(run_text)
+    reasons = ([_errors_reason(errors)] if errors else []) + [str(x) for x in mm[:3]]
     return ConfigResult(
         cfg,
-        status,
-        reason,
+        "fail" if mm or errors else "pass",
+        "; ".join(reasons) or None,
         sha256_file(cd / "stim.xvec"),
         sha256_file(cd / "trace.xtr"),
         len(mm),
@@ -271,7 +290,20 @@ def cocotb_command(
     return argv, env
 
 
+def with_seed(r: ConfigResult, seed: int) -> ConfigResult:
+    """``r`` with ``[seed N]`` appended to a fail/error reason: a cocotb run's stimulus
+    comes from its seed, so every failure names what reproduces it (``--seed N``)."""
+    if r.status in ("fail", "error"):
+        r.reason = f"{r.reason or r.status} [seed {seed}]"
+    return r
+
+
 def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> ConfigResult:
+    """``_cocotb_verdict`` with the seed in every fail/error reason (``with_seed``)."""
+    return with_seed(_cocotb_verdict(cd, rc, seed, header), seed)
+
+
+def _cocotb_verdict(cd: Path, rc: int, seed: int, header: dict[str, str]) -> ConfigResult:
     """Classify a cocotb run of configuration dir ``cd`` from its ``results.xml``:
 
     - no ``results.xml``: ``error``, ``compile failed`` when the launcher says so (exit
@@ -284,6 +316,8 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
       even when an earlier test failed an assertion (a failed check never hides a
       crash); otherwise the first ``AssertionError``: ``fail`` with its message. Both
       keep the trace's sha256: the trace is the evidence of what ran;
+    - no failure, but an error/fatal line in ``run.log`` (``model_errors``: the
+      simulator's output, e.g. a UNISIM ``Error:``): ``fail`` ("model reported errors");
     - no failure, but no ``trace.xtr`` or one with no sample: ``error`` ("cocotb test
       recorded no samples"): a pass must leave evidence of what was checked. This
       cannot prove the test ASSERTED anything -- a test that samples but never compares
@@ -346,6 +380,10 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
     if failures:
         name, _, msg = failures[0]
         return ConfigResult(cfg, "fail", f"{name}: {msg}".strip(), None, sha)
+    log = cd / "run.log"
+    errors = model_errors(log.read_text(errors="replace")) if log.is_file() else []
+    if errors:
+        return ConfigResult(cfg, "fail", _errors_reason(errors), None, sha)
     if n_samples == 0:
         return ConfigResult(cfg, "error", "cocotb test recorded no samples", None, sha)
     if rc != 0:
