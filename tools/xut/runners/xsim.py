@@ -46,7 +46,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import threading
@@ -66,8 +65,16 @@ from xut.runners.base import (
     timeout_for,
     trace_header,
 )
-from xut.runners.iverilog import HDL, ParamError, sv_check, vector_check
 from xut.runners.reject import SimOutcome, reject_check
+from xut.runners.sim import (
+    HDL,
+    ParamError,
+    cfg_attrs,
+    classify_run,
+    sv_check,
+    tool_versions,
+    vector_check,
+)
 from xut.testspec import TestCase
 
 #: The only model source xsim can honestly report (precompiled unisims_ver).
@@ -185,11 +192,6 @@ def _diagnostics(ctext: str) -> str:
     return "".join(keep)
 
 
-def fatal_line(run_text: str) -> str | None:
-    """xsim's ``$fatal`` report (``Fatal: ...``); xsim still exits 0 after it."""
-    return next((ln.strip() for ln in run_text.splitlines() if ln.startswith("Fatal:")), None)
-
-
 def run_script(cd: Path, timeout_s: int) -> int:
     """``bash xsim.sh > run.log 2>&1`` in ``cd``; its exit code. The script runs in its
     own process group, so a timeout kills xvlog/xelab/xsim too, not only bash."""
@@ -262,12 +264,7 @@ class XsimRunner(Runner):
         return True, ""
 
     def tools(self, ctx: RunContext) -> dict:
-        d = ctx.root / "build" / f".xut-versions-{uuid.uuid4().hex}"
-        try:
-            return {"xsim": xsim_version(d)}
-        finally:
-            if d.exists():
-                shutil.rmtree(d)
+        return tool_versions(ctx, lambda d: {"xsim": xsim_version(d)})
 
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
         timeout = timeout_for(case, ctx)
@@ -298,29 +295,19 @@ class XsimRunner(Runner):
         out = self._build_and_run(cd, files, "xut_vector_tb", [], {}, ctx, timeout)
         if vec.expect == "reject":
             return reject_check(cd, out, vec.attrs, case.prim, header)
-        if not out.compiled_ok:
-            return ConfigResult(cfg, "error", "compile failed")
-        if out.run_rc != 0:
-            return ConfigResult(cfg, "error", f"simulator exited with rc {out.run_rc}")
-        if fatal := fatal_line(out.run_text):
-            return ConfigResult(cfg, "error", f"simulator reported {fatal}")
-        if "XUT_DONE" not in out.run_text:
-            return ConfigResult(cfg, "error", "simulation ended early (no XUT_DONE)")
+        if (r := classify_run(cfg, out)) is not None:
+            return r
         return vector_check(cd, m, comp.labels, exp, header, self.x_observable)
 
     def _run_sv(
         self, case: TestCase, cfg: str, cd: Path, ctx: RunContext, timeout: int
     ) -> ConfigResult:
         source = case.test_dir / str(case.source)
-        attrs = next((c.get("attrs", {}) for c in case.configs if c["cfg"] == cfg), {})
+        attrs = cfg_attrs(case, cfg)
         params = {k: generic_value(k, v) for k, v in attrs.items()}
         incs = [str(p) for p in (HDL, *case.shared_dirs, source.parent)]
         files = [str(source), *map(str, self.extra_files)]
         out = self._build_and_run(cd, files, source.stem, incs, params, ctx, timeout)
-        if not out.compiled_ok:
-            return ConfigResult(cfg, "error", "compile failed")
-        if out.run_rc != 0:
-            return ConfigResult(cfg, "error", f"simulator exited with rc {out.run_rc}")
-        if fatal := fatal_line(out.run_text):
-            return ConfigResult(cfg, "error", f"simulator reported {fatal}")
+        if (r := classify_run(cfg, out, need_done=False)) is not None:
+            return r
         return sv_check(cd, out.run_text, {**trace_header(self.name, case, cfg, ctx), "seed": "0"})
