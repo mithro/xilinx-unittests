@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from click.testing import CliRunner
+
 from xut import __version__
 from xut.cli import main
 from xut.paths import repo_root

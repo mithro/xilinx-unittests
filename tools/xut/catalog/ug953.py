@@ -27,6 +27,7 @@ Only facts (names, widths, values) and short fragments (at most
 
 import re
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import median
 
@@ -172,7 +173,12 @@ def _blocks(body: list) -> dict[str, list]:
 
 
 def _nearest(
-    idx: float, anchors: list[int], barriers: list[int], prefer, pos=None, penalty=None
+    idx: float,
+    anchors: list[int],
+    barriers: list[int],
+    prefer: Callable[[int], int],
+    pos: dict[int, float] | None = None,
+    penalty: Callable[[int], float] | None = None,
 ) -> int | None:
     """Index of the anchor nearest ``idx`` with no barrier in between.
 
@@ -284,12 +290,14 @@ def _assign_functions(
         indents = [len(block[i]) - len(block[i].lstrip()) for i in lines] + list(inline.values())
         left = min(indents) if indents else 0
 
-        def text_at(i: int, inline=inline) -> tuple[int, str]:
+        def text_at(i: int, inline: dict[int, int] = inline) -> tuple[int, str]:
             if i in inline:
                 return inline[i], anchors[i].group("func")
             return len(block[i]) - len(block[i].lstrip()), block[i].strip()
 
-        def starts_cell(i: int, left=left, text_at=text_at) -> bool:
+        def starts_cell(
+            i: int, left: int = left, text_at: Callable[[int], tuple[int, str]] = text_at
+        ) -> bool:
             col, text = text_at(i)
             return col <= left + 1 and bool(re.match(r"[A-Z0-9\"'(]", text))
 
@@ -436,7 +444,7 @@ def _closed(text: str) -> bool:
 class _AttrTable:
     """One "Available Attributes" table: rows found by their type token (anchors)."""
 
-    def __init__(self, block: list):
+    def __init__(self, block: list) -> None:
         self.block = block
         self.anchors: dict[int, re.Match] = {}
         self.barriers: list[int] = []
@@ -591,7 +599,9 @@ class _AttrTable:
 
     # ---------------------------------------------------------------- names
 
-    def _chain_names(self):
+    def _chain_names(
+        self,
+    ) -> tuple[dict[int, list[tuple[int, str]]], list[list[tuple[int, str]]]]:
         """Chain column-0 name fragments that continue each other; give each chain to
         the anchor on one of its lines, else to the nearest free anchor."""
         anchors, barriers = self.anchors, self.barriers
@@ -819,7 +829,7 @@ def split_sections(text: str, names: list[str]) -> dict[str, DocSection]:
         if nxt and not nxt[0].isspace() and ":" not in nxt:
             desc += ("" if desc.endswith("-") else " ") + nxt.strip()
 
-        def grab(key, head=head):
+        def grab(key: str, head: list[str] = head) -> str:
             for ln in head:
                 m = re.search(rf"\b{key}:\s*(\S.*)$", ln)
                 if m:

@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import yaml
+
 from xut.catalog.build import build_all
 from xut.catalog.model import load_entry
 from xut.catalog.portclass import default_class

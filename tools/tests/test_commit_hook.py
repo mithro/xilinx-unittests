@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
 from xut.paths import repo_root
 
 HOOK = repo_root() / "tools/hooks/commit-msg"

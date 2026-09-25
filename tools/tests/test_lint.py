@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+
 from xut.cli import main
 from xut.lint import (
     GENERATED_STATUS_FILES,

@@ -15,7 +15,7 @@ import yaml
 from xut.catalog.model import CatalogEntry, is_enumerated, validate
 from xut.catalog.portclass import class_note, default_class
 from xut.catalog.ug953 import DocSection, split_sections
-from xut.catalog.unisim import find_model, parse_module
+from xut.catalog.unisim import HdlModule, find_model, parse_module
 from xut.docs_fetch import UG953
 
 HEADER = (
@@ -41,7 +41,7 @@ def _looks_malformed(kind: str, v: str) -> bool:
 _ENUM_TYPES = ("STRING", "BOOLEAN", "DECIMAL")
 
 
-def value_issues(name: str, sec: DocSection, model=None) -> list[str]:
+def value_issues(name: str, sec: DocSection, model: HdlModule | None = None) -> list[str]:
     """Report lines for UG953 attribute cells the parser could not read cleanly, or that
     disagree with the model: malformed or missing allowed values, duplicates within the
     list, or the UNISIM default missing from an enumerated list."""
@@ -71,7 +71,9 @@ def value_issues(name: str, sec: DocSection, model=None) -> list[str]:
     return out
 
 
-def _entry(name: str, sec: DocSection | None, model, library: str, family: str) -> CatalogEntry:
+def _entry(
+    name: str, sec: DocSection | None, model: HdlModule | None, library: str, family: str
+) -> CatalogEntry:
     doc_ports = sec.ports if sec else {}
     doc_attrs = sec.attributes if sec else {}
     ports: list[dict] = []
@@ -141,7 +143,7 @@ def _entry(name: str, sec: DocSection | None, model, library: str, family: str) 
     )
 
 
-def _compare(name: str, sec: DocSection, model) -> list[str]:
+def _compare(name: str, sec: DocSection, model: HdlModule) -> list[str]:
     out: list[str] = []
     hdl_ports = {p.name: p for p in model.ports}
     hdl_params = {p.name for p in model.params}

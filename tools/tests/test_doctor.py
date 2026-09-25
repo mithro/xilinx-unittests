@@ -4,6 +4,7 @@ goes through a fake `Probe` here, so these tests never touch the network, docker
 ssh."""
 
 from click.testing import CliRunner
+
 from xut.cli import main
 from xut.doctor import Check, available_runners, run_checks
 from xut.paths import VIVADO_SETTINGS

@@ -27,7 +27,12 @@ class DocSpec:
 UG953 = DocSpec("ug953", "2026.1", "i4rliuWFec9CVaGVE8DYrg")
 
 
-def fetch(spec: DocSpec, dest_dir: Path, session=None, local: Path | None = None) -> Path:
+def fetch(
+    spec: DocSpec,
+    dest_dir: Path,
+    session: requests.Session | None = None,
+    local: Path | None = None,
+) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = dest_dir / spec.pdf_name
     if local is not None:

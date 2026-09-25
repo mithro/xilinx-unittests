@@ -3,6 +3,7 @@
 
 import pytest
 from click.testing import CliRunner
+
 from xut import status as status_mod
 from xut.cli import main
 from xut.status import render_log, render_progress, render_todo

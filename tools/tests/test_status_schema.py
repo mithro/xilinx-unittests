@@ -5,6 +5,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 import yaml
+
 from xut.catalog.model import load_entry
 from xut.paths import repo_root
 from xut.schemas import load_schema
