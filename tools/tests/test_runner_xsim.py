@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from test_golden import ToyDff
-from test_runner_base import TOY_ENTRY
 from test_runner_iverilog import _copy_toy, make_model_source, toyff_model
 from test_stimcompile import _Fdre
 
@@ -48,19 +46,6 @@ from xut.testspec import TestCase, discover
 
 FIX = Path(__file__).parent / "fixtures"
 VIVADO_MS = ModelSource(MODEL_SOURCE, VIVADO_SRC)
-
-
-@pytest.fixture
-def toy(monkeypatch):
-    """TOYFF without a catalog file or a xut_models module: ToyDff is its golden model."""
-    monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: TOY_ENTRY)
-    monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
-
-
-@pytest.fixture
-def work(tmp_path):
-    """A fresh run root outside the worktree."""
-    return tmp_path
 
 
 @pytest.fixture
