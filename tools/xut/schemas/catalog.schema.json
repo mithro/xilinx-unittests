@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/f4pga/xilinx-unittests/tools/xut/schemas/catalog.schema.json",
+  "title": "xut catalog entry (generated <PRIM>.yaml merged with <PRIM>.overrides.yaml)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "family", "group", "subgroup", "description", "doc", "model", "ports",
+               "attributes", "design_entry", "claims", "status_undocumented"],
+  "properties": {
+    "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "family": {"type": "string"},
+    "group": {"type": "string"},
+    "subgroup": {"type": "string"},
+    "description": {"type": "string", "maxLength": 120},
+    "doc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["guide", "edition", "page"],
+      "properties": {
+        "guide": {"type": "string"},
+        "edition": {"type": "string"},
+        "page": {"type": ["integer", "null"]}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["library", "file"],
+      "properties": {
+        "library": {"enum": ["unisims", "retarget", "none"]},
+        "file": {"type": ["string", "null"]}
+      }
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "direction", "width", "cls", "doc_function"],
+        "properties": {
+          "name": {"type": "string"},
+          "direction": {"enum": ["input", "output", "inout"]},
+          "width": {"type": "integer", "minimum": 1},
+          "cls": {"enum": ["clock", "async", "gate", "data", "inout", "clock_out", "pad", "drp"]},
+          "doc_function": {"type": "string", "maxLength": 120}
+        }
+      }
+    },
+    "attributes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "width", "default", "allowed", "doc_type"],
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"enum": ["string", "integer", "real", "bits", null]},
+          "width": {"type": ["integer", "null"]},
+          "default": {"type": ["string", "integer", "number", "null"]},
+          "allowed": {"type": "array", "items": {"type": "string", "maxLength": 120}},
+          "doc_type": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "design_entry": {"type": "object", "additionalProperties": {"type": "string"}},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "page", "provenance"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*\\.[A-Za-z0-9_]+$"},
+          "text": {"type": "string", "maxLength": 200},
+          "page": {"type": ["integer", "null"]},
+          "provenance": {"type": "string", "pattern": "^(doc:\\d+|inferred:.+)$"}
+        }
+      }
+    },
+    "status_undocumented": {"type": "boolean"}
+  }
+}
