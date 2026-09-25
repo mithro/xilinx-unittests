@@ -278,6 +278,18 @@ def test_vector_toyff_passes(ctx, toy):
 
 
 @pytest.mark.container
+def test_vector_toyff_passes_under_tmp_path(tmp_path, toy):
+    """A run rooted outside the checkout: executor_for mounts it at /xut-root."""
+    ctx = RunContext(tmp_path, "rtl", make_model_source(tmp_path / "ms"))
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    res = IverilogRunner().run(case, ctx)
+    d = workdir(ctx, "iverilog", case.id)
+    # without the /xut-root mount, guest() raises for the config dir: an error result
+    assert res.status == "pass", (res.reason, (d / "run.log").read_text())
+
+
+@pytest.mark.container
 def test_vector_corrupted_expectation_fails(ctx, toy):
     case = _case("7series.TOYFF.L1.capture")
     _python(ctx, case)

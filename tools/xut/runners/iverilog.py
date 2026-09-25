@@ -180,7 +180,7 @@ class IverilogRunner(Runner):
         # removed afterwards so no stray directory is left in build/.
         d = ctx.root / "build" / f".xut-versions-{uuid.uuid4().hex}"
         try:
-            return sim_tool_versions(executor_for(ctx.model_source), d)
+            return sim_tool_versions(executor_for(ctx.model_source, ctx.root), d)
         finally:
             if d.exists():
                 shutil.rmtree(d)
@@ -226,7 +226,7 @@ class IverilogRunner(Runner):
         return rc == 0 and not any(_COMPILE_ERROR.search(ln) for ln in out.splitlines()), out
 
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
-        ex = executor_for(ctx.model_source)
+        ex = executor_for(ctx.model_source, ctx.root)
         timeout = timeout_for(case, ctx)
         if case.style == "vector":
             return self._run_vector(case, cfg, cd, ctx, ex, timeout)
