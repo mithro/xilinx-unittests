@@ -1,7 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 
-from xut.formats.xvec import Event, XvecError, decode_value, dumps, encode_value, loads
+from xut.formats.xvec import (
+    Event,
+    XvecError,
+    decode_value,
+    dumps,
+    encode_value,
+    free_clock_edges,
+    free_runs,
+    loads,
+)
 
 SPEC_EXAMPLE = """\
 # xut-vec 2  prim=FDCE cfg=init1 nin=4 nout=1 nclk=1 settle_ps=120000 seed=17
@@ -92,6 +101,37 @@ def test_encode_value(bits, text):
     assert decode_value(text, len(bits)) == bits
 
 
+@pytest.mark.parametrize(
+    "text,width",
+    [
+        ("0x1f", 4),  # hex: 0x1f = 0b11111, a non-zero bit above the 4-bit field
+        ("0b101", 2),  # bin: leading '1' above a 2-bit field
+        ("0bx0", 1),  # bin: an 'x' above a 1-bit field is still a fit error
+        ("0bz1", 1),  # bin: a 'z' above a 1-bit field is still a fit error
+    ],
+)
+def test_decode_value_strict_width_rejects(text, width):
+    with pytest.raises(XvecError, match=f"does not fit in {width} bit"):
+        decode_value(text, width)
+
+
+@pytest.mark.parametrize(
+    "text,width,bits",
+    [
+        ("0x01", 4, "0001"),  # hex: leading zero nibble is fine
+        ("0b001", 2, "01"),  # bin: leading zero bit is fine
+        ("0b0x0", 2, "x0"),  # bin: leading zero ahead of the truncation point is fine
+    ],
+)
+def test_decode_value_leading_zeros_fit(text, width, bits):
+    assert decode_value(text, width) == bits
+
+
+def test_decode_value_field_name_in_message():
+    with pytest.raises(XvecError, match=r"in\[3:0\]: value '0x1f' does not fit in 4 bit"):
+        decode_value("0x1f", 4, field="in[3:0]")
+
+
 H = (
     "# xut-vec 2  prim=P cfg=c nin=4 nout=1 nclk=1 settle_ps=100 seed=0\n"
     "clock clk0 period=10 phase=0 duty=50 mode=stepped\n"
@@ -126,3 +166,102 @@ def test_missing_header_key():
 def test_wrong_version():
     with pytest.raises(XvecError, match="version 1"):
         loads("# xut-vec 1  prim=P\n")
+
+
+def test_set_value_overflow_names_field():
+    with pytest.raises(XvecError, match=r"in\[3:0\]: value '0x1f' does not fit in 4 bit"):
+        loads(H + "t=100 set in[3:0]=0x1f\n")
+
+
+# --- free_runs / free_clock_edges: the single shared definition of free-running clock
+# --- edges, used later by validate, golden replay and the testbench compiler.
+
+
+def test_free_clock_edges_no_free_clocks():
+    """A stepped-only vector has no free clocks: both functions return empty."""
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=1 settle_ps=0 seed=0\n"
+        "clock clk0 period=100 phase=0 duty=50 mode=stepped\n"
+        "t=100 edge clk0 r\n"
+    )
+    v = loads(text)
+    assert free_runs(v) == []
+    assert free_clock_edges(v) == []
+
+
+def test_free_clock_edges_no_clocks_at_all():
+    """A vector with nclk=0 and no clocks declared: both functions return empty."""
+    v = loads("# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=0 settle_ps=0 seed=0\nt=0 sample A\n")
+    assert free_runs(v) == []
+    assert free_clock_edges(v) == []
+
+
+def test_free_clock_edges_duty_and_phase():
+    """Non-50% duty and a nonzero phase: first rise at phase, fall at phase+high."""
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=1 settle_ps=0 seed=0\n"
+        "clock clk0 period=100 phase=30 duty=25 mode=free\n"
+        "t=230 sample A\n"
+    )
+    v = loads(text)
+    assert free_clock_edges(v) == [
+        Event(30, "edge", "clk0", value="r"),
+        Event(55, "edge", "clk0", value="f"),
+        Event(130, "edge", "clk0", value="r"),
+        Event(155, "edge", "clk0", value="f"),
+        Event(230, "edge", "clk0", value="r"),
+    ]
+
+
+def test_free_runs_and_edges_with_clock_start_stop():
+    """A clock_start/clock_stop window: the stop (in a low phase) ends the run with
+    no trailing falling edge and no edges at or after it."""
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=1 settle_ps=0 seed=0\n"
+        "clock clk0 period=100 phase=0 duty=50 mode=free\n"
+        "t=10 clock_start clk0\n"
+        "t=175 clock_stop clk0\n"
+    )
+    v = loads(text)
+    assert free_runs(v) == [(v.clock("clk0"), 10, 175)]
+    assert free_clock_edges(v) == [
+        Event(10, "edge", "clk0", value="r"),
+        Event(60, "edge", "clk0", value="f"),
+        Event(110, "edge", "clk0", value="r"),
+        Event(160, "edge", "clk0", value="f"),
+    ]
+
+
+def test_free_clock_edges_multiple_clocks_merged_sorted():
+    """Two free clocks with different period/phase: edges are merged in time order,
+    ties broken by declaration order (clk0 before clk1)."""
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=2 settle_ps=0 seed=0\n"
+        "clock clk0 period=100 phase=0 duty=50 mode=free\n"
+        "clock clk1 period=60 phase=10 duty=50 mode=free\n"
+        "t=130 sample A\n"
+    )
+    v = loads(text)
+    assert free_clock_edges(v) == [
+        Event(0, "edge", "clk0", value="r"),
+        Event(10, "edge", "clk1", value="r"),
+        Event(40, "edge", "clk1", value="f"),
+        Event(50, "edge", "clk0", value="f"),
+        Event(70, "edge", "clk1", value="r"),
+        Event(100, "edge", "clk0", value="r"),
+        Event(100, "edge", "clk1", value="f"),
+        Event(130, "edge", "clk1", value="r"),
+    ]
+
+
+def test_free_clock_edge_exactly_at_sample_time():
+    """An edge computed exactly at a sample's time is still included (the vector
+    itself never forbids this; class-rule separation is xut.validate's job)."""
+    text = (
+        "# xut-vec 2  prim=P cfg=c nin=1 nout=1 nclk=1 settle_ps=0 seed=0\n"
+        "clock clk0 period=50 phase=0 duty=50 mode=free\n"
+        "t=100 sample A\n"
+    )
+    v = loads(text)
+    assert v.events[-1].t == 100
+    assert Event(100, "edge", "clk0", value="r") in free_clock_edges(v)
