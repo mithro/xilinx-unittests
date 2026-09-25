@@ -113,7 +113,7 @@ def test_sv_check(tmp_path):
     cd = tmp_path / "cfg-c"
     cd.mkdir()
     (cd / "trace.body").write_text("a  Q=1\nb  Q=0\n")
-    r = sv_check(cd, "XUT_PASS\n", HDR)
+    r = sv_check(cd, "XUT_CHECKS 2\nXUT_PASS\n", HDR)
     assert (r.status, r.reason) == ("pass", None)
     t = xtr.load(cd / "trace.xtr")
     assert t.header == HDR and t.samples == {"a": {"Q": "1"}, "b": {"Q": "0"}}
@@ -610,3 +610,39 @@ def test_vector_without_samples_is_error(work, toy):
     assert PythonRunner().run(case, ctx).status == "error"
     res = IverilogRunner().run(case, ctx)
     assert res.status == "error" and "no samples" in res.configs[0].reason, res.reason
+
+
+# --- ruling S15(b): an sv pass needs >= 1 XUT_CHECK and >= 1 checkpoint ----------------
+
+
+@pytest.mark.container
+def test_sv_testbench_calling_only_xut_finish_is_error(ctx, work):
+    """PR B gate (a) M1: xut_finish alone used to print XUT_PASS and pass."""
+    case = _sv_variant(work, "  initial begin\n", "  initial xut_finish;\n  initial begin\n")
+    res = IverilogRunner().run(case, ctx)
+    d = workdir(ctx, "iverilog", case.id)
+    assert res.status == "error", (res.reason, (d / "run.log").read_text())
+    assert "recorded no checks/samples" in res.configs[0].reason
+    assert "XUT_CHECKS 0" in (d / "run.log").read_text()
+
+
+@pytest.mark.container
+def test_sv_checks_without_checkpoints_is_error(ctx, work):
+    case = _sv_variant(work, '`XUT_POINT1("after_gsr", "Q", q)', "")
+    tb = case.test_dir / "sv/tb_toyff_basic.sv"
+    tb.write_text(tb.read_text().replace('`XUT_POINT1("after_clk", "Q", q)', ""))
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error" and "recorded no checks/samples" in res.configs[0].reason
+    assert "3 XUT_CHECK(s) executed, 0 checkpoint(s)" in res.configs[0].reason
+
+
+@pytest.mark.container
+def test_sv_checkpoints_without_checks_is_error(ctx, work):
+    case = _sv_variant(work, "wire q;", "wire q;")
+    tb = case.test_dir / "sv/tb_toyff_basic.sv"
+    text = tb.read_text()
+    for label, exp in (("gsr", "1'b1"), ("clk", "1'b0"), ("gsr_pulse", "1'b1")):
+        text = text.replace(f'`XUT_CHECK("{label}", q, {exp})', "")
+    tb.write_text(text)
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "error" and "0 XUT_CHECK(s) executed" in res.configs[0].reason
