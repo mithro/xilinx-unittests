@@ -557,7 +557,7 @@ def _in_schema_order(status: dict) -> dict:
 def record(
     root: Path,
     prim: str,
-    family: str = "7series",
+    family: str | None = None,
     model_source: str = REFERENCE_MODEL_SOURCE,
     warn: Callable[[str], None] | None = None,
 ) -> dict:
@@ -568,12 +568,15 @@ def record(
     other fills only ``results_by_model_source.<source>`` (and adds its tools). Both add
     the source to ``measured.model_sources`` and refresh ``measured.tree_hash`` and
     ``findings``; recording one source never touches another's results. ``warn`` gets
-    every warning (default: stderr)."""
+    every warning (default: stderr). ``family`` defaults to docs/work-units.yaml's (no
+    module hard-codes the family name)."""
     from xut.catalog.model import load_entry
     from xut.testspec import discover
+    from xut.workunits import load_family
 
     warn = warn or _warn_stderr
     root = Path(root)
+    family = family or load_family(root)
     cases = [c for c in discover(root) if c.prim == prim and c.family == family]
     if not cases:
         raise RecordError(f"no tests for {prim} under tests/{family}/")
