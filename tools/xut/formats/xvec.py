@@ -40,8 +40,9 @@ same time are allowed *without* ``simultaneous`` exactly when their
 change. Overlapping ``set`` ranges at the same time are always an error,
 ``simultaneous`` or not. Any other co-timed combination — a non-``set``
 event sharing a ``t`` with anything, or two ``set``s whose ranges overlap —
-requires ``simultaneous`` on *every* event at that ``t``; a mix of marked
-and unmarked events, or an unmarked non-``set`` group, is an error. A lone
+requires ``simultaneous`` on *every* event at that ``t``; an unmarked
+non-``set`` group is an error. A mix of marked and unmarked events at one ``t``
+is always an error, disjoint ``set``s included (the marking would be ambiguous). A lone
 event marked ``simultaneous`` (nothing else at its ``t``) is also an error.
 """
 
@@ -294,6 +295,15 @@ def _check_structure(vec: Vec, event_lines: list[int]) -> None:
                     event_lines[i],
                 )
             continue
+        unmarked = [event_lines[i] for i in idxs if not ev[i].simultaneous]
+        if 0 < len(unmarked) < len(idxs):
+            # Mixed marking is ambiguous (were the unmarked events meant to be at the
+            # same instant or not?) and is refused for every group, disjoint sets included.
+            at = ", ".join(str(n) for n in unmarked)
+            raise XvecError(
+                f"t={t}: mixed 'simultaneous' marking: mark every event at this time or "
+                f"none (unmarked at line(s) {at})",
+            )
         if all(ev[i].op == "set" for i in idxs):
             # Disjoint 'set' ranges commute as one atomic input change and need no
             # 'simultaneous' marking; overlapping ranges are always an error.
@@ -309,7 +319,6 @@ def _check_structure(vec: Vec, event_lines: list[int]) -> None:
             continue
         # A non-'set' event sharing this t with anything else (or a 'set' mixed
         # with a non-'set') requires 'simultaneous' on every event at this t.
-        unmarked = [event_lines[i] for i in idxs if not ev[i].simultaneous]
         if unmarked:
             at = ", ".join(str(n) for n in unmarked)
             raise XvecError(
