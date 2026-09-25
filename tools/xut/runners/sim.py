@@ -18,6 +18,7 @@ the directory name.
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 import xml.etree.ElementTree as ET
@@ -43,6 +44,8 @@ COCOTB_RUN = HDL / "cocotb_run.py"
 COCOTB_BUILD_FAILED = 3
 #: Trace header keys a cocotb test's trace.xtr must carry with the runner's values.
 _COCOTB_HEADER_KEYS = ("runner", "flow", "model", "seed", "prim", "cfg")
+#: ``xut_finish``'s count of executed XUT_CHECK/XUT_CHECKN (hdl/xut_trace.svh).
+_CHECKS = re.compile(r"^\s*XUT_CHECKS (\d+)\s*$", re.MULTILINE)
 
 __all__ = [
     "COCOTB_BUILD_FAILED",
@@ -143,9 +146,17 @@ def vector_check(
 
 
 def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
-    """``trace.xtr`` = ``header`` + the testbench's ``trace.body``; pass iff the run's
-    output has ``XUT_PASS``, no ``XUT_FAIL`` and no ``$error`` line (``ERROR:`` from
-    vvp, ``Error:`` from xsim). A malformed ``trace.body`` is an error."""
+    """``trace.xtr`` = ``header`` + the testbench's ``trace.body``. A malformed
+    ``trace.body`` is an error. Then, in order:
+
+    - any ``XUT_FAIL`` or ``$error`` line (``ERROR:`` from vvp, ``Error:`` from xsim):
+      ``fail`` with the first one;
+    - no ``XUT_PASS``: ``error``;
+    - no ``XUT_CHECKS <n>`` line (``xut_finish`` prints it: the number of
+      ``XUT_CHECK``/``XUT_CHECKN`` executed): ``error``;
+    - zero checks executed or zero checkpoints in ``trace.body``: ``error`` ("sv test
+      recorded no checks/samples", ruling S15: zero evidence is never a pass);
+    - otherwise ``pass``."""
     cfg = cfg_of(header)
     body = cd / "trace.body"
     try:
@@ -165,6 +176,23 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
         return ConfigResult(cfg, "fail", bad[0], None, sha)
     if "XUT_PASS" not in log_text:
         return ConfigResult(cfg, "error", "testbench did not report XUT_PASS/XUT_FAIL")
+    counts = _CHECKS.findall(log_text)
+    if not counts:
+        return ConfigResult(
+            cfg,
+            "error",
+            "testbench did not report XUT_CHECKS (include xut_trace.svh and end with xut_finish)",
+        )
+    checks, samples = int(counts[-1]), len(t.samples)
+    if checks == 0 or samples == 0:
+        return ConfigResult(
+            cfg,
+            "error",
+            f"sv test recorded no checks/samples ({checks} XUT_CHECK(s) executed, "
+            f"{samples} checkpoint(s) in trace.body; ruling S15)",
+            None,
+            sha,
+        )
     return ConfigResult(cfg, "pass", None, None, sha)
 
 

@@ -676,3 +676,39 @@ def test_vector_without_samples_is_error(ctx, work, toy):
     assert PythonRunner().run(case, ctx).status == "error"
     res = XsimRunner(extra_files=[_toyff(work)]).run(case, ctx)
     assert res.status == "error" and "no samples" in res.configs[0].reason, res.reason
+
+
+# --- ruling S15(b): an sv pass needs >= 1 XUT_CHECK and >= 1 checkpoint ----------------
+
+
+@pytest.mark.vivado
+def test_sv_testbench_calling_only_xut_finish_is_error(ctx, work):
+    """PR B gate (a) M1: xut_finish alone used to print XUT_PASS and pass."""
+    case = _sv_variant(work, "  initial begin\n", "  initial xut_finish;\n  initial begin\n")
+    res = XsimRunner().run(case, ctx)
+    d = workdir(ctx, "xsim", case.id)
+    assert res.status == "error", (res.reason, (d / "run.log").read_text())
+    assert "recorded no checks/samples" in res.configs[0].reason
+    assert "XUT_CHECKS 0" in (d / "run.log").read_text()
+
+
+@pytest.mark.vivado
+def test_sv_checks_without_checkpoints_is_error(ctx, work):
+    case = _sv_variant(work, '`XUT_POINT1("after_gsr", "Q", q)', "")
+    tb = case.test_dir / "sv/tb_toyff_basic.sv"
+    tb.write_text(tb.read_text().replace('`XUT_POINT1("after_clk", "Q", q)', ""))
+    res = XsimRunner().run(case, ctx)
+    assert res.status == "error" and "recorded no checks/samples" in res.configs[0].reason
+    assert "3 XUT_CHECK(s) executed, 0 checkpoint(s)" in res.configs[0].reason
+
+
+@pytest.mark.vivado
+def test_sv_checkpoints_without_checks_is_error(ctx, work):
+    case = _sv_variant(work, "wire q;", "wire q;")
+    tb = case.test_dir / "sv/tb_toyff_basic.sv"
+    text = tb.read_text()
+    for label, exp in (("gsr", "1'b1"), ("clk", "1'b0"), ("gsr_pulse", "1'b1")):
+        text = text.replace(f'`XUT_CHECK("{label}", q, {exp})', "")
+    tb.write_text(text)
+    res = XsimRunner().run(case, ctx)
+    assert res.status == "error" and "0 XUT_CHECK(s) executed" in res.configs[0].reason
