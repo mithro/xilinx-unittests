@@ -100,7 +100,7 @@ After this step, fan-out work units can write tests against a working runner mat
      - generate conditions whose configurations cannot be enumerated.
    - Tracing must cross gate primitives, continuous assigns and same-file sub-instances (fixtures `BUFVZ`, `VZSUB`).
    - Analysis and rewrite cover **every** generate branch. `check_clean` elaborates the result under every generate configuration, and the equivalence check runs for the default plus every configuration a test uses (`VZGEN`).
-   - `deassign` is guarded (`if (X__ovr_sel != 0)`, spec §6.2 rev 3.1), and packed ranges are preserved (`VZRANGE`).
+   - `deassign` is guarded and wrapped (`begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`, spec §6.2 rev 3.1). The outer `begin … end` stops a following `else` binding to the guard (`VZIFELSE`). Packed ranges are preserved (`VZRANGE`).
    - The Icarus equivalence check (Task 14) is the backstop. Reviewers must confirm that a mismatch makes the Verilator result `error` (a `transform-bug`), not a pass.
 2. **Golden models are clean-room.**
    - Task 20's model cites a UG953 page for every behaviour. Anything UG953 does not state is `inferred:` (clock edges while GSR is active), or is `-` (undefined) when UG953 is silent on a conflict (GSR versus an active CLR/PRE).
@@ -2189,16 +2189,15 @@ def test_free_clock_stop_must_be_in_low_phase(fdce_map):
                                                       fdce_map).errors)   # low phase
 
 
-def test_one_edge_definition_everywhere(fdce_map):
+def test_free_clock_edges_definition(fdce_map):
     from xut.formats.xvec import free_clock_edges
-    from xut.golden import expand_free_clocks
-    from xut.stimcompile import compile_vec
 
     v = loads(HDR.replace("mode=stepped", "mode=free")
               + "t=120000 clock_start clk0\nt=137000 clock_stop clk0\nt=150000 end\n")
     edges = [(e.t, e.value) for e in free_clock_edges(v)]
     assert edges == [(120000, "r"), (125000, "f"), (130000, "r"), (135000, "f")]
-    assert [(e.t, e.value) for e in expand_free_clocks(v) if e.op == "edge"] == edges
+    # golden (Task 6) and the stimulus compiler (Task 7) are pinned to this same
+    # definition by test_golden.py and test_stimcompile.py::test_free_clock_words
 ```
 
 `tools/tests/test_stimgen.py`:
@@ -3206,6 +3205,29 @@ def test_words():
     assert w[-1] >> 120 == 15
 
 
+def test_free_clock_words():
+    """compile_vec starts/stops the TB generator exactly where free_runs says, and the
+    edges the TB then produces (rise at start, fall after high, one per period, none
+    after a low-phase stop) are the free_clock_edges list; golden replays the same list."""
+    from xut.formats.xvec import free_clock_edges, free_runs
+    from xut.golden import expand_free_clocks
+
+    v = loads("""\
+# xut-vec 2  prim=TOY cfg=c nin=3 nout=1 nclk=1 settle_ps=120000 seed=0
+clock clk0 period=10000 phase=0 duty=50 mode=free
+t=120000 clock_start clk0
+t=137000 clock_stop clk0
+t=150000 end
+""")
+    ((c, start, stop),) = free_runs(v)
+    w = compile_vec(v, M).words
+    ops = [(x >> 120, (x >> 96) & 0xFFFFFF, (x >> 64) & 0xFFFFFFFF, x & ((1 << 64) - 1)) for x in w]
+    assert (5, 0, 5000, start) in ops and (6, 0, 5000, start) in ops   # CLK_HI, CLK_START
+    assert (7, 0, 0, stop) in ops                                       # CLK_STOP
+    assert [(e.t, e.value) for e in expand_free_clocks(v) if e.op == "edge"] == \
+        [(e.t, e.value) for e in free_clock_edges(v)]
+
+
 def test_raw_to_trace():
     t = raw_to_trace("S 0 1\nS 1 x\nS 2 0\n", ["S0", "S1", "S2"], M, {"runner": "iverilog"})
     assert {k: v["Q"] for k, v in t.samples.items()} == {"S0": "1", "S1": "x", "S2": "0"}
@@ -3742,7 +3764,7 @@ git add tools && git commit -m "runners: add runner base, result.json, python go
 - Consumes: `executor_for`, `sim_tool_versions`, `image_digest` (Task 1); `write_stim`, `raw_to_trace`, `TB` (Task 7); `compare` (Task 3); `Runner` (Task 8)
 - Produces:
   - `IverilogRunner` (`name="iverilog"`, `x_observable=True`)
-  - `IverilogVzRunner` (`name="iverilog-vz"`): the same, but with the transformed-model directory first on the library path. It is wired in Task 15.
+  - `IverilogVzRunner` (`name="iverilog-vz"`): the same, but with the transformed-model directory first on the library path. The class stub exists here, but it is **not** added to `RUNNERS` until Task 15, so no run before then can select it and fail with `NotImplementedError`.
   - `vector_check(cfgdir, m, labels, expected, actual_header, x_observable) -> ConfigResult`, which is shared by all simulator runners
   - `sv_check(cfgdir, log_text, header) -> ConfigResult`
 
@@ -4192,6 +4214,7 @@ endmodule
 | `vz_bad_macro.v` / `VZMACRO` | `` `define FORCE_R assign r = 1'b0 `` then `` always @(S) if (S) `FORCE_R; else deassign r; `` | `macro expansion` |
 | `vz_bad_undriven.v` / `VZUNDRIVEN` | `always @(en) if (en) assign r = 1'b0; else deassign r;` where `en` is a `wire` with no driver at all | `cannot resolve the driver of en` |
 | `vz_bad_blackbox.v` / `VZBLACKBOX` | `SOMETHING_UNKNOWN u (.o(en), .i(S));` (module not in the file) feeding the forcing block | `driven by an instance output` |
+| `vz_bad_nestgen.v` / `VZNESTGEN` | `generate if (P) begin if (Q) always ... assign r ...; end endgenerate` (a nested generate condition) | `nested generate conditions` |
 | `vz_bad_genparam.v` / `VZBADGEN` | `generate if (WIDTH > DEPTH)` with integer parameters and no literal to derive candidate values from | `cannot enumerate generate configurations` |
 
 Generate branches are no longer a refusal: `analyze` covers every branch (`VZGEN`). Task 13's `check_clean` then elaborates the rewrite under every generate configuration, so a missed rename in any branch fails loudly (`test_missed_rename_is_caught`).
@@ -4268,6 +4291,7 @@ def test_self_referencing_read_is_not_a_write():
     ("vz_bad_undriven.v", "VZUNDRIVEN", "cannot resolve the driver of en"),
     ("vz_bad_blackbox.v", "VZBLACKBOX", "driven by an instance output"),
     ("vz_bad_genparam.v", "VZBADGEN", "cannot enumerate generate configurations"),
+    ("vz_bad_nestgen.v", "VZNESTGEN", "nested generate conditions"),
 ])
 def test_refusals(fname, module, msg):
     with pytest.raises(TransformError, match=msg):
@@ -4789,12 +4813,16 @@ def generate_configs(path: Path, module: str, choices: dict[str, list[str]] | No
     when given; otherwise both values for a 1-bit parameter; otherwise every literal the
     condition compares the parameter with, plus the default. Take
     the product per construct (other parameters at default), union over constructs,
-    deduplicate, and put `{}` first. Loop generates need nothing: every iteration is
+    deduplicate, and put `{}` first. A generate if/case nested inside another raises
+    (known limitation, plan ambiguity 12). Loop generates need nothing: every iteration is
     elaborated. Raises if a condition has a parameter with no candidates, or the total
     exceeds `limit`."""
     tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
     params = _module_parameters(tree, module)            # name -> default text
     out: list[dict[str, str]] = [{}]
+    nested = _nested_generate_conditions(tree, module)
+    if nested:
+        raise TransformError(module, f"nested generate conditions are not supported: `{nested[0]}`")
     for cond in _generate_conditions(tree, module):      # syntax nodes of if/case conditions
         names = sorted(_identifiers(cond) & set(params))
         cands = {n: (choices or {}).get(n)
@@ -4848,7 +4876,7 @@ The helpers `_module_parameters`, `_generate_conditions`, `_identifiers`, `_is_o
 
 - `_SK.Return`, `_SK.Break`, `_SK.Continue`, `_SK.Disable` and the loop kinds must exist in pyslang 11. Check `dir(ast.StatementKind)` and drop any that do not.
 - A local variable declared in a named block has a hierarchical path like `VZ.blk.i`. After the module prefix is stripped it still contains a `.`, which is how `force()` recognises a local. glbl signals keep their `glbl.` prefix.
-- The `rvalue_names` rule treats the lvalue of a `deassign X` as a *read*. That is intended: the rewrite turns it into `if (X__ovr_sel != 0) begin X__base = X; ... end`.
+- The `rvalue_names` rule treats the lvalue of a `deassign X` as a *read*. That is intended: the rewrite turns it into `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`.
 - Still to verify with `dir()`: `CompilationOptions.paramOverrides` (slang's `-G`), `PrimitiveInstance.portConnections` and `.primitiveType.name`, `Instance.portConnections[i].port`/`.expression`, and the syntax kinds `IfGenerate`/`CaseGenerate`. If `paramOverrides` is not exposed, generate a wrapper module that instantiates the model with `#(.NAME(value))` and analyse that instance instead: same result.
 - Spans from different generate configurations are identical source offsets, so `set` union deduplicates them.
 
@@ -4870,7 +4898,7 @@ git add tools && git commit -m "verilatorize: derive forced regs, triggers and e
 ### Task 13: `xut verilatorize` — the shadow-register rewrite
 
 **Files:**
-- Create: `tools/xut/verilatorize/rewrite.py`, `tools/xut/verilatorize/driver.py`, `tools/tests/test_vz_rewrite.py`, `tools/tests/fixtures/verilatorize/vz_ranges.v`
+- Create: `tools/xut/verilatorize/rewrite.py`, `tools/xut/verilatorize/driver.py`, `tools/tests/test_vz_rewrite.py`, `tools/tests/fixtures/verilatorize/vz_ranges.v`, `tools/tests/fixtures/verilatorize/vz_ifelse.v`
 - Modify: `tools/xut/cli.py`
 
 **Interfaces:**
@@ -4887,7 +4915,7 @@ git add tools && git commit -m "verilatorize: derive forced regs, triggers and e
 The rewrite follows spec §6.2 steps 1–3 (rev 3.1), with two refinements:
 
 - Each override expression gets its own net `X__ovr_k`, declared with the **same packed range and signedness text** as `X` (`[4:1]`, `[0:3]`, `signed`), and the mux selects among nets of identical type. `assign X__ovr_k = e_k;` extends and truncates `e_k` exactly as the original `assign X = e_k;` did, and every existing `X[i]`/`X[a:b]` read indexes the new net exactly as it indexed the reg (review #5).
-- `deassign X;` becomes `if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end`. A `deassign` of a reg that is not forced is a no-op in Verilog; the guard keeps it one, so a stale `X` (not yet propagated this time step) can never clobber an `X__base` written earlier in the same step (review #4, spec §6.2 step 2 rev 3.1).
+- `deassign X;` becomes `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`. The outer `begin … end` matters: the replacement is a single statement, so when the original `deassign` is the then-arm of `if (c) deassign X; else …`, the original `else` still binds to `if (c)` and not to the new guard (dangling-else, PR #3 follow-up N1). A `deassign` of a reg that is not forced is a no-op in Verilog; the guard keeps it one, so a stale `X` (not yet propagated this time step) can never clobber an `X__base` written earlier in the same step (review #4, spec §6.2 step 2 rev 3.1).
 
 Output for `VZTRIG` (reference for the golden test, whitespace as produced):
 
@@ -4898,7 +4926,7 @@ Output for `VZTRIG` (reference for the golden test, whitespace as produced):
     if (gsr_in) q__ovr_sel = 2'd1;
     else if (CLR) q__ovr_sel = 2'd2;
     else if (PRE) q__ovr_sel = 2'd3;
-    else if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end
+    else begin if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end end
   always @(posedge C) q__base <= D;
   // xut verilatorize: shadow-register override muxes (spec §6.2)
   assign q__ovr_1 = 1'b0;
@@ -4929,7 +4957,8 @@ MODS = {"vz_single.v": "VZSINGLE", "vz_multi.v": "VZMULTI", "vz_retain.v": "VZRE
         "vz_nonconst.v": "VZNONCONST", "vz_trig.v": "VZTRIG", "vz_select.v": "VZSEL",
         "vz_task.v": "VZTASK", "vz_shift.v": "VZSHIFT", "vz_delay.v": "VZDELAY",
         "vz_async.v": "VZASYNC", "vz_cone.v": "MMCMVZ", "vz_gate.v": "BUFVZ",
-        "vz_sub.v": "VZSUB", "vz_generate.v": "VZGEN", "vz_ranges.v": "VZRANGE"}
+        "vz_sub.v": "VZSUB", "vz_generate.v": "VZGEN", "vz_ranges.v": "VZRANGE",
+        "vz_ifelse.v": "VZIFELSE"}
 
 
 @pytest.mark.parametrize("fname", sorted(MODS))
@@ -4941,7 +4970,13 @@ def test_output_is_clean_and_elaborates_in_every_generate_config(fname):
 def test_vztrig_golden_fragments():
     out = rewrite(analyze(FIX / "vz_trig.v", "VZTRIG", GLBL))
     assert "reg q__base; reg [1:0] q__ovr_sel = 2'd0; wire q;" in out
-    assert "else if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end" in out
+    assert "else begin if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end end" in out
+
+
+def test_deassign_in_then_arm_keeps_its_else():
+    out = rewrite(analyze(FIX / "vz_ifelse.v", "VZIFELSE", GLBL))
+    assert ("if (C2) begin if (q__ovr_sel != 1'd0) begin q__base = q; q__ovr_sel = 1'd0; end end"
+            " else q__ovr_sel = 1'd1;") in out
     assert "always @(posedge C) q__base <= D;" in out
     assert ("assign q = (q__ovr_sel == 2'd0) ? q__base : (q__ovr_sel == 2'd1) ? q__ovr_1 : "
             "(q__ovr_sel == 2'd2) ? q__ovr_2 : q__ovr_3;") in out
@@ -4995,6 +5030,8 @@ def test_verilator_lints_transformed(fname):
                               cwd=work, log=log, timeout_s=120)
     assert rc == 0, log.read_text()
 ```
+
+`vz_ifelse.v` (`VZIFELSE`): `always @(C2 or E) if (C2) deassign q; else assign q = E;` plus `always @(posedge C) q <= D;`. The `deassign` is the then-arm of an if/else, which pins the dangling-else fix.
 
 `vz_ranges.v` (`VZRANGE`): three forced regs `reg [4:1] a;`, `reg [0:3] b;` and `reg signed [7:0] c;`, each read through selects (`a[4]`, `b[0:1]`, `c[7]`) in continuous assigns.
 
@@ -5051,7 +5088,8 @@ def rewrite(an: Analysis) -> str:
             tail.append(f"  assign {x.name}__ovr_{k} = {an.text[expr.start:expr.end]};")
         for d in x.deassigns:
             edits.append((d.start, d.end,
-                          f"if ({sel} != {w}'d0) begin {base} = {x.name}; {sel} = {w}'d0; end"))
+                          f"begin if ({sel} != {w}'d0) begin {base} = {x.name}; {sel} = {w}'d0; "
+                          "end end"))  # outer begin/end: no dangling else (N1)
         mux = f"{x.name}__ovr_{n}"
         for k in range(n - 1, 0, -1):
             mux = f"({sel} == {w}'d{k}) ? {x.name}__ovr_{k} : {mux}"
@@ -5153,7 +5191,7 @@ The file is `hw_renderable no`. `validate` must report no errors, and a test pin
 - [ ] **Step 1: Write the tests** `tools/tests/test_vz_equiv.py`:
   - `equiv_stimulus` for `VZTRIG` validates with zero errors, contains `simultaneous` events, pulses `glbl GSR`, `CLR` and `PRE` at least three times each, and has at least three overlapping-pair sections (three pairs).
   - For `MMCMVZ`, the stimulus pulses RST and PWRDWN, and every pulse has a `CLKIN1` edge both before and after it.
-  - Container tests: for every fixture in `MODS` (Task 13), build a `ModelSource` in `tmp_path/src/` (`unisims/` holds the fixture, `glbl.v` the fixture glbl). Run the driver with `check=True`, and expect `equiv[key] == "pass"` for every recorded configuration of all fifteen. `VZGEN` must have two keys (`default`, `IS_C_INVERTED=1'b1`).
+  - Container tests: for every fixture in `MODS` (Task 13), build a `ModelSource` in `tmp_path/src/` (`unisims/` holds the fixture, `glbl.v` the fixture glbl). Run the driver with `check=True`, and expect `equiv[key] == "pass"` for every recorded configuration of all sixteen (VZIFELSE included). `VZGEN` must have two keys (`default`, `IS_C_INVERTED=1'b1`).
   - A **guard test** for the rev-3.1 `deassign` rule: fixture `VZRETAIN` extended with an `initial r = 1'b1;` and a forcing block whose control goes x→0 at t=0 (so it runs `deassign` while unforced). Equivalence must pass; with the guard removed by monkeypatching `rewrite`, it must fail.
   - A **mutation test.** Deliberately corrupt the rewrite: monkeypatch `rewrite` so that `deassign` becomes `X__ovr_sel = 0;` without `X__base = X;`, which breaks retention. `VZRETAIN` must then give `equiv == "fail"` with at least one mismatch. This proves the check can fail.
 
@@ -5177,7 +5215,7 @@ Expected: the `progress:` lines reach `done=M total=M`, and the summary shows `e
 
 **Files:**
 - Create: `tools/xut/runners/verilator.py`, `tools/tests/test_runner_verilator.py`
-- Modify: `tools/xut/runners/__init__.py`, `tools/xut/runners/iverilog.py` (`IverilogVzRunner.lib_first`), `tools/xut/run.py` (auto-add `iverilog-vz`)
+- Modify: `tools/xut/runners/__init__.py` (register `verilator` **and** `iverilog-vz` in `RUNNERS`: this is the first task where `iverilog-vz` works), `tools/xut/runners/iverilog.py` (`IverilogVzRunner.lib_first`), `tools/xut/run.py` (auto-add `iverilog-vz`)
 
 **Interfaces:**
 - Consumes: `Manifest`, `vz_dir`, `verilatorize`, `check_model` (Tasks 13–14); `prepare_vector`, `vector_check` (Tasks 9–10)
@@ -7520,4 +7558,5 @@ git commit -m "status: regenerate" -m "Co-Authored-By: Claude Opus 5.5 (1M conte
 8. **Runner declarations** (controller ruling on PR #3 review item 1). `runners` values stay step 1's strings `"yes"|"no"|"unsupported"`, and reasons go in a separate `unsupported_reasons` map. The schema amendment is part of Task 8 (`infra/sim-core`).
 9. **`sv_x_inputs` on Verilator** (review item 11). Declared `"unsupported"` with a reason. A 2-state simulator randomises the `1'bx` stimulus per X seed (spec §5.6), so the undocumented checkpoints would differ by construction. That is a property of the stimulus, not a model `x-dependence` finding (§8). Its `iverilog-vz` companion is skipped with it, because it follows the Verilator declaration.
 10. **Trigger tracing and generate branches** (controller rulings on review items 2 and 3). Tracing crosses gate primitives, continuous assigns and same-file sub-instances (over-approximated: outputs depend on all inputs). Any unresolvable driver makes the model `unsupported`. Analysis and rewrite cover every generate branch, and equivalence runs for the default plus every attribute configuration a test uses.
-11. **Guarded `deassign`** (review item 4). `if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end`. Spec §6.2 step 2 is amended in rev 3.1.
+11. **Guarded `deassign`** (review item 4 and follow-up N1). `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`. The outer `begin … end` prevents a dangling `else` when the `deassign` is an if-arm. Spec §6.2 step 2 is amended in rev 3.1.
+12. **Nested generate constructs** (known limitation). `generate_configs` enumerates each generate `if`/`case` on its own. A generate construct nested inside another raises `TransformError("nested generate conditions ...")`, so the model is `unsupported` in the manifest and in `PORTABILITY.md`. It is never partially transformed. `xut lint` (`portability-agreement`, `verilatorize-equiv`) then rejects any test that declares `verilator: "yes"` for such a primitive. Lifting this means enumerating nested conditions under their parents' configurations, which is a later infra change.
