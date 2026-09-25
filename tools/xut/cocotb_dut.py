@@ -44,14 +44,6 @@ GAP_PS = 1_000
 MAP_FORMAT = "xut-map 1"
 
 
-def _prov_token(prov: str | tuple[str, ...]) -> str:
-    """A model ``Out.prov`` as one .xtr token: the tag, or per-bit tags comma-joined LSB
-    first when they differ (as ``xut.golden`` writes them)."""
-    if isinstance(prov, str):
-        return prov
-    return prov[0] if len(set(prov)) == 1 else ",".join(prov)
-
-
 class XutDut:
     """The DUT of one configuration, addressed by port name (module docstring)."""
 
@@ -177,7 +169,7 @@ class XutDut:
         """Record every output port as sample ``label`` (with optional per-port
         provenance, a model ``Out.prov``); returns the recorded values."""
         values = {p: self.get(p) for p in self.out_ports}
-        tokens = {p: _prov_token(v) for p, v in (prov or {}).items()}
+        tokens = {p: xtr.prov_token(v) for p, v in (prov or {}).items()}
         self.trace.add(label, values, tokens or None)
         return values
 

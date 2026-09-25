@@ -74,6 +74,15 @@ def _check_prov(tag: str) -> str:
     return tag
 
 
+def prov_token(prov: str | tuple[str, ...]) -> str:
+    """A model ``Out.prov`` as one .xtr provenance token: the tag, or -- when the bits
+    differ -- the per-bit tags comma-joined LSB first (``xut.golden.bit_prov`` reads it
+    back). Shared by ``xut.golden`` and ``xut.cocotb_dut``."""
+    if isinstance(prov, str):
+        return prov
+    return prov[0] if len(set(prov)) == 1 else ",".join(prov)
+
+
 def _check_header(header: dict[str, str]) -> None:
     for k, v in header.items():
         if not is_header_key(k):

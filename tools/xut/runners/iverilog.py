@@ -125,7 +125,7 @@ class IverilogRunner(Runner):
 
     def lib_first(self, case: TestCase, cfg: str, ctx: RunContext) -> tuple[Path, ...]:
         """Library dirs searched before the model source. iverilog-vz returns the
-        verilatorized dir. Returned, never stored on self: jobs run in threads."""
+        verilatorized dir (see ``Runner`` for the per-instance contract)."""
         return ()
 
     def available(self, ctx: RunContext) -> tuple[bool, str]:
