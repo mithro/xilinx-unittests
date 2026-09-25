@@ -15,3 +15,26 @@ tests:
     flows: [rtl]
     related: []
     gaps: []
+  - id: 7series.TOYFF.L0.reject
+    level: L0
+    style: vector
+    source: vectors/gen.py:l0_reject
+    exercises: [claim:TOYFF.R1]
+    attr_sampling: {INIT: ["1'bx"]}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {hw: "toy"}
+    flows: [rtl]
+    related: []
+    gaps: []
+  - id: 7series.TOYFF.L1.sv_basic
+    level: L1
+    style: sv
+    source: sv/tb_toyff_basic.sv
+    exercises: [port:D, claim:TOYFF.C1]
+    attr_sampling: {}
+    configs: [{cfg: default, attrs: {}}]
+    runners: {python: "no", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {python: "sv testbench", hw: "toy"}
+    flows: [rtl]
+    related: []
+    gaps: []

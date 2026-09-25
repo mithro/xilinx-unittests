@@ -80,7 +80,7 @@ def test_selectors_and_runner_default(repo):
     assert r.exit_code == 0, r.output
     ids, runners, ctx = repo[0]
     assert ids == ["7series.TOYFF.L2.c"]
-    assert runners == ["python"]  # every RUNNERS entry except iverilog-vz
+    assert runners == ["python", "iverilog"]  # every RUNNERS entry except iverilog-vz
     assert (ctx.seed, ctx.jobs, ctx.timeout_s, ctx.flow) == (5, 3, 9, "rtl")
     assert ctx.model_source.name == "unisim-test"
     assert "7series.TOYFF.L2.c" in r.output and "pass" in r.output
@@ -108,7 +108,7 @@ def test_verilator_adds_iverilog_vz(repo, monkeypatch):
     assert _run("--runner", "verilator").exit_code == 0
     assert repo[0][1] == ["verilator", "iverilog-vz"]
     assert _run().exit_code == 0  # default: everything but iverilog-vz, then added back
-    assert repo[1][1] == ["python", "verilator", "iverilog-vz"]
+    assert repo[1][1] == ["python", "iverilog", "verilator", "iverilog-vz"]
 
 
 def test_fail_or_error_exits_1(repo, monkeypatch):
@@ -136,7 +136,8 @@ def test_end_to_end_python_on_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
     r = _run("TOYFF", "--runner", "python")
     assert r.exit_code == 0, r.output
-    assert "progress: done=1 total=1" in r.output
+    # two vector tests run python; the sv test gets a declared-unsupported skip
+    assert "progress: done=3 total=3" in r.output
     res = tmp_path / "build/rtl/python/unisim-test/7series.TOYFF.L1.capture/result.json"
     assert res.is_file()
     assert (tmp_path / "build/rtl/summary.json").is_file()
