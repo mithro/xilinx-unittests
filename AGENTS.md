@@ -48,10 +48,23 @@ Branch types (spec §13.2):
 
 ## 3. Only touch owned paths
 
-`docs/work-units.yaml` maps each work unit to its primitives; `xut.workunits`
-derives the glob patterns it owns (tests, `<PRIM>.overrides.yaml`, its
-models, its status files, its findings — never the generated
-`catalog/<family>/<PRIM>.yaml`). Everything else is infra-owned.
+`docs/work-units.yaml` maps each work unit to its primitives;
+`xut.workunits.owned_paths` derives the glob patterns it owns. What a
+branch may touch is determined by its **type** (spec §13.2); this is what
+`xut lint --branch` (Task 8) enforces:
+
+| Branch | Owns |
+|---|---|
+| `unit/<family>/<unit>` | `owned_paths(unit)` — tests, `<PRIM>.overrides.yaml`, its models (including `_common/<unit>.py`), status files, findings — plus its own log files |
+| `integ/<name>` | `tests/7series/integration/<name>/**`, plus its own log files |
+| `docs/<topic>` | `docs/**`, plus its own log files |
+| `infra/<topic>` | anything **except** paths owned by a work unit — this includes the generated `catalog/<family>/<PRIM>.yaml` files, status-directory stubs, and the review/templates infra under `docs/` |
+
+Every branch, of every type, may also add its own progress-log entries:
+`log/<YYYY-MM-DDTHHMM>-<own-branch-slug>-<slug>.md`, where `<own-branch-slug>`
+is `xut.workunits.branch_slug(branch)` — the branch name with every `/`
+replaced by `-` (rule 6). A branch never writes another branch's log
+entries.
 
 Before every push:
 
@@ -59,8 +72,8 @@ Before every push:
 uv run xut lint --branch
 ```
 
-This fails if the branch has touched a path outside what its work unit (or
-`INFRA_PATHS`, on an `infra/*` branch) owns.
+This fails if the branch has touched a path outside what its type owns per
+the table above.
 
 ## 4. Small commits
 
@@ -113,7 +126,7 @@ tool/model versions it was measured with (spec §11).
 ## 8. Clean-room golden models
 
 Write golden models (`models/xut_models/7series/<prim>.py` and the shared
-`_common/<family>.py`) **from UG953 only**. Never open UNISIM source while
+`_common/<unit>.py`) **from UG953 only**. Never open UNISIM source while
 writing or editing a model — that is what the model is being cross-checked
 against, and reading it defeats the cross-check.
 
@@ -171,6 +184,10 @@ Reviewers post findings with `gh pr review <N> --comment --body-file
 must-fix in new commits (never by amending or force-pushing over
 reviewed history) and ask for re-review. The merge gate is: `xut lint`
 passes, CI is green, both reviewers approve with no open must-fix.
+
+**Concurrency (spec §13.5).** At most **two sub-agents in total, reviewers
+included**, run at any time — normally one implementer plus one reviewer.
+The orchestrator itself does not count against this limit.
 
 ## 13. Infra dependencies
 
