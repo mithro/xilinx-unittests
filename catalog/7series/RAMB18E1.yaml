@@ -777,7 +777,7 @@ attributes:
   default: ALL
   allowed:
   - ALL
-  - 'GENERATE_X_ONLY '
+  - GENERATE_X_ONLY
   - NONE
   - WARNING_ONLY
   doc_type: STRING

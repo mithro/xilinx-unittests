@@ -16,12 +16,12 @@ ports:
 - name: CFGCLK
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Configuration main clock output.
 - name: CFGMCLK
   direction: output
   width: 1
-  cls: data
+  cls: clock_out
   doc_function: Configuration internal oscillator clock output.
 - name: EOS
   direction: output
@@ -61,7 +61,7 @@ ports:
 - name: USRCCLKO
   direction: input
   width: 1
-  cls: data
+  cls: clock
   doc_function: User CCLK input.
 - name: USRCCLKTS
   direction: input

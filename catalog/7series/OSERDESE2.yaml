@@ -186,14 +186,16 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: INIT_TQ
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: IS_CLKDIV_INVERTED
   kind: bits
@@ -292,14 +294,16 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: SRVAL_TQ
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: TBYTE_CTL
   kind: string

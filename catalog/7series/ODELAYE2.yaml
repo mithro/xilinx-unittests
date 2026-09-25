@@ -41,7 +41,7 @@ ports:
 - name: CLKIN
   direction: input
   width: 1
-  cls: data
+  cls: clock
   doc_function: Delayed Clock input into the ODELAYE2.
 - name: CNTVALUEIN
   direction: input

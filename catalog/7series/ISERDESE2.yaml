@@ -198,28 +198,32 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: INIT_Q2
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: INIT_Q3
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: INIT_Q4
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: INTERFACE_TYPE
   kind: string
@@ -313,28 +317,32 @@ attributes:
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: SRVAL_Q2
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: SRVAL_Q3
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 - name: SRVAL_Q4
   kind: bits
   width: 1
   default: 1'b0
   allowed:
-  - 1'b0 to 1'b1
+  - 1'b0
+  - 1'b1
   doc_type: BINARY
 design_entry:
   instantiation: 'Yes'
