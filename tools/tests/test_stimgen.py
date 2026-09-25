@@ -167,6 +167,34 @@ def test_init_after_timed_event_is_refused():
         b.init(CE=1)
 
 
+@pytest.mark.parametrize(
+    "kw,msg",
+    [
+        ({"gap_ps": 999}, "gap_ps=999 is below"),
+        ({"async_sep_ps": 500}, "async_sep_ps=500 is below"),
+        ({"settle_ps": 100_000}, "settle_ps"),
+    ],
+)
+def test_spacing_below_the_validator_minimum_is_refused(kw, msg):
+    with pytest.raises(BuilderError, match=msg):
+        _b(**kw)
+
+
+def test_separation_is_recorded_and_used_by_validate():
+    import dataclasses
+
+    from xut.validate import MIN_SEP_PS
+
+    b, m = _b(async_sep_ps=2500)
+    b.edge("C", True)
+    b.async_("CLR", 1)
+    v, _ = _check(b, m)
+    assert v.header["async_sep_ps"] == "2500" and MIN_SEP_PS == 1000
+    # Moving the async change to 1500 ps after the edge breaks the recorded separation.
+    v.events = [dataclasses.replace(e, t=e.t - 1000) if e.op == "set" else e for e in v.events]
+    assert any("async_sep_ps=2500" in e for e in validate(v, m).errors)
+
+
 def test_period_too_short():
     with pytest.raises(BuilderError, match="period"):
         _b(period_ps=4000)

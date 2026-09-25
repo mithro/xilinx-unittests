@@ -355,6 +355,24 @@ def test_cotimed_mixed_marking_rejected():
         loads(H + "t=100 simultaneous edge clk0 r\nt=100 sample A\n")
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "t=100 simultaneous set in[3:2]=0b10\nt=100 set in[1:0]=0b01\n",
+        "t=100 set in[3:2]=0b10\nt=100 simultaneous set in[1:0]=0b01\n",
+        "t=100 simultaneous set in[3]=1\nt=100 simultaneous set in[2]=1\nt=100 set in[0]=1\n",
+    ],
+)
+def test_cotimed_disjoint_sets_mixed_marking_rejected(body):
+    with pytest.raises(XvecError, match="mixed 'simultaneous' marking"):
+        loads(H + body)
+
+
+def test_cotimed_disjoint_sets_all_marked_ok():
+    v = loads(H + "t=100 simultaneous set in[3:2]=0b10\nt=100 simultaneous set in[1:0]=0b01\n")
+    assert all(e.simultaneous for e in v.events) and loads(dumps(v)) == v
+
+
 # --- Vec int properties raise XvecError, not a bare ValueError, on a non-numeric
 # --- header value (Vec can be built directly, bypassing loads()'s own validation).
 

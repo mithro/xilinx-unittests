@@ -10,8 +10,9 @@ stepped ``cycle`` (period ``P``, gap ``g``, start ``s``) is: ``s`` rising edge,
 ``simultaneous()`` groups two or more changes at one instant, all marked
 ``simultaneous`` (simulation only; never hardware-renderable).
 
-The output validates under ``xut.validate.validate`` with its default
-``min_sample_gap_ps`` whenever ``gap_ps >= DEFAULT_GAP_PS`` (the default).
+The output is valid by construction: ``gap_ps`` and ``async_sep_ps`` may not be
+below ``xut.validate.MIN_SEP_PS`` (the validator's own minimum), and the separation
+used is recorded in the header as ``async_sep_ps``, which ``validate`` then applies.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 
 from xut.errors import XutError
 from xut.formats.xvec import Clock, Event, Vec
-from xut.validate import DEFAULT_ASYNC_SEP_PS, DEFAULT_GAP_PS
+from xut.validate import DEFAULT_ASYNC_SEP_PS, DEFAULT_GAP_PS, MIN_SEP_PS, ROC_WIDTH_PS
 from xut.wrap import DutMap, DutSpec, build_map, spec_from_catalog
 
 DEFAULT_SETTLE_PS = 120_000
@@ -46,6 +47,15 @@ class VecBuilder:
         async_sep_ps: int = DEFAULT_ASYNC_SEP_PS,
         expect: str | None = None,
     ) -> None:
+        for name, v in (("gap_ps", gap_ps), ("async_sep_ps", async_sep_ps)):
+            if v < MIN_SEP_PS:
+                raise BuilderError(
+                    f"{name}={v} is below the validator's minimum MIN_SEP_PS={MIN_SEP_PS}"
+                )
+        if settle_ps < ROC_WIDTH_PS + MIN_SEP_PS:
+            raise BuilderError(
+                f"settle_ps={settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {MIN_SEP_PS} margin"
+            )
         if 3 * gap_ps > period_ps // 2:
             raise BuilderError(
                 f"period_ps={period_ps} too short for edge + sample + change spacing "
