@@ -9,7 +9,7 @@ look like a rejection):
 - acceptance: the run reached ``XUT_DONE`` -> ``fail`` ("expected rejection, got
   acceptance");
 - any infrastructure diagnostic (``INFRA``: unknown module, missing include/file,
-  docker, permissions) -> ``error``;
+  docker, permissions, a failed xsim link) -> ``error``;
 - compile/elaboration rejection: the build failed and a diagnostic line names a
   rejected attribute -> ``pass``;
 - runtime rejection: the simulator exited cleanly (rc 0, e.g. via ``$finish``) without
@@ -35,7 +35,9 @@ from xut.runners.base import ConfigResult, sha256_file
 
 INFRA = re.compile(
     r"Unknown module type|Include file .* not found|Unable to open|No such file|docker:"
-    r"|permission denied|cannot find",
+    r"|permission denied|cannot find"
+    # xsim: an unresolved module (VRFC 10-2063), a missing file, a failed link
+    r"|Module <[^>]*> not found|cannot open (include )?file|Failed to link the design",
     re.IGNORECASE,
 )
 DIAGNOSTIC = re.compile(

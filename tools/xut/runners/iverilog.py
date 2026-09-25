@@ -127,8 +127,8 @@ def vector_check(
 
 def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
     """``trace.xtr`` = ``header`` + the testbench's ``trace.body``; pass iff the run's
-    output has ``XUT_PASS``, no ``XUT_FAIL`` and no ``ERROR:`` line (``$error``). A
-    malformed ``trace.body`` is an error."""
+    output has ``XUT_PASS``, no ``XUT_FAIL`` and no ``$error`` line (``ERROR:`` from
+    vvp, ``Error:`` from xsim). A malformed ``trace.body`` is an error."""
     cfg = cd.name[4:]
     body = cd / "trace.body"
     try:
@@ -142,7 +142,7 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
     bad = [
         ln.strip()
         for ln in log_text.splitlines()
-        if "XUT_FAIL" in ln or ln.lstrip().startswith("ERROR:")
+        if "XUT_FAIL" in ln or ln.lstrip().startswith(("ERROR:", "Error:"))
     ]
     if bad:
         return ConfigResult(cfg, "fail", bad[0], None, sha)
