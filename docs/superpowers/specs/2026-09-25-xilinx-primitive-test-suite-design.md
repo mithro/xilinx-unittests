@@ -250,7 +250,7 @@ A *flow* turns HDL into something executable. A *runner* executes it.
 | Flow | Detection points (each is simulated with the same vectors) |
 |---|---|
 | `rtl` | wrapper + UNISIM |
-| `vivado` | post-synth funcsim netlist; post-route funcsim netlist; bitstream → bit2fasm → **fasm2bels** netlist; bitstream on hw |
+| `vivado` | post-synth funcsim netlist; post-route funcsim netlist; bitstream-derived netlist (§6.1); bitstream on hw |
 | `yosys` | `synth_xilinx` netlist, simulated against UNISIM |
 | `openxc7` (yosys + `openXC7/nextpnr` himbaechel-xilinx + prjxray) | yosys netlist; post-route netlist (§6.1); bitstream on hw |
 | `vpr` (F4PGA, legacy) | yosys netlist; post-route netlist (§6.1); bitstream on hw |
@@ -286,24 +286,64 @@ Either way, hardware remains the final arbiter.
 
 ### 6.2 Verilator and UNISIM (`xut verilatorize`)
 
-Verilator 5 rejects the Verilog-1995 procedural `assign`/`deassign` that UNISIM
-uses for GSR/INIT handling. This is a hard `UNSUPPORTED` error, and it affects
-40 of 249 models, including FDRE, RAMB18E1 and MMCME2_ADV.
+Verilator 5 rejects the Verilog-1995 procedural `assign`/`deassign`. This is a
+hard `UNSUPPORTED` error. The construct appears in 40 of 249 UNISIM models, and
+it is triggered in two ways:
 
-`xut verilatorize` handles this with an automated, rule-based source
-transform:
+- **GSR-triggered (≈21 models):** FDRE/FDCE/FDSE/FDPE, RAMB18E1/36E1,
+  FIFO18E1/36E1, MMCME2_ADV and others.
+- **Local-reset-triggered (≈19 models):** SRL16E, SRLC32E, CFGLUT5,
+  IDDR/ODDR, ISERDESE2/OSERDESE2, IDELAYE2/ODELAYE2, DSP48E1, PLLE2_ADV,
+  BUFR and others.
 
-- It rewrites the idiom into an equivalent explicit-priority form.
-- It writes the result to `build/verilatorized/<model-source>/`. Transformed
-  copies are **never committed**.
-- Each rewrite rule has a unit test.
+`xut verilatorize` rewrites the construct with a **generic shadow-register
+transform**. It works on the pyslang AST, never on regex text, so it cannot
+false-match identifiers that merely contain `assign` or `deassign`. For each
+procedurally-forced reg `X`:
 
-The transform is validated as a cross-check in its own right. Every test that
-runs on the `verilator` runner also runs on `iverilog` against **both** the
-original and the transformed models. Any trace difference between those two
-Icarus runs is a `transform-bug`, and it blocks the Verilator result for that
-test. Community rewrites (`uwsampl/verilator-unisims`,
-`oliverbunting/verilator-unisims`) are used as references, not as dependencies.
+1. Every ordinary procedural write to `X`, in **any** `always` block, is
+   redirected to a new reg `X__base`.
+2. Each `assign X = e_k;` is replaced by `X__ovr_sel = k;`, and each
+   `deassign X;` by `X__base = X; X__ovr_sel = 0;`. The second form preserves
+   the Verilog rule that a reg keeps its forced value after `deassign`.
+3. `X` becomes a net:
+   `assign X = (X__ovr_sel == 0) ? X__base : (X__ovr_sel == 1) ? e_1 : ...`.
+   Because the `e_k` are evaluated continuously, this preserves the
+   continuous-override semantics even when `X` has several writers (for
+   example, MMCME2_ADV `clkout_en1`).
+4. Any construct the transform cannot prove it handles makes it fail loudly,
+   naming the model. The model is then `verilator: unsupported` in
+   `status/PORTABILITY.md`. Nothing degrades silently.
+
+Transformed copies go to `build/verilatorized/<model-source>/` and are
+**never committed**. The transform has fixture unit tests for each case:
+
+- single writer;
+- multiple writers;
+- `deassign` value retention;
+- non-constant override expressions;
+- interaction with asynchronous CLR/PRE.
+
+**Equivalence validation** is a cross-check in its own right:
+
+- The portability table lists every transformed model with its trigger
+  (`gsr` or `<port>`).
+- For each one, a **mandatory equivalence stimulus** runs on Icarus against
+  both the original and the transformed model. Each trigger (GSR through the
+  glbl channel, or the local reset port) is pulsed **mid-simulation**, several
+  times. The pulses are timed both with and without coincident clock edges and
+  asynchronous-control activity.
+- Additionally, every ordinary test on the `verilator` runner also runs on
+  Icarus against the transformed model.
+- Any trace difference is a `transform-bug`, and it blocks the Verilator
+  results for that model.
+- Icarus is 4-state, so this check also covers X-propagation differences that
+  2-state Verilator could never reveal.
+- `xut lint` fails if a transformed model has no equivalence stimulus.
+
+Community rewrites (`uwsampl/verilator-unisims`,
+`oliverbunting/verilator-unisims`) are used as references, not as
+dependencies.
 
 **Model identity.** A runner result names its model source:
 `unisim-2025.2` on the host, or `unisim-gh-2020.1` from the submodule in CI.
