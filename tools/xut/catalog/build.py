@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from xut.catalog.model import CatalogEntry, validate
+from xut.catalog.model import CatalogEntry, is_enumerated, validate
 from xut.catalog.portclass import class_note, default_class
 from xut.catalog.ug953 import DocSection, split_sections
 from xut.catalog.unisim import find_model, parse_module
@@ -42,14 +42,6 @@ def _looks_malformed(kind: str, v: str) -> bool:
 _ENUM_TYPES = ("STRING", "BOOLEAN", "DECIMAL")
 
 
-def _enumerated(values: list[str]) -> bool:
-    """A list of single values (not a range such as ``1 to 128`` or ``190-210``)."""
-    return bool(values) and all(
-        re.fullmatch(r'"[^"]*"|[A-Za-z0-9_.]+', v) and not re.fullmatch(r"\d+-\d+", v)
-        for v in values
-    )
-
-
 def value_issues(name: str, sec: DocSection, model=None) -> list[str]:
     """Report lines for UG953 attribute cells the parser could not read cleanly, or that
     disagree with the model: malformed or missing allowed values, duplicates within the
@@ -71,7 +63,7 @@ def value_issues(name: str, sec: DocSection, model=None) -> list[str]:
         if (
             attr in defaults
             and d["type"] in _ENUM_TYPES
-            and _enumerated(allowed)
+            and is_enumerated(allowed)
             and str(defaults[attr]) not in plain
         ):
             problems.append(f"unisim default {defaults[attr]!s} not in {plain}")

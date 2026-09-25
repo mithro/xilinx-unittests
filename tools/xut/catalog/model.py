@@ -3,6 +3,7 @@
 
 import copy
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -10,6 +11,19 @@ import jsonschema
 import yaml
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "catalog.schema.json"
+
+
+def is_enumerated(values: list[str]) -> bool:
+    """True if an attribute's ``allowed`` values are a set of discrete literals, not a
+    range such as ``1 to 128``, ``190-210`` or ``1'b0 to 1'b1``. Shared by
+    ``xut.catalog.build`` (UG953 cross-check) and ``xut.status`` (coverage bins, spec
+    §9): a non-enumerated or undeclared (``allowed`` is advisory and may be empty)
+    attribute collapses to a single ``attr:<A>`` bin, an enumerated one to one
+    ``attr:<A>=<v>`` bin per value."""
+    return bool(values) and all(
+        re.fullmatch(r"\"[^\"]*\"|[A-Za-z0-9_.']+", v) and not re.fullmatch(r"\d+-\d+", v)
+        for v in values
+    )
 
 
 @dataclass
