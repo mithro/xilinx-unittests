@@ -26,9 +26,11 @@ from typing import ClassVar
 
 from xut import schemas
 from xut.errors import XutError
-from xut.formats import xtr
+from xut.formats import xtr, xvec
 from xut.modelsrc import ModelSource
+from xut.stimcompile import TB, Compiled, write_stim
 from xut.testspec import TestCase, declared, exclusions_for
+from xut.wrap import DutMap
 
 STATUSES = ("pass", "fail", "error", "skip")
 _RANK = {"fail": 3, "error": 2, "pass": 1, "skip": 0}
@@ -174,6 +176,40 @@ def expected_trace(ctx: RunContext, case: TestCase, cfg: str) -> Path:
     except (OSError, ValueError) as e:
         why = f"no readable result.json ({e})"
     raise NoExpectedTrace(f"no expected trace (python: {why})")
+
+
+def trace_header(runner: str, case: TestCase, cfg: str, ctx: RunContext) -> dict[str, str]:
+    """The header of a simulator runner's per-configuration ``trace.xtr`` (its ``seed``
+    is added once known)."""
+    return {
+        "runner": runner,
+        "flow": ctx.flow,
+        "model": ctx.model_source.name,
+        "prim": case.prim,
+        "cfg": cfg,
+    }
+
+
+def prepare_vector(
+    cd: Path, case: TestCase, cfg: str, ctx: RunContext, runner: str
+) -> tuple[xvec.Vec, DutMap, Compiled, xtr.Trace, dict[str, str]]:
+    """The part of a vector configuration every simulator runner shares: copy ``dut/``
+    and ``stim.xvec`` from the python run's ``cfg-<cfg>/`` into ``cd``, compile the
+    stimulus (``write_stim``) and copy the generic testbench next to it.
+
+    Returns ``(vec, map, compiled, expected trace, header)``; ``header`` already holds
+    the stimulus seed. A configuration without an expected trace raises
+    ``NoExpectedTrace`` before anything is copied."""
+    exp = expected_trace(ctx, case, cfg)
+    src = python_dir(ctx, case) / f"cfg-{cfg}"
+    shutil.copytree(src / "dut", cd / "dut")
+    shutil.copy(src / "stim.xvec", cd / "stim.xvec")
+    vec = xvec.load(cd / "stim.xvec")
+    m = DutMap.load(cd / "dut" / "xut_dut.map.json")
+    comp = write_stim(vec, m, cd)
+    shutil.copy(TB, cd / "xut_vector_tb.sv")
+    header = {**trace_header(runner, case, cfg, ctx), "seed": str(vec.seed)}
+    return vec, m, comp, xtr.load(exp), header
 
 
 # --- the runner template ------------------------------------------------------------
