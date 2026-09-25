@@ -27,7 +27,11 @@ build-backend = "hatchling.build"
 packages = ["tools/xut", "models/xut_models"]
 
 [tool.pytest.ini_options]
-testpaths = ["tools/tests"]
+# tests/: model and generator unit tests a work unit owns live beside its tests, named
+# uniquely (tests/7series/register/FDRE/test_fdre_model.py); cocotb modules are named
+# cocotb_*.py, so they are never collected.
+testpaths = ["tools/tests", "tests"]
+norecursedirs = [".*", "build", "sv", "cocotb", "vectors"]
 markers = [
   "container: needs the xut-sim image (uv run xut container build)",
   "vivado: needs Vivado 2025.2 at /opt/xilinx/Vivado/2025.2",
