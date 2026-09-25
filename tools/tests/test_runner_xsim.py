@@ -763,3 +763,26 @@ def test_reject_false_pass_paths_are_errors(ctx, work, toy, line, why):
         res.reason,
         (workdir(ctx, "xsim", case.id) / "run.log").read_text(),
     )
+
+
+# --- runtime model diagnostics are never silently ignored (PR B gate (b) #7) -------------
+
+
+@pytest.mark.vivado
+def test_vector_model_error_fails_a_matching_trace(ctx, work, toy):
+    f = _toyff(work)
+    f.write_text(
+        f.read_text().replace(
+            "  reg q;\n", '  reg q;\n  initial #110000 $display("Error: TOYFF odd");\n'
+        )
+    )
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    res = XsimRunner(extra_files=[f]).run(case, ctx)
+    assert res.status == "fail", res.reason
+    for c in res.configs:
+        assert (c.status, c.reason, c.mismatches) == (
+            "fail",
+            "model reported errors: Error: TOYFF odd",
+            0,
+        )

@@ -398,7 +398,7 @@ def test_cocotb_check_classification(tmp_path, cases, rc, status, reason):
     _xml(cd, cases)
     _trace(cd)
     r = cocotb_check(cd, rc, 3, HDR)
-    assert (r.status, r.reason) == (status, reason)
+    assert (r.status, r.reason) == (status, f"{reason} [seed 3]")  # every reason names it
 
 
 def test_a_crash_is_never_hidden_by_an_earlier_assertion(tmp_path):
@@ -410,7 +410,7 @@ def test_a_crash_is_never_hidden_by_an_earlier_assertion(tmp_path):
     )
     _trace(cd)
     r = cocotb_check(cd, 1, 3, HDR)
-    assert (r.status, r.reason) == ("error", "mod.b: SimFailure: Simulator shut down")
+    assert (r.status, r.reason) == ("error", "mod.b: SimFailure: Simulator shut down [seed 3]")
 
 
 @pytest.mark.parametrize("trace", ["missing", "header-only"])
@@ -421,7 +421,7 @@ def test_a_pass_without_samples_is_an_error(tmp_path, trace):
     if trace == "header-only":
         xtr.dump(xtr.Trace(dict(HDR)), cd / "trace.xtr")
     r = cocotb_check(cd, 0, 3, HDR)
-    assert (r.status, r.reason) == ("error", "cocotb test recorded no samples")
+    assert (r.status, r.reason) == ("error", "cocotb test recorded no samples [seed 3]")
     assert (r.trace_sha256 is not None) == (trace == "header-only")
 
 
@@ -431,17 +431,32 @@ def test_cocotb_check_errors(tmp_path, launcher):
     r = cocotb_check(cd, 1, 3, HDR)
     assert r.status == "error" and "no results.xml" in r.reason
     assert launcher.BUILD_FAILED == COCOTB_BUILD_FAILED
-    assert cocotb_check(cd, COCOTB_BUILD_FAILED, 3, HDR).reason == "compile failed"
+    assert cocotb_check(cd, COCOTB_BUILD_FAILED, 3, HDR).reason == "compile failed [seed 3]"
     (cd / "results.xml").write_text("<testsuites")
     assert "unreadable results.xml" in cocotb_check(cd, 1, 3, HDR).reason
     _xml(cd, _tc(), seed=4)
-    assert cocotb_check(cd, 0, 3, HDR).reason == "results.xml random_seed ['4'] is not 3"
+    assert cocotb_check(cd, 0, 3, HDR).reason == "results.xml random_seed ['4'] is not 3 [seed 3]"
     _xml(cd, _tc())
     _trace(cd, model="other")
     r = cocotb_check(cd, 0, 3, HDR)
     assert r.status == "error" and "trace.xtr header {'model': 'other'}" in r.reason
     (cd / "trace.xtr").write_text("nonsense\n")
     assert "malformed trace.xtr" in cocotb_check(cd, 0, 3, HDR).reason
+
+
+def test_model_errors_fail_a_passing_cocotb_run(tmp_path):
+    """Runtime model diagnostics are never silently ignored (PR B gate (b) #7): an
+    error/fatal line in run.log fails a configuration whose cocotb test passed."""
+    cd = tmp_path / "cfg-c"
+    _xml(cd, _tc())
+    _trace(cd)
+    (cd / "run.log").write_text("   0.00ns INFO     cocotb   Running tests\n")
+    assert cocotb_check(cd, 0, 3, HDR).status == "pass"
+    (cd / "run.log").write_text("Error: [Unisim TOYFF-1] model complains\n")
+    r = cocotb_check(cd, 0, 3, HDR)
+    assert r.status == "fail" and r.reason == (
+        "model reported errors: Error: [Unisim TOYFF-1] model complains [seed 3]"
+    )
 
 
 def test_fixture_declares_the_cocotb_test():
@@ -570,7 +585,7 @@ def test_cocotb_import_failure_is_error(ctx, toy_catalog):
 def test_cocotb_compile_failure_is_error(ctx, toy_catalog, shared):
     (ctx.model_source.unisims / "TOYFF.v").write_text("module TOYFF(; endmodule\n")
     res = IverilogRunner().run(_one_cfg(_case()), ctx)
-    assert (res.status, res.configs[0].reason) == ("error", "compile failed")
+    assert res.status == "error" and res.configs[0].reason.startswith("compile failed [seed ")
     log = (workdir(ctx, "iverilog", _case().id) / "run.log").read_text()
     assert "XUT_COCOTB build failed" in log and "syntax error" in log
 
@@ -599,3 +614,20 @@ def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(
     assert xtr.load(d / "cfg-init1/trace.xtr").header["seed"] == "7"
     print("\n[T11 demo: xut run --runner python --runner iverilog --style cocotb]")
     print(r.output)
+
+
+@pytest.mark.container
+def test_cocotb_model_error_fails_with_the_seed(ctx, toy_catalog, shared):
+    """A UNISIM model that reports an error while matching the golden model: fail
+    (never silently ignored), and the reason names the seed to reproduce it."""
+    m = ctx.model_source.unisims / "TOYFF.v"
+    m.write_text(
+        m.read_text().replace(
+            "  reg q;\n", '  reg q;\n  initial #110000 $display("Error: TOYFF odd");\n'
+        )
+    )
+    case = _one_cfg(_case())
+    res = IverilogRunner().run(case, ctx)
+    assert res.status == "fail", res.reason
+    seed = seed_for(case, ctx)
+    assert res.configs[0].reason == f"model reported errors: Error: TOYFF odd [seed {seed}]"
