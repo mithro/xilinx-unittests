@@ -1,378 +1,602 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: approved direction (Q&A with project owner, 2026-09-25)
+- Status: revision 2. Incorporates the technical review and the
+  requirements/process review of revision 1, both 2026-09-25.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
 ## 1. Purpose
 
-Build a comprehensive, well documented test suite for every design primitive in
-the Xilinx/AMD libraries guides, which:
+Build a comprehensive, well-documented test suite for every design primitive in
+the Xilinx/AMD libraries guides. It must:
 
-1. Exercises **all functionality documented by Xilinx** for each primitive
-   (every port, every attribute value, every documented mode and corner case).
-2. Runs unchanged on:
+1. Exercise **all functionality documented by Xilinx** for each primitive:
+   every port, every attribute (legal values sampled per §4.2), and every
+   documented *behavioural claim* (priorities, modes, latencies, interactions).
+2. Run on:
    - the Xilinx simulator (Vivado **xsim**),
    - fully open-source simulators (**Icarus Verilog**, **Verilator**),
    - **real hardware** via the boards on **fpgas.online**.
-3. Provides both **small unit tests** and **larger functional/integration tests**.
-4. **Cross-checks** results between every way a test can be run, and between
-   the documentation, the vendor simulation models and silicon.
-5. Can be used to **validate FPGA toolchains** (Vivado, yosys + nextpnr-xilinx,
-   F4PGA/VPR): a test is built by the toolchain under test and the result is
-   compared against the reference.
-6. Carries **detailed documentation per test**: what it exercises, why it is
-   useful, what it misses, what it relates to.
+
+   Tests run on every runner **unless declared unsupported with a reason**.
+   Nothing is skipped silently.
+3. Provide **small unit tests** as well as **larger functional/integration tests**.
+4. **Cross-check** results between every way a test can be run. The references
+   are the documentation, the vendor simulation models and silicon.
+5. Be usable to **validate FPGA toolchains** (Vivado, yosys + nextpnr-xilinx,
+   F4PGA/VPR).
+6. Carry **detailed documentation per test**: what it exercises, why it is
+   useful, what it misses, and what it is related to.
 
 ### Success criteria
 
-- Every primitive in the target guide has a status entry, and the generated
-  status matrix shows, per primitive, which levels (L0–L3) pass on which
-  runners.
-- Any divergence between runners is surfaced as a classified finding — never
-  silently ignored or "fixed" by weakening a test.
-- A toolchain developer can run `xut run --flow nextpnr-xilinx --runner hw ...`
-  and get a pass/fail matrix against the Vivado/UNISIM reference.
+- Every catalogued primitive has a status entry. The generated matrix shows, per
+  primitive, the level × runner × flow results, plus port, attribute and
+  behavioural-claim coverage.
+- Any divergence between oracles is a classified finding. It is never silently
+  ignored, and never "fixed" by weakening a test.
+- A toolchain developer can build the suite with their flow and get a
+  pass/fail matrix against the reference.
 
 ## 2. Scope and phasing
 
-Decided in Q&A:
-
-- **First target: 7-series** — UG953 (*Vivado Design Suite 7 Series FPGA and
-  Zynq 7000 SoC Libraries Guide*), 103 primitives + 12 UniMacros + 20 XPMs.
-  All fpgas.online Xilinx hardware is Artix-7, and prjxray / nextpnr-xilinx /
-  VPR only support 7-series, so this is the only family where the full
-  sim + hardware + toolchain loop exists.
-- The framework is **family-agnostic**; UltraScale (UG974, 131 primitives)
-  is added later as a simulation-only family.
-- Primitives present in UNISIM but not documented in UG953 (PS7, GT*E2,
-  PHASER_*, PCIE_2_1, MUXCY/XORCY, ...) are tracked as "undocumented" in the
-  catalog and are out of scope until the documented set is covered.
+- **First target: 7-series**, as documented in UG953 (2026.1; 2025.2 is also
+  recorded): 103 primitives, 12 UniMacros and 20 XPMs. All Xilinx hardware on
+  fpgas.online is Artix-7, and prjxray, nextpnr-xilinx and VPR support only
+  7-series.
+- The framework is family-agnostic. **UltraScale** (UG974, 131 primitives)
+  follows later, as a simulation-only family.
+- Primitives that UNISIM provides but UG953 does not document (PS7, GT*E2,
+  PHASER_*, PCIE_2_1, MUXCY, XORCY, ...) are catalogued as `undocumented` and
+  are out of scope until the documented set is done.
+- **Out of scope: timing.** That covers SDF, `XIL_TIMING`, setup/hold checks
+  and path delays. IDELAYE2/ODELAYE2 are checked through tap state
+  (CNTVALUEOUT) and relative ordering, not absolute delay values.
+- **Initial hardware:** Digilent Arty A7-35T only. **Initial Vivado:** 2025.2
+  only. NeTV2, Acorn and LiteFury boards, other Vivado versions, and publishing
+  container images to ghcr are all deferred until after fan-out (§16 step 5).
 
 ## 3. Sources of truth
 
 | Source | Role | Location |
 |---|---|---|
-| UG953 2026.1 (and 2025.2) PDF | Specification: behaviour, ports, attributes | fetched by `tools/fetch_docs.py` into `.cache/docs/` — **never committed** (AMD copyright) |
-| UG953 HDL templates zip | Instantiation templates | fetched into `.cache/docs/` |
-| `catalog/7series/<PRIM>.yaml` | Machine-readable facts extracted from UG953 (ports, widths, attributes, allowed values, defaults, group, page refs) | committed; generated by `tools/xut/catalog/` then hand-corrected |
-| XilinxUnisimLibrary (Apache-2.0, matches Vivado 2020.1) | Open reference simulation models | git submodule `third_party/XilinxUnisimLibrary` |
-| Vivado UNISIM (2017.2, 2019.2, 2025.2) | Vendor reference models, incl. `retarget/` and encrypted `secureip/` | host install `/opt/xilinx/Vivado/<ver>`; never copied into repo |
-| `models/xut_models/` | **Independent Python golden models** written from the UG953 text, not from UNISIM | committed |
+| UG953 2026.1 (and 2025.2) PDF | Specification | Downloaded by `tools/fetch_docs.py` into `.cache/docs/`. A local copy may be supplied instead. **Never committed** (AMD copyright). |
+| UG953 HDL templates zip | Instantiation templates | `.cache/docs/` |
+| `catalog/7series/<PRIM>.yaml` | Generated facts: ports, directions, widths, port class (§5.1), attributes with types, allowed values and defaults, group, page references, behavioural claims | committed; written only by the extractor (infra) |
+| `catalog/7series/<PRIM>.overrides.yaml` | Hand corrections and additions, merged over the generated file at load time | committed; owned by the primitive's work unit |
+| XilinxUnisimLibrary (Apache-2.0, Vivado 2020.1) | Open reference models, used in CI | git submodule `third_party/XilinxUnisimLibrary` |
+| Vivado 2025.2 UNISIM, `retarget/`, `secureip/` | Vendor reference models | host `/opt/xilinx/Vivado/2025.2`; never copied into the repo |
+| `models/xut_models/` | **Independent Python golden models, written clean-room from UG953** | committed |
 | Silicon (Artix-7 on fpgas.online) | Ground truth | remote |
 
-Having an independent Python model matters: if the tests' expected values were
-derived from UNISIM, a UNISIM bug would be invisible. With three independent
-oracles (docs-derived model, vendor model, silicon), any disagreement is
-informative.
+The catalog contains facts and page references only. It never quotes AMD prose
+at length; a behavioural claim is a paraphrase plus its page number.
+
+**Extraction method.** The extractor parses the UG953 port and attribute
+tables. It cross-checks port names and widths against the UNISIM `.v` module
+header and the HDL template for the same primitive, and flags every mismatch
+in `catalog/EXTRACTION_REPORT.md` for a human to resolve through an overrides
+file.
+
+**Behavioural claims.** A claim is a single documented statement about
+behaviour, for example "R has priority over CE" or "DO is valid one cycle
+after the rising CLK edge when DOA_REG=0". Each claim gets a stable ID
+(`FDRE.C3`) and a page reference. Tests declare which claim IDs they exercise.
+
+**Golden-model independence (clean room).** Model authors write from UG953
+alone and do not read UNISIM source. Each modelled behaviour carries a
+provenance tag: `doc:<page>` if UG953 states it, `inferred:<reason>` if it
+had to be inferred. Where the documentation gives only a range or a property
+(for example FIFO flag latency), the model states a *property check* rather
+than an exact value. `doc-vs-model` findings against `inferred` behaviour are
+downgraded to `doc-gap`.
 
 ## 4. Test taxonomy
 
-### Levels
+### 4.1 Levels
 
 | Level | Name | Content |
 |---|---|---|
-| L0 | Smoke | Primitive instantiates and elaborates with default and every legal attribute value; illegal values are rejected where documented. |
-| L1 | Unit | One test per documented port behaviour / attribute / mode (e.g. FDRE: R has priority over CE; INIT value after GSR; IS_C_INVERTED). |
-| L2 | Functional | Exhaustive (where tractable) or constrained-random coverage of the input × attribute space against the golden model. |
-| L3 | Integration | Multi-primitive designs exercising primitives the way real designs do (DSP48E1 FIR chain with cascades, BRAM cascade, FIFO under CDC, ISERDES/OSERDES loopback, MMCM → BUFG → logic). |
+| L0 | Smoke | Instantiates and elaborates with default and sampled attribute values. Illegal attribute values are rejected. The UNISIM models reject them at **runtime** (`$finish`), so L0 runs a short simulation. |
+| L1 | Unit | One test per behavioural claim, port behaviour, attribute or mode. |
+| L2 | Functional | Exhaustive where tractable, otherwise constrained-random coverage of inputs × attributes against the golden model. |
+| L3 | Integration | Multi-primitive designs, e.g. a DSP48E1 FIR with cascades, a BRAM cascade, a FIFO under CDC, an ISERDES/OSERDES loopback, MMCM → BUFG → logic. |
 
-### Test styles (all three are used in parallel — decided in Q&A)
+### 4.2 Attribute sampling
 
-1. **Vector tests** (`vectors/`) — the canonical cross-check format.
-   A Python generator produces a *stimulus* and an *expected trace* using the
-   golden model. A single generic Verilog testbench template replays the
-   stimulus and writes an *observed trace*. The **same stimulus** is replayed
-   on hardware. Works in xsim, Icarus, Verilator, post-synthesis/post-route
-   netlist simulation and on hardware.
-2. **Hand-written SystemVerilog testbenches** (`sv/`) — for behaviour vectors
-   express poorly: asynchronous timing relationships, clock management (MMCM
-   lock, phase shift), X-propagation, GSR/GTS behaviour, `$finish` on illegal
-   attributes. Self-checking; print a standard PASS/FAIL line. Kept to the
-   SystemVerilog subset supported by xsim, Icarus (`-g2012`) and Verilator
-   (`--timing`); anything beyond that subset is declared in `test.yaml`.
-3. **cocotb tests** (`cocotb/`) — constrained-random, model-based testing in
-   Python on Icarus and Verilator (cocotb has no xsim backend). Uses the same
-   golden models; long random runs find corner cases vectors miss. Failing
-   seeds can be frozen into new vector tests so they reach xsim and hardware.
+- An enumerated attribute is covered **for every value**.
+- An integer or bit-vector attribute (INIT, INIT_xx, delay taps, DIVIDE)
+  is covered by boundary values, walking-ones/zeros, and seeded random samples.
+  The sampling plan for each attribute is recorded in `test.yaml`.
+- Declared attribute **crosses** are covered pairwise. Examples are READ_WIDTH ×
+  WRITE_WIDTH, and the DSP48E1 AREG/BREG × ACASCREG × INMODE combinations.
 
-## 5. Canonical trace format and the DUT wrapper
+### 4.3 Test styles
 
-Everything that cross-checks goes through two shared artefacts.
+All three styles are used together.
 
-### 5.1 DUT wrapper
+1. **Vector tests** (`vectors/`) form the canonical cross-check format (§5).
+   A generator uses the golden model to produce the stimulus and the expected
+   trace. One generic testbench replays the stimulus in every simulator and
+   netlist simulation. The hardware harness replays the same stimulus when it
+   can be rendered on hardware (§7).
+2. **Hand-written SystemVerilog testbenches** (`sv/`) cover what vectors cannot
+   express: clock management, X-propagation, GSR/GTS/GRESTORE, runtime
+   attribute rejection, DRP transactions.
+   - They use the common SV subset of xsim, Icarus `-g2012` and Verilator
+     `--timing`; any deviation from that subset is declared in `test.yaml`.
+   - They also **emit an `.xtr` trace** of their checkpoints, so they take
+     part in cross-checking across simulators.
+3. **cocotb tests** (`cocotb/`) run long constrained-random, model-based
+   sessions on Icarus and Verilator (cocotb has no xsim backend).
+   - Every failing seed is frozen into a new vector test, which then runs on
+     xsim and hardware.
+   - cocotb tests also emit an `.xtr` trace, so Icarus and Verilator can be
+     compared with each other.
 
-`xut wrap` generates, for each *test configuration* (primitive + attribute
-set), a wrapper module `xut_dut` with a flat, fixed interface:
+## 5. Canonical DUT wrapper, stimulus and trace formats
+
+### 5.1 Port classes
+
+The catalog assigns every primitive port a class. The class tells the
+generator how the port may be driven and tells the harness how to realise it.
+
+| Class | Examples | Rules |
+|---|---|---|
+| `clock` | FDRE.C, RAMB36E1.CLKARDCLK, BUFGCTRL.I0 | Driven only by declared clocks or by explicit edge events |
+| `async` | FDCE.CLR, FDPE.PRE, FIFO36E1.RST, BUFGCTRL.S0/CE0 | Must never change in the same event as a clock edge or another async/gate bit. Recovery and removal relative to a clock are their own events with a declared minimum separation. |
+| `gate` | LDCE.G, LDPE.G | Same rules as `async` |
+| `data` | FDRE.D, CE, R | Change only between clock edges |
+| `inout` | IOBUF.IO | Split into `<p>__drive_en` and `<p>__drive_val` (inputs) plus `<p>__obs` (a resolved 4-state observation) |
+| `clock_out` | MMCME2_ADV.CLKOUT0, BUFR.O | Observed through clock observers (§5.4), never sampled directly |
+| `pad` | IBUF.I, OBUF.O | Only realisable on hardware through the pad harness (§7.3) |
+| `drp` | MMCM/PLL/XADC DADDR/DI/DO/DEN/DWE/DRDY | Checked at transaction level (§5.5) |
+
+### 5.2 DUT wrapper
+
+`xut wrap` generates one wrapper per *test configuration* (a primitive plus an
+attribute set):
 
 ```verilog
-module xut_dut (
-  input  wire [NCLK-1:0] clk,     // harness-driven clocks
-  input  wire [NIN-1:0]  in_vec,  // all non-clock inputs, packed
-  output wire [NOUT-1:0] out_vec  // all observable outputs, packed
+module xut_dut #(...) (
+  input  wire [NCLK-1:0] clk,
+  input  wire [NIN-1:0]  in_vec,
+  output wire [NOUT-1:0] out_vec
 );
 ```
 
-The port → bit mapping is recorded in a sidecar JSON (`xut_dut.map.json`).
-Every runner (all simulators, every synthesis flow, the hardware harness)
-instantiates the same wrapper, so they are provably testing the same thing.
-Pad-level primitives (IBUF, OBUF, IOBUF, ...) get a wrapper variant whose
-ports connect to package pins; see §7.2.
+- A sidecar `xut_dut.map.json` records the port → bit mapping, the class of
+  each bit, and the attributes.
+- The primitive instance carries `(* DONT_TOUCH = "TRUE", KEEP_HIERARCHY = "TRUE" *)`
+  and yosys `keep`, so no flow can optimise it away.
+- **Global signals** (GSR, GTS, GRESTORE, and the JTAG_* signals BSCANE2
+  uses) are not ports. They are driven through a dedicated `glbl` channel in
+  the stimulus. Simulation implements it by forcing `glbl`. Hardware can only
+  drive GSR (through STARTUPE2.GSR, see §7.2); for any other glbl event the test
+  is sim-only.
 
-### 5.2 Stimulus and trace files
+### 5.3 Stimulus (`.xvec`) and trace (`.xtr`)
 
-A test is a sequence of **steps**. In each step the harness:
-
-1. applies `in_vec` (and any asynchronous inputs flagged in the step),
-2. waits for combinational settling,
-3. optionally fires one or more clock edges (listed per step),
-4. samples `out_vec` at the end of the step.
-
-`stimulus.xvec` (text, one step per line):
+The stimulus is an **ordered, timed event list**. Times are in picoseconds.
 
 ```
-# xut-vec 1  prim=FDRE cfg=init1_inv_c nin=4 nout=1 nclk=1
-# step  edges  in_vec(hex)
-0       -      0x0
-1       C0r    0xd
+# xut-vec 2  prim=FDCE cfg=init1 nin=4 nout=1 nclk=1 settle_ps=120000 seed=17
+clock  clk0  period=10000 phase=0 duty=50 mode=stepped   # or mode=free
+t=120000  set   in[3:0]=0x1          # data
+t=121000  edge  clk0 r
+t=125000  set   in[2]=1              # async: alone in its event
+t=126000  sample S1
 ```
 
-`trace.xtr` (observed or expected):
+- `settle_ps` is the wait before the first event. It is at least
+  max(ROC_WIDTH, GRES_START+GRES_WIDTH) from `glbl`, plus margin.
+- A `mode=free` clock runs continuously. Primitives that measure their input
+  clock, such as the MMCM and PLL, need one.
+- Events at the same time are allowed in simulation only if the file marks
+  them `simultaneous`. The generator validates the class rules from §5.1 and
+  marks the file `hw_renderable: yes|no`, with a reason when it is not.
+- `sample <label>` records out_vec.
+
+The trace has one line per sample:
 
 ```
-# xut-trace 1  runner=iverilog model=unisim-2025.2
-# step  out_vec(hex, x/z nibbles allowed)
-0       x
-1       1
+# xut-trace 2  runner=iverilog flow=rtl model=unisim-2025.2 seed=17
+S1  0b1
 ```
 
-Comparison rules: an expected `x` is a wildcard only when the golden model
-declares that bit *undefined per documentation*; an observed `x` where a
-defined value is expected is a failure. Hardware cannot observe `x`/`z`, so
-the comparator applies a documented per-runner capability mask.
+- Values are written **per bit** (`0 1 x z`) and grouped by port in a
+  readable form.
+- The expected trace carries a per-bit *don't-care* mask. A bit may be masked
+  only where the golden model declares it undefined by the documentation.
 
-## 6. Runners and flows
+### 5.4 Clock observers
 
-A **flow** turns HDL into something executable; a **runner** executes it.
+These are simulated/synthesised helper modules that are part of the wrapper.
+Clock outputs connect to them:
 
-| Flow | Output |
+- an edge counter over a window, which gives frequency;
+- a phase/ordering sampler against a reference clock;
+- a glitch detector that flags pulses shorter than a threshold.
+
+Their counters appear as ordinary `out_vec` bits. The same observers are used
+in simulation and on hardware.
+
+### 5.5 DRP transactions
+
+Tests that use DRP declare the transaction list: address, write data, and
+expected read data. The check passes when each read returns its expected
+value, with DRDY arriving within a latency bound. Exact DRDY cycle timing is
+not checked.
+
+### 5.6 Comparison and runner capabilities
+
+Each runner declares what it can observe:
+
+| Runner | x/z observable | Notes |
+|---|---|---|
+| xsim, iverilog | yes | 4-state |
+| verilator | no | Each test runs **twice**, with `--x-assign unique --x-initial unique` and two recorded seeds. Any difference between the two runs is reported as `x-dependence`. |
+| hw | no | Only 0/1 is observable. The run repeats N times; any difference is reported as `nondeterminism`. |
+
+If a runner observes `x` where the expectation is a defined value, the test
+fails.
+
+## 6. Flows and runners
+
+A *flow* turns HDL into something executable. A *runner* executes it.
+
+| Flow | Detection points (each is simulated with the same vectors) |
 |---|---|
-| `rtl` | the wrapper + UNISIM models as-is |
-| `vivado-synth` | `write_verilog -mode funcsim` post-synth netlist |
-| `vivado-impl` | post-route funcsim netlist + bitstream |
-| `yosys` | yosys `synth_xilinx` netlist (simulated with yosys cells_sim or UNISIM) |
-| `nextpnr-xilinx` | openXC7 flow: yosys → nextpnr-xilinx → fasm → prjxray bitstream |
-| `vpr` | F4PGA flow: yosys → VPR → fasm → bitstream |
+| `rtl` | wrapper + UNISIM |
+| `vivado` | post-synth funcsim netlist; post-route funcsim netlist; bitstream → bit2fasm → **fasm2bels** netlist; bitstream on hw |
+| `yosys` | `synth_xilinx` netlist, simulated against UNISIM |
+| `nextpnr-xilinx` (openXC7) | yosys netlist; FASM → fasm2bels netlist; bitstream on hw |
+| `vpr` (F4PGA) | yosys netlist; FASM → fasm2bels netlist; bitstream on hw |
 
-| Runner | Executes |
+- **fasm2bels** gives all three P&R tools one like-for-like, bitstream-derived
+  netlist.
+- After every flow the cell type and attributes of the DUT are extracted and
+  compared with the configuration, which catches silent retargeting.
+- `INIT_FILE` and other file-based attributes are tested explicitly per flow.
+  The simulation working directory is pinned.
+
+| Runner | Environment |
 |---|---|
-| `python` | golden model only (produces expected trace) |
-| `xsim` | Vivado 2025.2 xsim (2017.2 available for comparison) |
-| `iverilog` | Icarus Verilog (container) |
-| `verilator` | Verilator `--timing` (container) |
-| `hw` | bitstream on an fpgas.online board |
+| `python` | golden model only; produces expected traces |
+| `xsim` | Vivado 2025.2, sourced in a subshell |
+| `iverilog` | container |
+| `verilator` | container, `--timing`; `glbl` compiled as a second top |
+| `hw` | fpgas.online |
 
-Every run writes `build/<flow>/<runner>/<test-id>/{trace.xtr,result.json,run.log}`.
-`result.json` records tool versions, container digest, model source, duration,
-and pass/fail/error/skip with a reason.
+**Model identity.** A runner result names its model source:
+`unisim-2025.2` on the host, or `unisim-gh-2020.1` from the submodule in CI.
+Cross-checks compare like-for-like model sources. Comparisons across model
+versions are a separate, explicit report.
 
-Simulation-model knobs are pinned per run and recorded: `glbl.v` is always
-compiled as a second top, tests wait out the 100 ns GSR, and the `XIL_TIMING`,
-`XIL_XECLIB`, `XIL_DR` and `XIL_ATTR_TEST` defines are set explicitly
-(default: all undefined).
+**Portability table.** A smoke run of every UNISIM model in each simulator
+container generates `status/PORTABILITY.md`. It lists which models compile and
+elaborate, with the reasons for any that don't: STARTUPE2's strength-resolved
+GSR driver under Verilator, UDPs, `tri0/tri1`, `real`, secureip. Test
+declarations of `unsupported` must match this table.
 
-### Known simulator limitations (declared, not hidden)
+The simulation defines `XIL_TIMING`, `XIL_XECLIB`, `XIL_DR` and
+`XIL_ATTR_TEST` are pinned per run (default: all undefined) and recorded.
 
-- ISERDESE2, OSERDESE2, IN_FIFO and OUT_FIFO wrap IEEE-1735-encrypted
-  `secureip` models: **xsim + hardware only**; the open simulators run against
-  the golden model alone.
-- BUFGCE_1, BUFGMUX, BUFGMUX_1, BUFGMUX_CTRL, RAM32X1S_1, RAM32X2S,
-  RAM64X1S_1 and ROM{32,64,128,256}X1 exist only in Vivado's `retarget/`
-  library. They are tested as *retargeting* tests: their behaviour is checked
-  against the golden model after synthesis maps them onto other primitives.
-- Verilator cannot model strengths or UDPs (KEEPER, PULLUP, PULLDOWN, LUT1–3
-  UDP paths, LDCE/LDPE); such tests declare `verilator: unsupported` with the
-  reason.
+`result.json` records:
+
+- tool versions and the container digest;
+- model source, seeds, and the stimulus and bitstream hashes;
+- for `hw`: board DNA, serial number and site;
+- duration, and one of `pass | fail | error | skip` with a reason.
 
 ## 7. Hardware harness (fpgas.online)
 
-### 7.1 Stepped harness (default)
+### 7.1 Stepped fabric harness (default)
 
-Reuses the vector format directly:
+- **Stimulus.** Timed events are compiled into a BRAM image of harness
+  operations: set in_vec bits, pulse a clock, sample.
+- **Sequencer.** It runs on a conservative system clock.
+  - The DUT clock is a harness flip-flop routed through a BUFG.
+  - Correctness holds by construction: there are at least N system cycles
+    between an in_vec change, the next DUT edge, and the next capture.
+    N is chosen to cover worst-case skew.
+  - Vivado gets generated-clock and max-delay constraints; the open flows rely
+    on the margin alone.
+- **Async events.** Async and gate events are separated from edges as §5.1
+  requires.
+- **Multi-DUT packing.** One bitstream holds many configurations, selected by a
+  harness register. This keeps the number of builds manageable.
+- **Self-test.** Every bitstream contains a known-good passthrough and a
+  counter channel. The harness runs them first, so a toolchain-under-test bug
+  in the harness itself is reported as `harness-error`, not as a DUT failure.
+- **UART dumper.** It streams `.xtr` with a header carrying the build ID,
+  the configuration and a CRC.
 
-- Stimulus steps are compiled into a BRAM initialisation image.
-- A sequencer applies `in_vec` from BRAM, then produces the requested clock
-  edges on the DUT clock (a harness-generated clock driven through a BUFG),
-  then captures `out_vec` into a result BRAM.
-- A UART dumper streams the result trace in `trace.xtr` form, with a header
-  carrying a build ID and CRC.
-- The host program: `scp` the bitstream to the board's Raspberry Pi, run
-  `openFPGALoader`, read the UART (`/dev/ttyUSB1` @ 115200 on Arty), parse the
-  trace, and compare.
+### 7.2 GSR-immune harness state
 
-This is cycle-accurate for synchronous behaviour but not at-speed.
+Tests that pulse GSR through STARTUPE2 also reset the harness's flip-flops. The
+harness therefore keeps its sequencer state in BRAM/LUTRAM, which GSR does not
+affect, and re-enters from there. Until that exists, GSR/INIT tests are
+`hw: unsupported`.
 
-### 7.2 Self-checking at-speed designs
+### 7.3 Pad harness
 
-For clocking (MMCM/PLL), SERDES, IDELAY/ODELAY, DDR registers and I/O
-buffers, L3 designs run at speed, check themselves on-chip against expected
-behaviour, and report a summary over the UART in the same trace format.
-I/O-pad tests use loopback where the board allows it (Arty PMOD ↔ Pi PMOD HAT:
-the Pi drives one PMOD and reads another — 5 usable lanes).
+IBUF*, OBUF*, IOBUF*, IDDR/ODDR/IDDR_2CLK, ISERDESE2/OSERDESE2,
+IDELAYE2/ODELAYE2 (with IDELAYCTRL and a 200 MHz REFCLK), BUFIO and BUFR
+must sit on IOB/ILOGIC/OLOGIC sites; BUFIO and BUFR also need clock-capable
+pins or a BUFMR.
 
-### 7.3 Boards
+- **Wiring.** `hw/boards/arty_a7_35t/pads.yaml` lists the usable pins,
+  clock-capable pins and bank VCCO. Loopbacks use the Arty PMOD to Pi PMOD HAT
+  wiring: 5 usable lanes, with the Pi driving and reading them as a second
+  stimulus/observation channel.
+- **Voltage limits.** Arty I/O banks are 3.3 V, so LVDS/differential
+  *outputs* are `hw: unsupported` on this board, with that reason.
 
-| Board | Part | Sites |
-|---|---|---|
-| Digilent Arty A7-35T (primary) | xc7a35ticsg324-1L | PS1 (8), Welland (5) |
-| Kosagi NeTV2 | xc7a35t/xc7a100t-fgg484-2 | Welland |
-| SQRL Acorn CLE-215+ | xc7a200t-fbg484-3 | Welland |
-| LiteFury | xc7a100t-fbg484-2 | PS1 |
+### 7.4 Configuration primitives
 
-Access is SSH to the per-board Raspberry Pi. There is no queue, so the runner
-takes an advisory lock by checking for a lock file on the Pi. The Pi root is
-tmpfs, so the runner re-uploads everything each run. The runner is written
-against an abstract `BoardSession` so it can switch to the planned
-fpgas.online lease API when that ships.
+Each configuration primitive declares its oracle:
 
-## 8. Cross-checking
+| Primitive | Oracle / handling |
+|---|---|
+| STARTUPE2 | One per device and shared with the harness. The GSR/GTS drive is tested via §7.2. USRCCLKO/CCLK is sim-only for now. |
+| ICAPE2 | Reads IDCODE (a known constant per part) and readback registers. **IPROG is forbidden** because it reboots the device. The sim model uses `SIM_CFG_FILE_NAME`. |
+| BSCANE2, CAPTUREE2 | The host drives JTAG through openFPGALoader/OpenOCD on the Pi while the design runs. |
+| DNA_PORT, EFUSE_USR | The host reads the per-die value over JTAG. The runner passes it in as `SIM_DNA_VALUE`/`SIM_EFUSE_VALUE`, so sim and hw agree. |
+| USR_ACCESSE2 | The value comes from a bitstream option. Where an open flow cannot set it, that flow marks the test `unsupported`. CFGCLK is checked by frequency range only. |
+| FRAME_ECCE2 | Needs readback-CRC bitstream options and a frame file in sim. The initial tests only check the no-error state. |
+| XADC | Analog readings are compared within tolerances (temperature, VCCINT, VCCAUX), not bit-exact. |
 
-`xut crosscheck <test-id>` gathers every trace for a test and produces a
-matrix. Each disagreement is classified:
+### 7.5 Board access
+
+- Access is SSH to the board's Raspberry Pi. Bitstreams go over via `scp`,
+  are loaded with `openFPGALoader -b arty`, and results come back over the UART
+  (`/dev/ttyUSB1`, 115200).
+- **Board lock.** A lock file on the Pi records the owner, the time and a TTL.
+  Locks past their TTL are broken.
+- **Transport errors** (SSH, UART CRC) are retried once. A board that fails
+  the self-test is marked bad for the session.
+- **Adapter.** A minimal `BoardSession` adapter allows a later switch to the
+  planned fpgas.online lease API.
+- **Preflight** (§15) checks SSH connectivity and keys.
+
+## 8. Cross-checking and findings
+
+`xut crosscheck <test-id>` gathers every trace for a test, compared
+like-for-like by model source, and produces a matrix. Disagreements are
+classified:
 
 | Class | Meaning |
 |---|---|
-| `doc-vs-model` | golden model (from docs) ≠ all UNISIM simulators → docs ambiguity or UNISIM bug; needs a human-readable finding |
-| `sim-divergence` | UNISIM simulators disagree with each other → simulator bug or model non-portability |
-| `flow-mismatch` | post-synth/route netlist ≠ RTL → toolchain bug (the toolchain-validation signal) |
-| `silicon-mismatch` | hardware ≠ reference → model or docs wrong about silicon, or flow bug |
+| `doc-vs-model` | Golden model ≠ all UNISIM simulators on a `doc:`-provenance behaviour |
+| `doc-gap` | Same, but on `inferred` behaviour, i.e. the documentation is silent |
+| `sim-divergence` | UNISIM simulators disagree |
+| `x-dependence` | The two Verilator X-seed runs disagree |
+| `flow-mismatch` | A flow's netlist or fasm2bels result ≠ RTL: a toolchain bug |
+| `silicon-mismatch` | Hardware ≠ reference |
+| `nondeterminism` | Repeated hardware runs disagree |
+| `harness-error` | The harness self-test failed |
 
-Findings are recorded in `findings/<id>.md`, one file per finding, and linked
-from the test's README. Tests are never weakened to hide a finding; a finding
-may add an `expected_divergence` entry in `test.yaml` that references it.
+- **Recording.** Each finding goes in `findings/<PRIM>-<slug>.md`, is linked
+  from the primitive's README, and may be referenced by an
+  `expected_divergence` entry in `test.yaml`.
+- **Weakening tests is forbidden.** A test is never made weaker to hide a
+  finding.
 
-## 9. Repository layout
+## 9. Coverage
+
+- **Functional bins** are generated from the catalog: ports × classes,
+  attribute values (§4.2), declared crosses, and behavioural claims. A test's
+  `exercises:` list marks bins as covered, and simulation of the golden model
+  confirms that the stimulus actually reaches them.
+- **Model code coverage.** UNISIM line/branch coverage (Verilator `--coverage`)
+  shows which model branches no test reaches. It is reported in status and
+  first added in step 5.
+
+## 10. Repository layout and ownership
 
 ```
-LICENSE  README.md  AGENTS.md  pyproject.toml
-catalog/7series/<PRIM>.yaml
-models/xut_models/<family>/<prim>.py
-tests/7series/<group>/<PRIM>/
-    test.yaml            metadata (see §10)
-    README.md            per-primitive test documentation (template in docs/templates/)
-    vectors/gen_*.py     vector generators (one per test)
-    sv/tb_*.sv           hand-written testbenches
-    cocotb/test_*.py     cocotb tests
-tests/7series/integration/<name>/   L3 designs, same structure
-tools/xut/               Python package + CLI: catalog, wrap, run, crosscheck, status, hw
-hw/                      harness gateware, board constraints
-containers/<tool>/Dockerfile   pinned open-source tools
-third_party/XilinxUnisimLibrary   (submodule)
-status/7series/<PRIM>.yaml   per-primitive status (source of truth)
-status/PROGRESS.md, status/TODO.md   GENERATED by `xut status` — never hand-edited
-log/YYYY-MM-DDTHHMM-<slug>.md   progress log, one file per entry
-findings/<id>.md
-docs/                    specs, plans, templates, guides
+LICENSE  README.md  AGENTS.md  pyproject.toml         (infra-owned)
+docs/work-units.yaml                                  (infra-owned; §13)
+docs/review/                                          reviewer prompts (infra-owned)
+catalog/7series/<PRIM>.yaml                           generated (infra)
+catalog/7series/<PRIM>.overrides.yaml                 work unit
+models/xut_models/7series/_common/<family>.py         work unit (shared family model)
+models/xut_models/7series/<prim>.py                   work unit
+tests/7series/<group>/<PRIM>/{test.yaml,README.md,vectors/,sv/,cocotb/}
+tests/7series/integration/<name>/                     integ/* branches
+tools/xut/  hw/  containers/  .github/                infra
+third_party/XilinxUnisimLibrary                       submodule (infra; any bump = full re-run)
+status/7series/<PRIM>.yaml                            work unit
+status/PROGRESS.md  TODO.md  LOG.md  PORTABILITY.md   GENERATED on main only
+log/<YYYY-MM-DDTHHMM>-<branch-slug>-<slug>.md         anyone (unique names)
+findings/<PRIM>-<slug>.md                             work unit
 ```
 
-`<group>` is the UG953 PRIMITIVE_GROUP in lower case: `advanced`,
-`arithmetic`, `blockram`, `clb`, `clock`, `configuration`, `io`, `register`;
-plus `unimacro`, `xpm`, `integration`.
+`<group>` is the UG953 PRIMITIVE_GROUP, lower case: `advanced`, `arithmetic`,
+`blockram`, `clb`, `clock`, `configuration`, `io`, `register`, plus
+`unimacro`, `xpm` and `integration`.
 
-## 10. Metadata and status
+Every source file carries `SPDX-License-Identifier: Apache-2.0`, and `xut lint`
+checks for it.
 
-`tests/.../test.yaml` (per primitive) lists each test:
+## 11. Metadata and status
+
+`test.yaml` (per primitive):
 
 ```yaml
 primitive: FDRE
 family: 7series
-doc_refs: [{guide: UG953, version: "2026.1", section: FDRE}]
+work_unit: flops
+doc_refs: [{guide: UG953, version: "2026.1", section: FDRE, page: 562}]
 tests:
   - id: 7series.FDRE.L1.reset_over_ce
     level: L1
-    style: vector            # vector | sv | cocotb
-    exercises: [port:R, port:CE, "priority R > CE"]
+    style: vector                  # vector | sv | cocotb
+    exercises: [port:R, port:CE, claim:FDRE.C3]
+    attr_sampling: {INIT: [0, 1]}
     runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: yes}
-    flows: [rtl, vivado-synth, vivado-impl, yosys, nextpnr-xilinx, vpr]
-    related: [7series.FDSE.L1.set_over_ce]
-    gaps: ["does not check setup/hold timing"]
+    flows: [rtl, vivado, yosys, nextpnr-xilinx, vpr]
+    related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
+    gaps: ["setup/hold timing out of scope"]
 ```
 
-`status/7series/<PRIM>.yaml` records the achieved state: per level × runner ×
-flow → `pass | fail | not-run | unsupported | n/a`, plus the commit it was
-measured at, open findings, and a coverage checklist of every documented port
-and attribute value (from the catalog) marked covered/uncovered. `xut status`
-regenerates `status/PROGRESS.md` (the matrix) and `status/TODO.md` (every
-uncovered item). Because each primitive has its own file, parallel branches do
-not conflict.
+`status/7series/<PRIM>.yaml` records:
 
-## 11. Per-test documentation
+- results per level × runner × flow;
+- the **tree hash** of the test directory and the tool/model versions it was
+  measured with (tree hashes survive rebases, commit SHAs do not);
+- open findings;
+- covered and uncovered bins.
+
+**Generated files.** `xut status` builds PROGRESS.md (the matrix), TODO.md
+(every uncovered bin, unsupported cell and open finding) and LOG.md (the
+chronological index of `log/`).
+
+- **Branches never commit generated files.** After each merge the orchestrator
+  regenerates them on `main` in a dedicated `status: regenerate` commit.
+
+## 12. Per-test documentation
 
 Each primitive's `README.md` follows `docs/templates/primitive-README.md`:
-overview and UG953 reference; a table of tests (id, level, style, what it
-exercises); **why each test is useful**; the **oracle** used; **known gaps /
-what is not tested** and why; **runner support and expected divergences**
-(with links to findings); **related tests**; and how to run it. `xut lint`
-checks that every test in `test.yaml` is documented, and that every catalog
-port/attribute is either covered or listed as a gap.
 
-## 12. Toolchain containers
+- overview and UG953 reference;
+- a table of tests (ID, level, style, bins and claims exercised);
+- **why each test is useful**;
+- the oracle used;
+- **known gaps and what is not tested**, and why;
+- runner support and expected divergences, with links to findings;
+- **related tests**;
+- how to run it.
 
-`containers/<tool>/Dockerfile`, each pinned to an exact version or commit:
-`iverilog`, `verilator`, `yosys`, `openxc7` (yosys + nextpnr-xilinx + prjxray
-db), `f4pga` (VPR flow), `cocotb` (layered on iverilog/verilator). They are
-built locally and published to `ghcr.io/mithro/xilinx-unittests-<tool>`.
-Vivado stays host-installed (`/opt/xilinx/Vivado/<ver>`); it is sourced in a
-subshell only, never in the calling shell's environment. GitHub Actions CI
-runs the open-source runners; xsim, Vivado flows and hardware run on the
-maintainer host.
+`xut lint` enforces that:
+
+- every test is documented;
+- every bin is covered or listed as a gap;
+- the portability table agrees with the tests' `unsupported` declarations;
+- SPDX headers are present;
+- the branch touched only paths its work unit owns (§13).
 
 ## 13. Parallel development workflow
 
-Parallel agents must never interfere, so:
+### 13.1 Work units and ownership
 
-- **Unit of work** = one primitive (or one closely related family, e.g.
-  LUT1–LUT6) on branch `prim/7series/<PRIM>`, or `infra/<topic>` for shared
-  tooling.
-- Each agent works in its own **git worktree** under
+`docs/work-units.yaml` maps each **work unit** to its primitives and the paths
+it owns. Examples:
+
+- `flops`: FDRE, FDSE, FDCE, FDPE
+- `latches`: LDCE, LDPE
+- `luts`: LUT1–LUT6, LUT6_2, CFGLUT5
+- `lutram`: RAM*, ROM*
+- `srl`: SRL16E, SRLC32E
+- `bram`: RAMB18E1, RAMB36E1
+- `bram_fifo`: FIFO18E1, FIFO36E1
+- `dsp`: DSP48E1
+- `mmcm_pll`: MMCME2_*, PLLE2_*
+
+A unit owns its primitives' test directories, overrides, models (including
+`_common/<family>.py`), status files and findings.
+
+### 13.2 Branch types
+
+| Branch | Scope |
+|---|---|
+| `unit/7series/<unit>` | one work unit |
+| `infra/<topic>` | shared code |
+| `integ/<name>` | one L3 design (its own directory) |
+| `docs/<topic>` | specs and plans |
+
+### 13.3 Branch mechanics
+
+- **Worktrees.** Each branch works in its own worktree under
   `../xilinx-unittests-worktrees/<branch-with-dashes>`.
-- A primitive branch may only touch that primitive's paths: its test directory,
-  its catalog/model/status files, and new `log/` and `findings/` files.
-  Changes to shared code (`tools/`, `hw/`, `containers/`, templates) go
-  through `infra/*` branches only. Paths are enforced by `xut lint --branch`.
-- **Small commits** after every meaningful change, including status and log
-  updates. The commit subject is prefixed with the primitive or area
-  (`FDRE: add L1 reset-over-CE vector test`).
-- Every branch becomes a GitHub PR. It is reviewed by **two independent
-  reviewer sub-agents**: (a) code quality, style and common HDL/Python
-  mistakes; (b) technical correctness against UG953 and completeness of
-  documentation and coverage. Findings are addressed with further commits.
-  The PR is merged with rebase-merge, so the small commits are kept.
-- **At most two sub-agents run at any time.**
-- The orchestrator posts a progress status update every 30 minutes.
+- **Path lint.** `xut lint --branch` fails if a branch touches paths it does
+  not own.
+- **Infra dependencies.** A unit branch that needs an infra change records a
+  TODO and continues, *or* stacks on the open `infra/*` branch. Merge order is
+  always infra first. The orchestrator then rebases the dependent branch and
+  re-runs its tests before reviewing it.
+- **Small commits.** Commit after every meaningful change, including log and
+  status updates. The subject is prefixed with the unit or area
+  (`flops: add FDRE L1 reset-over-CE vector test`). A commit-msg hook enforces
+  the prefix.
+
+### 13.4 Review and merge gate
+
+- **Every branch becomes a GitHub PR**, including infra, integ and docs.
+- **Two fresh reviewer agents** review it, using fixed prompts from
+  `docs/review/`:
+  - (a) code quality, style and common HDL/Python/verification mistakes;
+  - (b) technical correctness against UG953 (and against the clean-room rule
+    for models), coverage and documentation completeness.
+- Reviewers post findings as PR review comments via `gh`. Each finding is
+  marked **must-fix** or **nit**. The implementer addresses them in follow-up
+  commits, and the reviewers re-review.
+- **Merge gate:**
+  - `xut lint` passes;
+  - the open-source CI is green;
+  - both reviewers approve with no open must-fix;
+  - the orchestrator rebase-merges (keeping the small commits) and then
+    regenerates status on `main`.
+
+### 13.5 Concurrency
+
+At most **two sub-agents in total, reviewers included**, at any time. The
+normal schedule is one implementer plus one reviewer. The orchestrator itself
+does not count.
+
+### 13.6 Status cadence
+
+Every 30 minutes, driven by a timer rather than by task completion, the
+orchestrator reports progress to the owner and writes a `log/` entry.
 
 ## 14. Error handling principles
 
-- No silent skips: every non-run is `skip` with a reason in `result.json`.
-- Tool failures (crash, license, timeout) are `error`, distinct from `fail`.
-- Hardware runs retry once on transport errors (SSH, UART CRC). Errors are
-  never retried into a pass. A board that fails the harness self-test is
-  marked bad for the session.
-- Commands log full output to files; nothing is filtered inline.
+- **No silent skips.** Every result is `pass | fail | error | skip`; `skip`
+  always carries a reason.
+- **Errors are distinct from failures.** Tool crashes, licence problems and
+  timeouts are `error`, not `fail`.
+- **Retries.** Transport errors are retried once. An error is never retried
+  into a pass.
+- **Full logs.** Command output always goes to log files. Nothing is filtered
+  inline.
 
-## 15. Build order
+## 15. Preflight (`xut doctor`)
 
-1. **Bootstrap** — repo, license, README, AGENTS.md, this spec, GitHub repo,
-   docs fetch script, catalog extraction for all 103 primitives, status
-   schema, `xut status` generating PROGRESS/TODO.
-2. **Core infra + pilot** — containers (iverilog, verilator, cocotb), wrapper
-   generator, vector testbench, runners (python, xsim, iverilog, verilator),
-   crosscheck. Pilot primitive **FDRE** done end-to-end in all three styles.
-3. **Hardware** — stepped harness on Arty A7-35T via Vivado, `hw` runner,
-   pilot on FDRE and LUT6.
-4. **Toolchain flows** — vivado-synth/impl netlist sims, yosys, openXC7,
-   F4PGA/VPR.
-5. **Fan-out** over all primitives, group by group: register → clb →
-   blockram → arithmetic → clock → io → configuration → advanced; then
-   UniMacros, XPMs, and L3 integration designs.
-6. **UltraScale** (UG974) as a simulation-only family.
+`xut doctor` checks:
+
+- the Vivado 2025.2 path;
+- docker, and that the containers build;
+- `gh` auth;
+- the submodule is present;
+- the PDF can be downloaded, or a local copy exists;
+- fpgas.online SSH reachability and keys.
+
+It reports what is missing, and which runners are available as a result.
+
+## 16. Build order
+
+1. **Bootstrap.**
+   - AGENTS.md, work-units.yaml, review prompts, templates.
+   - `fetch_docs`, and catalog extraction for all 103 primitives with an
+     extraction report.
+   - The status schema, `xut status`, `xut lint`, and `xut doctor`.
+2. **Core infra and pilot.**
+   - Containers (iverilog, verilator, cocotb).
+   - The wrapper generator, `.xvec` and `.xtr` formats, and the vector
+     testbench.
+   - The python, xsim, iverilog and verilator runners, crosscheck, and the
+     portability table.
+   - Pilot: the `flops` unit (FDRE first) end-to-end in all three styles.
+3. **Hardware.**
+   - The stepped fabric harness on Arty A7-35T, the Vivado flow, and the `hw`
+     runner.
+   - Pilot on `flops` and `luts`.
+4. **Toolchain flows.**
+   - Vivado netlists, yosys, openXC7, F4PGA/VPR, and fasm2bels.
+   - Confirm that prjxray/nextpnr support the -1L grade (xc7a35ticsg324-1L).
+5. **Fan-out**, group by group: register → clb → blockram → arithmetic →
+   clock → io (with the pad harness) → configuration → advanced.
+   - Then UniMacros, XPMs, L3 integration and model code coverage.
+6. **Deferred items.** Extra boards, extra Vivado versions, publishing to ghcr,
+   and UltraScale (UG974, simulation-only).
