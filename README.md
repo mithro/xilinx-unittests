@@ -14,7 +14,7 @@ Each test runs:
 and the results from all of these are **cross-checked** against each other and
 against independent golden models written from the documentation. Because
 every test can also be built by different toolchains (Vivado, yosys +
-nextpnr-xilinx, F4PGA/VPR), the suite doubles as a toolchain validation
+openXC7 nextpnr + prjxray, F4PGA/VPR), the suite doubles as a toolchain validation
 suite.
 
 ## Status
