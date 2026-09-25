@@ -118,8 +118,11 @@ def vector_check(
     x_observable: bool,
 ) -> ConfigResult:
     """``raw.txt`` -> ``trace.xtr``, compared with ``expected``: pass or fail, each
-    mismatch in ``mismatches.txt`` and the first three in the reason."""
+    mismatch in ``mismatches.txt`` and the first three in the reason. An ``expected``
+    without samples is an ``error``: zero evidence is never a pass (ruling S15)."""
     cfg = cfg_of(header)
+    if not expected.samples:  # validate refuses such a stimulus; never pass on nothing
+        return ConfigResult(cfg, "error", "expected trace has no samples (ruling S15)")
     raw = cd / "raw.txt"
     if not raw.is_file():
         return ConfigResult(cfg, "error", "no raw.txt (simulation did not start)")

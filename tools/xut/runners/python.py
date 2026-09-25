@@ -227,6 +227,8 @@ class PythonRunner(Runner):
                     return ConfigResult(cfg, "skip", f"model unsupported: {e}", stim_sha)
                 except InvalidStimulus as e:
                     return ConfigResult(cfg, "error", str(e), stim_sha)
+                if not trace.samples:  # validate refuses this; zero evidence never passes
+                    return ConfigResult(cfg, "error", "golden replay has no samples", stim_sha)
                 trace.header["flow"] = ctx.flow
                 self._bins |= reach.bins()
             xtr.dump(trace, cfgdir / "expected.xtr")

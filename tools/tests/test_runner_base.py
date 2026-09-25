@@ -650,3 +650,23 @@ def test_result_schema_hw_is_closed():
         schemas.validate(doc, "result")
     doc["hw"].pop("extra")
     schemas.validate(doc, "result")
+
+
+# --- ruling S15: zero evidence is never a pass ------------------------------------------
+
+NO_SAMPLE_GEN = """
+def gen(ctx):
+    b = ctx.dut("nosample", INIT=0)
+    b.set(D=1)
+    b.cycle("C", sample=False)
+    yield b.build()
+"""
+
+
+def test_python_stimulus_without_samples_is_error(ctx, toy, tmp_path):
+    """PR B gate (b) #1: a generator that never samples used to replay to an empty
+    expected trace, and python, iverilog and xsim all passed it."""
+    case = _tmp_toy(tmp_path, NO_SAMPLE_GEN)
+    res = PythonRunner().run(case, ctx)
+    assert res.status == "error" and "no samples" in res.reason, res.reason
+    assert not (workdir(ctx, "python", case.id) / "cfg-nosample/expected.xtr").exists()
