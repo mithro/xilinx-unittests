@@ -46,18 +46,18 @@ from typing import ClassVar
 
 from xut.container import SIM_IMAGE, Executor, executor_for, image_digest, sim_tool_versions
 from xut.errors import XutError
-from xut.formats import xtr, xvec
+from xut.formats import xtr
 from xut.runners.base import (
     ConfigResult,
     RunContext,
     Runner,
-    expected_trace,
-    python_dir,
+    prepare_vector,
     sha256_file,
     timeout_for,
+    trace_header,
 )
 from xut.runners.reject import SimOutcome, reject_check
-from xut.stimcompile import TB, raw_to_trace, write_stim
+from xut.stimcompile import raw_to_trace
 from xut.testspec import TestCase
 from xut.wrap import DutMap
 
@@ -228,16 +228,11 @@ class IverilogRunner(Runner):
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
         ex = executor_for(ctx.model_source)
         timeout = timeout_for(case, ctx)
-        header = {
-            "runner": self.name,
-            "flow": ctx.flow,
-            "model": ctx.model_source.name,
-            "prim": case.prim,
-            "cfg": cfg,
-        }
         if case.style == "vector":
-            return self._run_vector(case, cfg, cd, ctx, ex, timeout, header)
-        return self._run_sv(case, cfg, cd, ctx, ex, timeout, header)
+            return self._run_vector(case, cfg, cd, ctx, ex, timeout)
+        return self._run_sv(
+            case, cfg, cd, ctx, ex, timeout, trace_header(self.name, case, cfg, ctx)
+        )
 
     def _run_vector(
         self,
@@ -247,16 +242,9 @@ class IverilogRunner(Runner):
         ctx: RunContext,
         ex: Executor,
         timeout: int,
-        header: dict[str, str],
     ) -> ConfigResult:
-        exp = expected_trace(ctx, case, cfg)  # raises "no expected trace (python: ...)"
-        src = python_dir(ctx, case) / f"cfg-{cfg}"
-        shutil.copytree(src / "dut", cd / "dut")
-        shutil.copy(src / "stim.xvec", cd / "stim.xvec")
-        vec = xvec.load(cd / "stim.xvec")
-        m = DutMap.load(cd / "dut" / "xut_dut.map.json")
-        comp = write_stim(vec, m, cd)
-        shutil.copy(TB, cd / "xut_vector_tb.sv")
+        # raises "no expected trace (python: ...)" before copying anything
+        vec, m, comp, exp, header = prepare_vector(cd, case, cfg, ctx, self.name)
         log = cd / "run.log"
         argv = [
             "iverilog",
@@ -279,7 +267,6 @@ class IverilogRunner(Runner):
         rtext = ""
         if compiled_ok:
             rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
-        header["seed"] = str(vec.seed)
         if vec.expect == "reject":
             out = SimOutcome(compiled_ok, ctext, rc, rtext)
             return reject_check(cd, out, vec.attrs, case.prim, header)
@@ -289,7 +276,7 @@ class IverilogRunner(Runner):
             return ConfigResult(cfg, "error", f"simulator exited with rc {rc}")
         if "XUT_DONE" not in rtext:
             return ConfigResult(cfg, "error", "simulation ended early (no XUT_DONE)")
-        return vector_check(cd, m, comp.labels, xtr.load(exp), header, self.x_observable)
+        return vector_check(cd, m, comp.labels, exp, header, self.x_observable)
 
     def _run_sv(
         self,
