@@ -191,3 +191,21 @@ def lint_cmd(branch_mode: bool, base: str) -> None:
     click.echo(f"{len(issues)} issue(s): {errors} error(s), {len(issues) - errors} warning(s)")
     if errors:
         raise SystemExit(1)
+
+
+@main.command("doctor")
+def doctor_cmd() -> None:
+    """Preflight checks: what's installed, and which runners it enables (spec §15).
+
+    Always exits 0 — it's informational, not a gate.
+    """
+    from xut.doctor import available_runners, run_checks
+
+    checks = run_checks()
+    name_w = max(len(c.name) for c in checks)
+    for c in checks:
+        status = "OK" if c.ok else "MISSING"
+        click.echo(f"{c.name:<{name_w}}  {status:<7}  {c.detail}")
+    runners = available_runners(checks)
+    click.echo("")
+    click.echo(f"available runners: {', '.join(runners) if runners else '(none)'}")
