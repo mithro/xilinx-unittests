@@ -38,3 +38,15 @@ tests:
     flows: [rtl]
     related: []
     gaps: []
+  - id: 7series.TOYFF.L2.cocotb_capture
+    level: L2
+    style: cocotb
+    source: cocotb/cocotb_toyff.py
+    exercises: [port:D, claim:TOYFF.C1]
+    attr_sampling: {INIT: [0, 1]}
+    configs: [{cfg: init0, attrs: {INIT: 0}}, {cfg: init1, attrs: {INIT: 1}}]
+    runners: {python: "no", xsim: "unsupported", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {python: "cocotb test", xsim: "cocotb has no xsim backend", hw: "toy"}
+    flows: [rtl]
+    related: []
+    gaps: []

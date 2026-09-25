@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Icarus Verilog runner (container), vector and sv styles (spec §4.3, §6).
+"""Icarus Verilog runner (container): vector, sv and cocotb styles (spec §4.3, §6).
 
 Vector configuration (``cfgdir`` = ``build/rtl/iverilog/<model-source>/<id>/cfg-<cfg>/``):
 copy ``dut/`` and ``stim.xvec`` from the python run's ``cfg-<cfg>/``, compile the
@@ -16,6 +16,14 @@ stimulus (``write_stim``), then compile and run the generic testbench against UN
   xsim and verilator; a rejection passes only on positive evidence, ruling S13);
 - otherwise ``raw.txt`` -> ``trace.xtr`` -> ``compare`` with the python run's
   ``expected.xtr`` (``vector_check``, shared by every simulator runner).
+
+cocotb configuration (spec §4.3; cocotb is a style, not a runner): ``write_dut`` writes
+``dut/`` with ``xut_cocotb_top.v`` from the catalog entry and the configuration's
+attributes, then ``tools/xut/hdl/cocotb_run.py --sim icarus`` runs in the container
+(``cocotb_command``: PYTHONPATH = tools, models, the test's ``cocotb/`` and shared dirs;
+``XUT_MAP``, ``XUT_TRACE``, ``XUT_SEED``, ``XUT_RUNNER``, ``XUT_MODEL``, ``XUT_FLOW``).
+cocotb's ``RANDOM_SEED`` is the test's stimulus seed (``seed_for``), recorded in
+result.json ``seeds.stimulus``. ``cocotb_check`` classifies the run from ``results.xml``.
 
 sv configuration: the testbench ``sv/<stem>.sv`` (top module ``<stem>``) includes
 ``hdl/xut_trace.svh``, which writes ``trace.body`` and prints ``XUT_PASS``/``XUT_FAIL``
@@ -41,6 +49,7 @@ import os
 import re
 import shutil
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import ClassVar
 
@@ -52,6 +61,7 @@ from xut.runners.base import (
     RunContext,
     Runner,
     prepare_vector,
+    seed_for,
     sha256_file,
     timeout_for,
     trace_header,
@@ -59,9 +69,17 @@ from xut.runners.base import (
 from xut.runners.reject import SimOutcome, reject_check
 from xut.stimcompile import raw_to_trace
 from xut.testspec import TestCase
-from xut.wrap import DutMap
+from xut.wrap import DutMap, spec_from_catalog, write_dut
 
 HDL = Path(__file__).resolve().parent.parent / "hdl"
+TOOLS = HDL.parent.parent
+MODELS = TOOLS.parent / "models"
+#: The in-container cocotb launcher (shared with the verilator runner).
+COCOTB_RUN = HDL / "cocotb_run.py"
+#: ``cocotb_run.py``'s exit code for a failed HDL build (its ``BUILD_FAILED``).
+COCOTB_BUILD_FAILED = 3
+#: Trace header keys a cocotb test's trace.xtr must carry with the runner's values.
+_COCOTB_HEADER_KEYS = ("runner", "flow", "model", "seed", "prim", "cfg")
 
 #: A compiler diagnostic that is an error, whatever the exit code.
 _COMPILE_ERROR = re.compile(r"\b(error|sorry):", re.IGNORECASE)
@@ -151,6 +169,131 @@ def sv_check(cd: Path, log_text: str, header: dict[str, str]) -> ConfigResult:
     return ConfigResult(cfg, "pass", None, None, sha)
 
 
+def cfg_attrs(case: TestCase, cfg: str) -> dict:
+    """The attributes of an sv/cocotb configuration (test.yaml ``configs``)."""
+    return next((c.get("attrs", {}) for c in case.configs if c["cfg"] == cfg), {})
+
+
+def cocotb_command(
+    ex: Executor,
+    sim: str,
+    case: TestCase,
+    cd: Path,
+    ctx: RunContext,
+    runner: str,
+    seed: int,
+    lib_first: tuple[Path, ...] = (),
+    x_seed: int | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """``(argv, env)`` that run ``cocotb_run.py --sim <sim>`` for configuration dir ``cd``
+    (which already holds ``dut/`` with ``xut_cocotb_top.v``)."""
+    source = case.test_dir / str(case.source)
+    ms = ctx.model_source
+    argv = [
+        "python3",
+        ex.guest(COCOTB_RUN),
+        "--sim",
+        sim,
+        "--work",
+        ex.guest(cd),
+        "--module",
+        source.stem,
+        "--test-dir",
+        ex.guest(source.parent),
+        "--unisims",
+        ex.guest(ms.unisims),
+        *(["--retarget", ex.guest(ms.retarget)] if ms.retarget else []),
+        *(a for d in lib_first for a in ("--lib-first", ex.guest(d))),
+        "--glbl",
+        ex.guest(ms.glbl),
+        "--seed",
+        str(seed),
+        *(["--x-seed", str(x_seed)] if x_seed is not None else []),
+        *(a for k, v in ctx.defines.items() for a in ("--define", k if v == "" else f"{k}={v}")),
+        *(a for d in case.shared_dirs for a in ("--shared", ex.guest(d))),
+    ]
+    path = [TOOLS, MODELS, source.parent, *case.shared_dirs]
+    env = {
+        "PYTHONPATH": ":".join(ex.guest(p) for p in path),
+        "PYTHONDONTWRITEBYTECODE": "1",  # never leave container-built .pyc in the tree
+        "XUT_MAP": "dut/xut_dut.map.json",
+        "XUT_TRACE": "trace.xtr",
+        "XUT_SEED": str(seed),
+        "XUT_RUNNER": runner,
+        "XUT_MODEL": ms.name,
+        "XUT_FLOW": ctx.flow,
+    }
+    return argv, env
+
+
+def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> ConfigResult:
+    """Classify a cocotb run of configuration dir ``cd`` from its ``results.xml``:
+
+    - no ``results.xml``: ``error``, ``compile failed`` when the launcher says so (exit
+      ``COCOTB_BUILD_FAILED``), else the test module did not import (see run.log); an
+      unreadable one, no test case in it, or every one skipped: ``error``;
+    - its ``random_seed`` is not ``seed``: ``error``;
+    - a ``trace.xtr`` whose header does not name this run: ``error``;
+    - the first failing test: ``fail`` with its message when it is an
+      ``AssertionError`` (a check the test made); any other exception, including
+      cocotb's ``SimFailure`` (the simulator stopped early), is a crash: ``error``.
+      Either keeps the trace's sha256: the trace is the evidence of what ran;
+    - no failure but a non-zero launcher exit: ``error``; otherwise ``pass``.
+    """
+    cfg = cd.name[4:]
+    xml = cd / "results.xml"
+    if not xml.is_file() and rc == COCOTB_BUILD_FAILED:
+        return ConfigResult(cfg, "error", "compile failed")
+    if not xml.is_file():
+        return ConfigResult(
+            cfg,
+            "error",
+            "cocotb wrote no results.xml (build failed or the test module did not "
+            "import; see run.log)",
+        )
+    try:
+        root = ET.parse(xml).getroot()
+    except ET.ParseError as e:
+        return ConfigResult(cfg, "error", f"unreadable results.xml: {e}")
+    seeds = [p.get("value") for p in root.iter("property") if p.get("name") == "random_seed"]
+    if not seeds or any(s != str(seed) for s in seeds):
+        return ConfigResult(cfg, "error", f"results.xml random_seed {seeds} is not {seed}")
+    cases = list(root.iter("testcase"))
+    if all(c.find("skipped") is not None for c in cases):
+        return ConfigResult(cfg, "error", "no cocotb test ran (none found, or all skipped)")
+    trace = cd / "trace.xtr"
+    sha = None
+    if trace.is_file():
+        try:
+            got = xtr.load(trace).header
+        except xtr.XtrError as e:
+            return ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
+        bad = {k: got.get(k) for k in _COCOTB_HEADER_KEYS if got.get(k) != header.get(k)}
+        if bad:
+            return ConfigResult(
+                cfg,
+                "error",
+                f"trace.xtr header {bad} does not match this run "
+                f"{ {k: header.get(k) for k in bad} } (use XutDut's default header)",
+            )
+        sha = sha256_file(trace)
+    for c in cases:
+        f = c.find("failure")
+        if f is None:
+            f = c.find("error")
+        if f is None:
+            continue
+        name = f"{c.get('classname')}.{c.get('name')}"
+        etype = f.get("error_type") or f.get("type") or "unknown"
+        msg = f.get("error_msg") or f.get("message") or ""
+        if etype == "AssertionError":
+            return ConfigResult(cfg, "fail", f"{name}: {msg}".strip(), None, sha)
+        return ConfigResult(cfg, "error", f"{name}: {etype}: {msg}".strip(), None, sha)
+    if rc != 0:
+        return ConfigResult(cfg, "error", f"cocotb launcher exited with rc {rc}")
+    return ConfigResult(cfg, "pass", None, None, sha)
+
+
 def _native() -> bool:
     return os.environ.get("XUT_NATIVE") == "1"
 
@@ -230,6 +373,8 @@ class IverilogRunner(Runner):
         timeout = timeout_for(case, ctx)
         if case.style == "vector":
             return self._run_vector(case, cfg, cd, ctx, ex, timeout)
+        if case.style == "cocotb":
+            return self._run_cocotb(case, cfg, cd, ctx, ex, timeout)
         return self._run_sv(
             case, cfg, cd, ctx, ex, timeout, trace_header(self.name, case, cfg, ctx)
         )
@@ -290,7 +435,7 @@ class IverilogRunner(Runner):
     ) -> ConfigResult:
         source = case.test_dir / str(case.source)
         stem = source.stem
-        attrs = next((c.get("attrs", {}) for c in case.configs if c["cfg"] == cfg), {})
+        attrs = cfg_attrs(case, cfg)
         params = [f"-P{stem}.{k}={param_value(k, v)}" for k, v in attrs.items()]
         incs: list[str] = []
         for p in (HDL, *case.shared_dirs, source.parent):
@@ -316,6 +461,33 @@ class IverilogRunner(Runner):
             return ConfigResult(cfg, "error", f"simulator exited with rc {rc}")
         header["seed"] = "0"
         return sv_check(cd, rtext, header)
+
+    def _run_cocotb(
+        self,
+        case: TestCase,
+        cfg: str,
+        cd: Path,
+        ctx: RunContext,
+        ex: Executor,
+        timeout: int,
+    ) -> ConfigResult:
+        from xut.catalog import model as catalog_model
+
+        source = case.test_dir / str(case.source)
+        if source.suffix != ".py" or not source.is_file():
+            raise XutError(
+                f"{case.id}: cocotb source {case.source!r} must name an existing "
+                f"cocotb/<file>.py (looked for {source})"
+            )
+        entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
+        write_dut(spec_from_catalog(entry, cfg, cfg_attrs(case, cfg)), cd / "dut", cocotb_top=True)
+        seed = seed_for(case, ctx)
+        header = {**trace_header(self.name, case, cfg, ctx), "seed": str(seed)}
+        argv, env = cocotb_command(
+            ex, "icarus", case, cd, ctx, self.name, seed, self.lib_first(case, cfg, ctx)
+        )
+        rc = ex.run(argv, cwd=cd, log=cd / "run.log", timeout_s=timeout, env=env)
+        return cocotb_check(cd, rc, seed, header)
 
 
 class IverilogVzRunner(IverilogRunner):

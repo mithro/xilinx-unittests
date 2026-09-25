@@ -16,6 +16,7 @@ def test_discover_and_select():
         "7series.TOYFF.L1.capture",
         "7series.TOYFF.L0.reject",
         "7series.TOYFF.L1.sv_basic",
+        "7series.TOYFF.L2.cocotb_capture",
     ]
     c = cases[0]
     assert (c.prim, c.level, c.style, c.group) == ("TOYFF", "L1", "vector", "register")

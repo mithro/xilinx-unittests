@@ -202,6 +202,7 @@ def test_fixture_cases():
         "7series.TOYFF.L1.capture",
         "7series.TOYFF.L0.reject",
         "7series.TOYFF.L1.sv_basic",
+        "7series.TOYFF.L2.cocotb_capture",
     ]
     sv = _case("7series.TOYFF.L1.sv_basic")
     assert (sv.style, sv.source, sv.configs) == (
@@ -591,12 +592,24 @@ def test_compile_log_error_with_exit_0_is_compile_failed(ctx, work, monkeypatch)
 
 @pytest.mark.container
 def test_cli_python_then_iverilog_on_the_fixture(work, toy, monkeypatch):
-    """`xut run --runner python --runner iverilog TOYFF` on a copy of the fixture tree."""
+    """`xut run --runner python --runner iverilog --style vector --style sv TOYFF` on a
+    copy of the fixture tree (the cocotb fixture has its own demo in test_runner_cocotb)."""
     _copy_toy(work)
     ms = make_model_source(work / "ms")
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
     monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": ms)
-    r = CliRunner().invoke(main, ["run", "--runner", "python", "--runner", "iverilog", "TOYFF"])
+    args = [
+        "run",
+        "--runner",
+        "python",
+        "--runner",
+        "iverilog",
+        "--style",
+        "vector",
+        "--style",
+        "sv",
+    ]
+    r = CliRunner().invoke(main, [*args, "TOYFF"])
     assert r.exit_code == 0, r.output
     summary = json.loads((work / "build/rtl/summary.json").read_text())
     got = {(x["test_id"], x["runner"]): x["status"] for x in summary["results"]}
