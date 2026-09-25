@@ -25,6 +25,9 @@ async def toyff_capture(dut: object) -> None:
     await x.settle()  # glbl releases GSR at 100 ns
     model.glbl("GSR", 0)
     errors: list[str] = []
+    q0 = model.outputs()["Q"].bits  # INIT, loaded while GSR was active
+    if x.get("Q") != q0:
+        errors.append(f"after GSR: Q={x.get('Q')}, model {q0} (INIT={x.attrs.get('INIT')})")
     for n in range(CYCLES):
         d = rng.randrange(2)
         await x.set(D=d)
