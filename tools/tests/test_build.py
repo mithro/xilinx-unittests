@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from pathlib import Path
 
+import pytest
 import yaml
 
 from xut.catalog.build import build_all
@@ -161,8 +162,83 @@ def test_srtype_dependent_classes_are_noted():
     for prim in ("IDDR", "IDDR_2CLK", "ODDR"):
         for p in ("S", "R"):
             assert default_class(prim, p, "input") == "data"
-            assert "SRTYPE" in class_note(prim, p)
-    assert class_note("FDRE", "R") is None
+            assert "SRTYPE" in class_note(prim, p, "input")
+    assert class_note("FDRE", "R", "input") is None
+
+
+@pytest.mark.parametrize(
+    "prim,port,direction,cls",
+    [
+        # clock inputs the fixed name set used to miss (review b, spec §5.1)
+        ("MMCME2_ADV", "PSCLK", "input", "clock"),
+        ("XADC", "CONVSTCLK", "input", "clock"),
+        ("ODELAYE2", "CLKIN", "input", "clock"),
+        ("IDELAYE2", "C", "input", "clock"),
+        ("STARTUPE2", "USRCCLKO", "input", "clock"),
+        # DSP48E1.C is the 48-bit C data operand, not a clock
+        ("DSP48E1", "C", "input", "data"),
+        ("FDRE", "C", "input", "clock"),
+        # clock outputs
+        ("STARTUPE2", "CFGCLK", "output", "clock_out"),
+        ("STARTUPE2", "CFGMCLK", "output", "clock_out"),
+        ("STARTUPE2", "EOS", "output", "data"),
+        ("USR_ACCESSE2", "CFGCLK", "output", "clock_out"),
+        ("BSCANE2", "TCK", "output", "clock_out"),
+        ("BSCANE2", "DRCK", "output", "clock_out"),
+        ("BSCANE2", "UPDATE", "output", "data"),
+        ("IBUFDS_GTE2", "O", "output", "clock_out"),
+        ("IBUFDS_GTE2", "ODIV2", "output", "clock_out"),
+        # analog pads
+        ("XADC", "VP", "input", "pad"),
+        ("XADC", "VN", "input", "pad"),
+        ("XADC", "VAUXP", "input", "pad"),
+        ("XADC", "VAUXN", "input", "pad"),
+        # latch gate enable
+        ("LDCE", "GE", "input", "gate"),
+        ("LDPE", "GE", "input", "gate"),
+        ("LDCE", "G", "input", "gate"),
+    ],
+)
+def test_default_class_spec_5_1(prim, port, direction, cls):
+    assert default_class(prim, port, direction) == cls
+
+
+@pytest.mark.parametrize(
+    "prim,port,direction",
+    [
+        ("MMCME2_ADV", "CLKINSEL", "input"),
+        ("ISERDESE2", "DYNCLKSEL", "input"),
+        ("STARTUPE2", "USRCCLKTS", "input"),
+        ("MMCME2_ADV", "CLKINSTOPPED", "output"),
+    ],
+)
+def test_clk_named_data_port_is_noted(prim, port, direction):
+    from xut.catalog.portclass import class_note
+
+    assert default_class(prim, port, direction) == "data"
+    assert "CLK" in class_note(prim, port, direction)
+
+
+def test_clock_classed_clk_port_is_not_noted():
+    from xut.catalog.portclass import class_note
+
+    assert class_note("MMCME2_ADV", "PSCLK", "input") is None
+    assert class_note("MMCME2_ADV", "CLKOUT0", "output") is None
+
+
+def test_clk_named_data_note_lands_in_port_class_notes(tmp_path):
+    from xut.catalog.build import render_report
+
+    u = tmp_path / "unisims"
+    u.mkdir()
+    (u / "TOYSEL.v").write_text("module TOYSEL(input CLKSEL, input CLK, output O); endmodule\n")
+    report = build_all(FIX / "ug953_toy.txt", ["TOYSEL"], tmp_path / "out", [u], family="7series")
+    notes = [x for x in report if x.startswith("TOYSEL: port CLKSEL")]
+    assert len(notes) == 1
+    assert not any(x.startswith("TOYSEL: port CLK ") for x in report)
+    md = render_report(report, ["TOYSEL"], "toy")
+    section = md.split("## Port class notes")[1].split("##")[0]
+    assert "TOYSEL: port CLKSEL" in section
 
 
 def test_value_issues_catch_duplicates_and_missing_default():
