@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The iverilog runner (vector and sv styles) and ``xut_trace.svh`` (spec §4.3, §6).
 
-The container tests run in ``build/pytest-iverilog/<test>/`` under the repository, so
-the xut-sim container (which mounts the repository at /work) sees every file. The
+The container tests run in pytest's ``tmp_path``: the runner mounts a run root outside
+the repository at /xut-root (``executor_for(..., ctx.root)``), so the container sees
+every file without writing into the worktree's build/. The
 vector tests use a toy model source whose ``unisims/TOYFF.v`` is written here: no
 UNISIM model is needed.
 """
@@ -22,7 +23,6 @@ from xut.cli import main
 from xut.container import DockerExecutor
 from xut.formats import xtr
 from xut.modelsrc import ModelSource
-from xut.paths import repo_root
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, workdir
 from xut.runners.iverilog import (
@@ -91,13 +91,9 @@ def toy(monkeypatch):
 
 
 @pytest.fixture
-def work(request):
-    """A fresh directory under the repository's build/ (visible in the container)."""
-    d = repo_root() / "build" / "pytest-iverilog" / request.node.name
-    if d.exists():
-        shutil.rmtree(d)
-    d.mkdir(parents=True)
-    return d
+def work(tmp_path):
+    """A fresh run root outside the worktree (mounted at /xut-root by the runner)."""
+    return tmp_path
 
 
 @pytest.fixture
@@ -222,7 +218,7 @@ P_TOP = (
 
 def _icarus(work: Path, *args: str) -> str:
     (work / "top.v").write_text(P_TOP)
-    ex, log = DockerExecutor(), work / "run.log"
+    ex, log = DockerExecutor(root=work), work / "run.log"
     if ex.run(["iverilog", "-g2012", "-o", "s.vvp", *args, "top.v"], work, log, 120) == 0:
         ex.run(["vvp", "-n", "s.vvp"], work, log, 120)
     return log.read_text()
