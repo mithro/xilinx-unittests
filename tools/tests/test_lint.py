@@ -18,6 +18,7 @@ from xut.lint import (
     check_status_files,
     check_tests_documented,
 )
+from xut.testspec import DECLARED_RUNNERS
 from xut.workunits import WorkUnit
 
 FLOPS = WorkUnit(name="flops", family="7series", primitives=("FDRE",), group_dirs=("register",))
@@ -299,7 +300,7 @@ def _write_test_yaml(
             "style": "vector",
             "exercises": [],
             "attr_sampling": {},
-            "runners": {},
+            "runners": dict.fromkeys(DECLARED_RUNNERS, "yes"),
             "flows": [],
         }
         if related and tid in related:
@@ -426,7 +427,7 @@ tests:
     style: vector
     exercises: []
     attr_sampling: {}
-    runners: {python: "yes"}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}
     flows: [rtl]
 """
 
@@ -452,7 +453,7 @@ def test_test_yaml_missing_id_is_schema_error_not_traceback(tmp_path):
 def test_test_yaml_bare_yes_runner_is_schema_error(tmp_path):
     """Ruling 14: a bare `yes` is YAML 1.1 boolean True, which the schema rejects."""
     d = _fdre_dir(tmp_path)
-    (d / "test.yaml").write_text(_VALID_TEST_YAML.replace('{python: "yes"}', "{python: yes}"))
+    (d / "test.yaml").write_text(_VALID_TEST_YAML.replace('python: "yes"', "python: yes"))
     issues = check_tests_documented(tmp_path)
     assert len(issues) == 1
     assert issues[0].rule == "test-schema"
@@ -768,7 +769,7 @@ def test_lint_cli_unresolvable_base_is_a_clean_error_not_a_traceback(tmp_path, m
 def test_runner_declared_unsupported_without_reason_is_error(tmp_path):
     """Every runner declared "no"/"unsupported" names its reason (rule runner-reasons)."""
     (_fdre_dir(tmp_path) / "test.yaml").write_text(
-        _VALID_TEST_YAML.replace('{python: "yes"}', '{python: "yes", hw: "unsupported"}')
+        _VALID_TEST_YAML.replace('hw: "yes"', 'hw: "unsupported"')
     )
     issues = check_tests_documented(tmp_path)
     assert [(i.rule, i.severity) for i in issues] == [("runner-reasons", "error")]
@@ -777,10 +778,39 @@ def test_runner_declared_unsupported_without_reason_is_error(tmp_path):
 
 def test_runner_declared_no_with_reason_is_clean(tmp_path):
     (_fdre_dir(tmp_path) / "test.yaml").write_text(
-        _VALID_TEST_YAML.replace(
-            '{python: "yes"}',
-            '{python: "no", hw: "unsupported"}\n'
+        _VALID_TEST_YAML.replace('python: "yes"', 'python: "no"').replace(
+            'hw: "yes"}',
+            'hw: "unsupported"}\n'
             '    unsupported_reasons: {python: "self-checking sv", hw: "free clock"}',
         )
     )
     assert check_tests_documented(tmp_path) == []
+
+
+def test_runner_missing_from_runners_is_warning_only(tmp_path):
+    """A canonical runner absent from `runners` is flagged (it will skip with reason
+    "not declared"), as a warning: `runners: {}` still lints with exit 0."""
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace(
+            'runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}',
+            "runners: {}",
+        )
+    )
+    issues = check_tests_documented(tmp_path)
+    assert {(i.rule, i.severity) for i in issues} == {("runner-declared", "warning")}
+    assert sorted(i.message.split()[2] for i in issues) == sorted(DECLARED_RUNNERS)
+
+
+def test_runners_empty_lint_cli_exits_0(tmp_path, monkeypatch):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace(
+            'runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "yes"}',
+            "runners: {}",
+        )
+    )
+    from xut.lint import lint
+
+    monkeypatch.setattr("xut.workunits.load_units", lambda root: {})
+    monkeypatch.setattr("xut.lint._tracked_files", lambda root: [])
+    issues, _ = lint(tmp_path, branch_mode=False)
+    assert issues and all(i.severity == "warning" for i in issues)

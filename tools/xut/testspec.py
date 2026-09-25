@@ -18,6 +18,9 @@ import yaml
 from xut.errors import ConfigError
 from xut.schemas import validate as validate_schema
 
+#: The runners every test declares in ``runners`` (spec §6): lint warns about a missing
+#: one, which ``declared`` treats as ``"no"`` with the reason ``not declared``.
+DECLARED_RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
 #: Runners whose declaration is inherited from another: ``iverilog-vz`` only exists to
 #: guard the Verilator results, so it runs exactly where ``verilator`` does.
 DECLARATION_OF = {"iverilog-vz": "verilator"}

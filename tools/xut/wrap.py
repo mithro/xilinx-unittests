@@ -258,7 +258,37 @@ def _reject_type(ctx: str, value: object, allowed: tuple[type, ...]) -> None:
         raise WrapError(f"{ctx}: unsupported value {value!r} of type {type(value).__name__}")
 
 
-def _render_bits(ctx: str, width: int, value: object) -> str:
+_MAX_DIGIT = {"b": "1", "o": "7", "h": "f"}
+
+
+def _render_x_bits(ctx: str, width: int, lit: str) -> str | None:
+    """A sized literal with x/z digits, kept verbatim (Ruling S12: reject tests only);
+    None when ``lit`` has no x/z digit. Its width is checked with every x/z digit read
+    as the base's largest digit, so it still has to fit the attribute."""
+    m = _BASED.match(lit)
+    if m is None or not re.search(r"[xXzZ?]", m.group(4)):
+        return None
+    base, digits = m.group(3).lower(), m.group(4).replace("_", "")
+    if m.group(1) is None:
+        raise WrapError(f"{ctx}: bit-vector value {lit!r} needs a sized literal")
+    if int(m.group(1)) != width:
+        raise WrapError(
+            f"{ctx}: literal {lit} has {m.group(1)} bits, but the attribute is {width} bits"
+        )
+    if base == "d":
+        if len(digits) != 1:  # Verilog: a decimal x/z literal is one x or z digit
+            raise WrapError(f"{ctx}: {lit!r}: invalid digits for its base")
+        return lit
+    try:
+        top = int(re.sub(r"[xXzZ?]", _MAX_DIGIT[base], digits), _RADIX[base])
+    except ValueError as e:
+        raise WrapError(f"{ctx}: {lit!r}: invalid digits for its base") from e
+    if top >= 2**width:
+        raise WrapError(f"{ctx}: {lit} does not fit {width} bits")
+    return lit
+
+
+def _render_bits(ctx: str, width: int, value: object, allow_x: bool = False) -> str:
     _reject_type(ctx, value, (int, str))
     if isinstance(value, int):
         if not 0 <= value < 2**width:
@@ -267,6 +297,8 @@ def _render_bits(ctx: str, width: int, value: object) -> str:
             return f"1'b{value}"
         return f"{width}'h{value:0{(width + 3) // 4}x}"
     lit = value.strip()
+    if allow_x and (x_lit := _render_x_bits(ctx, width, lit)) is not None:
+        return x_lit
     try:
         size, v = _parse_literal(lit)
     except WrapError as e:
@@ -315,16 +347,18 @@ def _render_real(ctx: str, value: object) -> str:
     return repr(f)  # always has a '.' or an exponent: a legal Verilog real literal
 
 
-def render_attr(attr: dict, value: object) -> str:
+def render_attr(attr: dict, value: object, *, allow_x: bool = False) -> str:
     """``value`` as a Verilog parameter literal of ``attr``'s kind (bits/string/integer/real).
 
     Bit vectors take a Python int (rendered ``1'bN`` or zero-padded hex) or a sized
     literal of exactly the declared width, which is kept verbatim. Nothing is coerced:
-    a value of the wrong kind, a bool, an x/z digit or an out-of-range value raises."""
+    a value of the wrong kind, a bool, an x/z digit or an out-of-range value raises.
+    ``allow_x`` (reject tests only, Ruling S12) keeps a sized bit literal with x/z digits
+    verbatim, still checked against the attribute's width."""
     kind, name = attr["kind"], attr.get("name", "?")
     ctx = f"attribute {name}"
     if kind == "bits":
-        return _render_bits(ctx, attr["width"], value)
+        return _render_bits(ctx, attr["width"], value, allow_x)
     if kind == "string":
         if isinstance(value, float):
             raise WrapError(f"{ctx}: float {value!r} for a string attribute; quote it")
@@ -368,7 +402,7 @@ def _check_allowed(prim: str, attr: dict, lit: str) -> None:
 
 
 def _render_attrs(
-    prim: str, declared: list[dict], attrs: dict, allow_illegal: bool
+    prim: str, declared: list[dict], attrs: dict, allow_illegal: bool, allow_x: bool = False
 ) -> tuple[tuple[str, str], ...]:
     known = {a["name"] for a in declared}
     unknown = sorted(set(attrs) - known)
@@ -377,7 +411,7 @@ def _render_attrs(
     out = []
     for a in declared:  # declaration (catalog) order
         if a["name"] in attrs:
-            lit = render_attr(a, attrs[a["name"]])
+            lit = render_attr(a, attrs[a["name"]], allow_x=allow_x)
             if not allow_illegal:
                 _check_allowed(prim, a, lit)
             out.append((a["name"], lit))
@@ -401,10 +435,12 @@ def spec_from_catalog(
 ) -> DutSpec:
     """The wrapper spec for catalog ``entry`` (overrides applied) with ``attrs`` set.
 
-    ``allow_illegal`` permits values outside an enumerated ``allowed`` list (L0);
-    ``raw_clock_out`` samples ``clock_out`` ports directly (smoke runs only)."""
+    ``allow_illegal`` permits values outside an enumerated ``allowed`` list and sized bit
+    literals with x/z digits (L0 reject tests, Ruling S12); ``raw_clock_out`` samples
+    ``clock_out`` ports directly (smoke runs only)."""
     _check_cfg(cfg)
-    rendered = _render_attrs(entry.name, entry.attributes, attrs, allow_illegal)
+    # x/z attribute literals exist only to be rejected by the simulation (Ruling S12)
+    rendered = _render_attrs(entry.name, entry.attributes, attrs, allow_illegal, allow_illegal)
     ports = tuple(PortSpec(p["name"], p["direction"], p["width"], p["cls"]) for p in entry.ports)
     return DutSpec(
         entry.name, entry.family, cfg, ports, rendered, raw_clock_out, entry.min_event_gap_ps

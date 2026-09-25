@@ -480,3 +480,23 @@ def test_sim_tool_versions_from_16_threads(monkeypatch):
     assert all(g == got[0] for g in got)
     assert set(got[0]) == {"iverilog", "verilator", "cocotb"}
     assert all(v and v != "unknown" for v in got[0].values())
+
+
+def test_python_fixture_l0_reject_end_to_end(ctx, toy):
+    """The fixture's l0_reject (INIT=1'bx, expect=reject; Ruling S12) through python:
+    pass, with dut/, stim.xvec and a header-only expected.xtr for init_x."""
+    case = dataclasses.replace(
+        _case(), id="7series.TOYFF.L0.reject", level="L0", source="vectors/gen.py:l0_reject"
+    )
+    res = PythonRunner().run(case, ctx)
+    assert res.status == "pass", res.reason
+    d = workdir(ctx, "python", case.id)
+    assert json.loads((d / "configs.json").read_text()) == ["init_x"]
+    cd = d / "cfg-init_x"
+    assert "INIT(1'bx)" in (cd / "dut/xut_dut.v").read_text().replace(" ", "")
+    vec = xvec.load(cd / "stim.xvec")
+    assert vec.expect == "reject" and vec.attrs["INIT"] == "1'bx"
+    t = xtr.load(cd / "expected.xtr")
+    assert t.samples == {} and t.header["expect"] == "reject"
+    assert expected_trace(ctx, case, "init_x") == cd / "expected.xtr"
+    assert res.bins_reached == []  # nothing replayed
