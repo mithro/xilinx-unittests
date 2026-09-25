@@ -487,6 +487,18 @@ def test_cocotb_model_mismatch_fails(ctx, toy, shared):
 
 
 @pytest.mark.container
+def test_cocotb_attributes_reach_the_dut(ctx, toy, shared):
+    """A model that ignores INIT fails init1 only: the configuration's attributes reach
+    both the wrapper (xut_dut.v) and XutDut.attrs (the golden model)."""
+    m = ctx.model_source.unisims / "TOYFF.v"
+    m.write_text(m.read_text().replace("if (glbl.GSR) q <= INIT;", "if (glbl.GSR) q <= 1'b0;"))
+    res = IverilogRunner().run(_case(), ctx)
+    by = {c.cfg: c for c in res.configs}
+    assert (by["init0"].status, by["init1"].status) == ("pass", "fail"), res.reason
+    assert "after GSR: Q=0, model 1 (INIT=1'b1)" in by["init1"].reason
+
+
+@pytest.mark.container
 def test_cocotb_simulator_stopping_early_is_error(ctx, toy, shared):
     m = ctx.model_source.unisims / "TOYFF.v"
     m.write_text(m.read_text().replace("  reg q;\n", "  reg q;\n  initial #125000 $finish;\n"))
