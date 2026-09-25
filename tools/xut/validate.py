@@ -22,8 +22,12 @@ from itertools import groupby
 from xut.formats.xvec import Event, Vec, free_clock_edges, free_runs
 from xut.wrap import DutMap
 
-DEFAULT_GAP_PS = 1_000  # sample/change spacing; clears the UNISIM 100 ps clock-to-Q
-DEFAULT_ASYNC_SEP_PS = 1_000
+#: THE minimum spacing, shared by the validator and xut.stimgen.VecBuilder: a sample
+#: after a change and an async/gate change from a clock edge. 1 ns clears the UNISIM
+#: 100 ps clock-to-Q. A file may record a larger ``async_sep_ps``, never a smaller one.
+MIN_SEP_PS = 1_000
+DEFAULT_GAP_PS = MIN_SEP_PS
+DEFAULT_ASYNC_SEP_PS = MIN_SEP_PS
 ROC_WIDTH_PS = 100_000  # glbl.v: GSR released after ROC_WIDTH
 GRES_END_PS = 20_000  # glbl.v: GRES_START + GRES_WIDTH
 
@@ -57,9 +61,9 @@ def _check_header(vec: Vec, m: DutMap, r: Report) -> None:
             r.errors.append(f"header {key}={vec.header[key]} but the wrapper has {want}")
     if vec.prim != m.prim:
         r.errors.append(f"header prim={vec.prim} but the wrapper is {m.prim}")
-    if vec.settle_ps < ROC_WIDTH_PS + DEFAULT_GAP_PS:
+    if vec.settle_ps < ROC_WIDTH_PS + MIN_SEP_PS:
         r.errors.append(
-            f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {DEFAULT_GAP_PS} margin"
+            f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + {MIN_SEP_PS} margin"
         )
 
 
@@ -104,6 +108,8 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
     if r.errors and any(int(vec.header[k]) != getattr(m, k) for k in ("nin", "nclk")):
         return r  # bit classes cannot be looked up against the wrong wrapper
     sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
+    if sep < MIN_SEP_PS:
+        r.errors.append(f"header async_sep_ps={sep} is below the minimum {MIN_SEP_PS}")
     cls = {b.bit: b.cls for b in m.of("in")}
     _check_free_stops(vec, r)
     for e in vec.events:
@@ -132,7 +138,7 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
                     f"t={t}: sample {s.target} is {t - last_change} ps after the last "
                     f"change (< {min_sample_gap_ps})"
                 )
-        lonely = []
+        lonely, mixed_line = [], []
         for e in changes:
             if e.op in ("edge", "glbl"):
                 if len(changes) > 1:
@@ -140,13 +146,22 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
             elif e.op == "set":
                 classes = [cls[b] for b in range(e.lsb, e.msb + 1)]
                 n_async = sum(c in ("async", "gate") for c in classes)
-                if n_async and (len(changes) > 1 or n_async > 1 or len(classes) > n_async):
+                if n_async and len(changes) > 1:
                     lonely.append(e)
-        if lonely and not all(e.simultaneous for e in changes):
-            r.errors.append(
-                f"t={t}: {', '.join(_desc(e) for e in lonely)} must be alone in its "
-                "event (spec §5.1) or every event at this time marked 'simultaneous'"
-            )
+                if n_async > 1 or 0 < n_async < len(classes):
+                    mixed_line.append((e, n_async, len(classes) - n_async))
+        if not all(e.simultaneous for e in changes):
+            for e, n_async, n_other in mixed_line:
+                r.errors.append(
+                    f"t={t}: {_desc(e)} changes {n_async} async/gate bit(s) and {n_other} "
+                    "other bit(s) in one line: split the async/gate and data changes, and "
+                    "each async/gate bit, into separate event times (spec §5.1)"
+                )
+            if lonely:
+                r.errors.append(
+                    f"t={t}: {', '.join(_desc(e) for e in lonely)} must be alone in its "
+                    "event (spec §5.1) or every event at this time marked 'simultaneous'"
+                )
         if any(e.simultaneous for e in grp):
             r.hw_reasons.append(f"t={t}: simultaneous events")
         for e in changes:

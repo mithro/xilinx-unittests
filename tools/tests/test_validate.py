@@ -49,7 +49,7 @@ def test_clean_file(fdce_map):
     "body,msg",
     [
         ("t=121000 set in[1]=1\nt=121000 set in[2]=1\n", "must be alone"),
-        ("t=121000 set in[2:1]=0x3\n", "must be alone"),
+        ("t=121000 set in[2:1]=0x3\n", "separate event times"),
         ("t=121000 set in[2]=1\nt=121500 sample S0\n", "after the last change"),
         ("t=121000 edge clk0 r\nt=121500 set in[1]=1\n", "from a clock edge"),
         ("t=121000 set in[1]=1\nt=121500 edge clk0 r\n", "from a clock edge"),
@@ -242,3 +242,26 @@ def test_cli_vec_check_syntax_error_is_clean(tmp_path, fdce_map):
     r = CliRunner().invoke(main, ["vec", "check", str(bad), "--map", str(mp)])
     assert r.exit_code == 1 and "Error:" in r.output and "line 3" in r.output
     assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_lone_mixed_async_data_line_says_split(fdce_map):
+    errors = validate(_v("t=121000 set in[2:1]=0x3\n"), fdce_map).errors
+    assert errors == [
+        "t=121000: set in[2:1] changes 1 async/gate bit(s) and 1 other bit(s) in one line: "
+        "split the async/gate and data changes, and each async/gate bit, into separate "
+        "event times (spec §5.1)"
+    ]
+    assert not any("simultaneous" in e for e in errors)
+
+
+def test_mixed_line_is_accepted_inside_a_simultaneous_group(fdce_map):
+    r = validate(
+        _v("t=121000 simultaneous set in[2:1]=0x3\nt=121000 simultaneous edge clk0 r\n"),
+        fdce_map,
+    )
+    assert r.errors == [] and not r.hw_renderable
+
+
+def test_header_async_sep_below_minimum(fdce_map):
+    v = loads(HDR.replace("seed=0", "seed=0 async_sep_ps=500"))
+    assert any("below the minimum 1000" in e for e in validate(v, fdce_map).errors)
