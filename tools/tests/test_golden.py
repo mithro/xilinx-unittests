@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import importlib
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -10,32 +11,14 @@ from xut.golden import replay
 from xut.wrap import build_map, spec_from_hdl
 from xut_models.base import Model, ModelUnsupported, Out, bit_attr
 
-
-class ToyDff(Model):
-    PRIM = "TOYFF"
-    CLOCKS = ("C",)
-    OUTPUTS = {"Q": 1}
-
-    @classmethod
-    def inputs(cls):
-        return {"C": 1, "D": 1}
-
-    def power_on(self):
-        self.q, self.gsr = bit_attr(self.attrs.get("INIT", 0)), 1
-
-    def set_input(self, port, value):
-        setattr(self, port.lower(), value)
-
-    def clock_edge(self, port, rising):
-        if rising and not self.gsr:
-            self.q = self.d
-            self.hit("TOYFF.C1")
-
-    def glbl(self, signal, value):
-        self.gsr = value
-
-    def outputs(self):
-        return {"Q": Out(str(self.q), "doc:1")}
+#: The TOYFF fixture's golden model lives in the fixture tree's ``_shared/toy`` package,
+#: where the TOYFF cocotb test imports it inside the container: one definition for both.
+TOY_SHARED = Path(__file__).parent / "fixtures/tests/7series/register/_shared/toy"
+_spec = importlib.util.spec_from_file_location("toy_golden", TOY_SHARED / "toy_golden.py")
+assert _spec is not None and _spec.loader is not None
+_toy_golden = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_toy_golden)
+ToyDff = _toy_golden.ToyDff
 
 
 MAP = build_map(
