@@ -7,17 +7,14 @@ functional-coverage bins. ``xut status generate`` (Task 7) renders it into
 and validates a status file, and builds a fresh stub.
 """
 
-import json
 import os
 import subprocess
 from pathlib import Path
 
-import jsonschema
 import yaml
 
+from xut import schemas
 from xut.catalog.model import CatalogEntry, is_enumerated
-
-SCHEMA_PATH = Path(__file__).resolve().parent / "schemas" / "status.schema.json"
 
 #: Valid values for a `results` entry (spec §11).
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
@@ -58,13 +55,9 @@ _NOT_RUN_MARK = _MARKS["not-run"]
 _LEGEND = "Marks: " + ", ".join(f"`{_MARKS[v]}` {v}" for v in _PRECEDENCE) + "."
 
 
-def _schema() -> dict:
-    return json.loads(SCHEMA_PATH.read_text())
-
-
 def validate(data: dict) -> None:
     """Raise ``jsonschema.ValidationError`` if ``data`` is not a valid status entry."""
-    jsonschema.validate(data, _schema())
+    schemas.validate(data, "status")
 
 
 def load_status(path: Path) -> dict:

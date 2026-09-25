@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 from pathlib import Path
 
 import jsonschema
@@ -8,13 +7,12 @@ import pytest
 import yaml
 from xut.catalog.model import load_entry
 from xut.paths import repo_root
+from xut.schemas import load_schema
 from xut.status import RESULT_VALUES, coverage_bins, load_status, new_stub, validate
 from xut.workunits import load_units
 
-STATUS_SCHEMA = json.loads(
-    (Path(__file__).parents[1] / "xut/schemas/status.schema.json").read_text()
-)
-TEST_SCHEMA = json.loads((Path(__file__).parents[1] / "xut/schemas/test.schema.json").read_text())
+STATUS_SCHEMA = load_schema("status")
+TEST_SCHEMA = load_schema("test")
 TEMPLATE = Path(__file__).parents[2] / "docs/templates/test.yaml"
 
 

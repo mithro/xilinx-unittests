@@ -2,15 +2,13 @@
 """Catalog entries: generated ``<PRIM>.yaml`` with ``<PRIM>.overrides.yaml`` layered on."""
 
 import copy
-import json
 import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-import jsonschema
 import yaml
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schemas" / "catalog.schema.json"
+from xut import schemas
 
 
 def is_enumerated(values: list[str]) -> bool:
@@ -45,13 +43,9 @@ class CatalogEntry:
         return asdict(self)
 
 
-def _schema() -> dict:
-    return json.loads(SCHEMA_PATH.read_text())
-
-
 def validate(data: dict) -> None:
     """Raise ``jsonschema.ValidationError`` if ``data`` is not a valid catalog entry."""
-    jsonschema.validate(data, _schema())
+    schemas.validate(data, "catalog")
 
 
 def _merge_named(items: list[dict], patch: dict, what: str, prim: str) -> list[dict]:
