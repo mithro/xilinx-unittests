@@ -53,6 +53,14 @@ Explicitly deferred, not supported yet:
   now, so a cycle-exact DRDY expectation is NOT refused here yet; the DRP
   transaction layer that §5.5 requires builds on the map's class record.
 
+Zero evidence is never a pass (ruling S15): a stimulus that is not ``expect=reject``
+must have at least one ``sample``, else it is an error (its expected trace would be
+empty, and every runner would "pass" it while checking nothing).
+
+glbl's start-up GSR release at ``ROC_WIDTH`` is an implicit async change: every event,
+free-clock edges included, must be at least ``async_sep_ps`` away from it, or it races
+the release (an error).
+
 The settle window covers glbl's start-up pulses: ``settle_ps >= MIN_SETTLE_PS =
 max(ROC_WIDTH, GRES_START + GRES_WIDTH) + SETTLE_MARGIN_PS``, from constants that a
 test checks against every model source's ``glbl.v``.
@@ -225,6 +233,19 @@ def _nearest(ts: list[int], t: int) -> tuple[int, int] | None:
     return min(near) if near else None
 
 
+def _check_gsr_release(timed: list[Event], sep: int, r: Report) -> None:
+    """glbl releases its start-up GSR at ROC_WIDTH with no event in the file: an
+    implicit async change. Any event (free-clock edges and samples included) within
+    ``async_sep_ps`` of it races the release, which the language does not order."""
+    for t in sorted({e.t for e in timed}):
+        if abs(t - ROC_WIDTH_PS) < sep:
+            what = ", ".join(dict.fromkeys(_desc(e) for e in timed if e.t == t))
+            r.errors.append(
+                f"t={t}: {what} is {abs(t - ROC_WIDTH_PS)} ps from glbl's GSR release at "
+                f"ROC_WIDTH={ROC_WIDTH_PS} (< async_sep_ps={sep}): it races the release"
+            )
+
+
 def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) -> Report:
     r = Report()
     try:
@@ -257,6 +278,12 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
         key=lambda e: e.t,
     )  # stable: file order within a time
     edges = [e.t for e in timed if e.op == "edge"]
+    _check_gsr_release(timed, sep, r)
+    if vec.expect != "reject" and not any(e.op == "sample" for e in vec.events):
+        r.errors.append(
+            "no samples: a stimulus must sample the outputs at least once (ruling S15: "
+            "an empty expected trace would pass on every runner while checking nothing)"
+        )
     level: dict[str, str] = {c.name: "f" for c in vec.clocks}
     last_change: int | None = None
     for t, group in groupby(timed, key=lambda e: e.t):

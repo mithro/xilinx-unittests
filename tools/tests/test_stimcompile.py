@@ -71,6 +71,7 @@ def test_free_clock_words():
 clock clk0 period=10000 phase=0 duty=50 mode=free
 t=120000 clock_start clk0
 t=137000 clock_stop clk0
+t=145000 sample S0
 t=150000 end
 """)
     ((c, start, stop),) = free_runs(v)
@@ -98,9 +99,10 @@ t=130500 end
 """
 
 
-@pytest.mark.parametrize("phase", [0, 2500])
+@pytest.mark.parametrize("phase", [2500, 4000])
 def test_implicit_free_clock_starts_at_phase(phase):
-    """A free clock without clock_start runs from max(0, phase), like free_runs."""
+    """A free clock without clock_start runs from max(0, phase), like free_runs. (Phase
+    0 would put a rising edge on glbl's GSR release at 100 ns: validate refuses it.)"""
     v = loads(FREE.replace("@PHASE@", str(phase)))
     ops = [_decode(w) for w in compile_vec(v, M).words]
     assert ops[:2] == [(5, 0, 3000, phase), (6, 0, 7000, phase)]  # high 30 %, low 70 %

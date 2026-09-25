@@ -84,7 +84,7 @@ def test_rule_violations_the_parser_already_refuses(fdce_map, events, msg):
 
 
 def test_errors_name_the_time(fdce_map):
-    errors = validate(_v("t=121000 edge clk0 f\n"), fdce_map).errors
+    errors = validate(_v("t=121000 edge clk0 f\nt=123000 sample S0\n"), fdce_map).errors
     assert errors and all(e.startswith("t=121000: ") for e in errors)
 
 
@@ -146,7 +146,7 @@ def test_settle_too_short(fdce_map):
 
 
 def test_header_async_sep_is_used(fdce_map):
-    body = "t=121000 edge clk0 r\nt=123000 set in[1]=1\n"
+    body = "t=121000 edge clk0 r\nt=123000 set in[1]=1\nt=125000 sample S0\n"
     assert validate(_v(body), fdce_map).errors == []
     v = loads(HDR.replace("seed=0", "seed=0 async_sep_ps=3000") + body)
     assert any("async_sep_ps=3000" in e for e in validate(v, fdce_map).errors)
@@ -242,7 +242,7 @@ def test_cli_vec_check_syntax_error_is_clean(tmp_path, fdce_map):
 
 
 def test_lone_mixed_async_data_line_says_split(fdce_map):
-    errors = validate(_v("t=121000 set in[2:1]=0x3\n"), fdce_map).errors
+    errors = validate(_v("t=121000 set in[2:1]=0x3\nt=123000 sample S0\n"), fdce_map).errors
     assert errors == [
         "t=121000: set in[2:1] changes 1 async/gate bit(s) and 1 other bit(s) in one line: "
         "split the async/gate and data changes, and each async/gate bit, into separate "
@@ -253,7 +253,10 @@ def test_lone_mixed_async_data_line_says_split(fdce_map):
 
 def test_mixed_line_is_accepted_inside_a_simultaneous_group(fdce_map):
     r = validate(
-        _v("t=121000 simultaneous set in[2:1]=0x3\nt=121000 simultaneous edge clk0 r\n"),
+        _v(
+            "t=121000 simultaneous set in[2:1]=0x3\nt=121000 simultaneous edge clk0 r\n"
+            "t=123000 sample S0\n"
+        ),
         fdce_map,
     )
     assert r.errors == [] and not r.hw_renderable
@@ -299,7 +302,8 @@ def test_any_free_clock_is_hw_no(fdce_map, body):
 
 
 def test_free_clock_declared_but_never_started_is_hw_no(fdce_map):
-    r = validate(loads(HDR.replace("mode=stepped", "mode=free") + "t=121000 sample S0\n"), fdce_map)
+    free = HDR.replace("phase=0 duty=50 mode=stepped", "phase=2500 duty=50 mode=free")
+    r = validate(loads(free + "t=121000 sample S0\n"), fdce_map)
     assert r.errors == [] and r.hw_reasons == [FREE_REASON]
 
 
@@ -315,7 +319,7 @@ def test_gsr_is_async_for_stepped_edge_separation(fdce_map, before):
         "t=121000 glbl GSR=1\nt=121500 edge clk0 r\n"
         if before
         else "t=121000 edge clk0 r\nt=121500 glbl GSR=1\n"
-    )
+    ) + "t=130000 sample S0\n"
     errors = validate(_v(body), fdce_map).errors
     assert errors == [
         "t=121%s: GSR change 500 ps from a clock edge (< async_sep_ps=1000)"
@@ -431,7 +435,9 @@ def test_settle_bound_is_max_of_roc_and_gres_end_plus_margin():
 def test_settle_below_bound_is_an_error(fdce_map):
     from xut.validate import MIN_SETTLE_PS
 
-    ok = loads(HDR.replace("settle_ps=120000", f"settle_ps={MIN_SETTLE_PS}"))
+    ok = loads(
+        HDR.replace("settle_ps=120000", f"settle_ps={MIN_SETTLE_PS}") + "t=130000 sample S0\n"
+    )
     bad = loads(HDR.replace("settle_ps=120000", f"settle_ps={MIN_SETTLE_PS - 1}"))
     assert validate(ok, fdce_map).errors == []
     assert any("settle_ps" in e for e in validate(bad, fdce_map).errors)
@@ -537,7 +543,7 @@ def test_mark_refusal_is_a_xut_error(fdce_map):
 def test_cli_vec_check_invalid_file_has_no_hw_verdict(tmp_path, fdce_map):
     mp = _write_map(tmp_path, fdce_map)
     bad = tmp_path / "bad.xvec"
-    bad.write_text(HDR + "t=121000 edge clk0 f\n")
+    bad.write_text(HDR + "t=121000 edge clk0 f\nt=123000 sample S0\n")
     r = CliRunner().invoke(main, ["vec", "check", str(bad), "--map", str(mp)])
     assert r.exit_code == 1
     lines = r.output.splitlines()
@@ -553,7 +559,7 @@ def test_cfg_and_attrs_are_compared_with_the_map():
     m = build_map(
         spec_from_catalog(load_entry("7series", "FDCE", repo_root()), "c", {"INIT": "1'b1"})
     )
-    good = loads(HDR.replace("seed=0", "seed=0 attr.INIT=1'b1"))
+    good = loads(HDR.replace("seed=0", "seed=0 attr.INIT=1'b1") + "t=121000 sample S0\n")
     assert validate(good, m).errors == []
     errors = validate(loads(HDR.replace("cfg=c", "cfg=d")), m).errors
     assert any("cfg=d" in e for e in errors)
@@ -561,3 +567,53 @@ def test_cfg_and_attrs_are_compared_with_the_map():
     assert any("attr.INIT" in e for e in errors)
     errors = validate(loads(HDR.replace("seed=0", "seed=0 attr.IS_C_INVERTED=1'b1")), m).errors
     assert any("attr.IS_C_INVERTED" in e for e in errors)
+
+
+# --- ruling S15: zero evidence is never a pass ------------------------------------------
+
+
+def test_a_stimulus_without_samples_is_an_error(fdce_map):
+    """A non-reject stimulus that never samples would replay to an empty expected trace
+    and "pass" on every runner while checking nothing (PR B gate (b) #1)."""
+    r = validate(_v("t=120000 set in[2]=1\nt=121000 edge clk0 r\nt=126000 edge clk0 f\n"), fdce_map)
+    assert any("no samples" in e for e in r.errors) and not r.hw_renderable
+
+
+def test_a_reject_stimulus_needs_no_samples(fdce_map):
+    v = loads(
+        HDR.replace("seed=0", "seed=0 expect=reject illegal=INIT attr.INIT=1'bx")
+        + "t=121000 edge clk0 r\n"
+    )
+    assert not any("no samples" in e for e in validate(v, fdce_map).errors)
+
+
+# --- the implicit GSR release at ROC_WIDTH is an async change (PR B gate (b) #5) --------
+
+
+def test_a_free_clock_edge_at_the_gsr_release_is_an_error(fdce_map):
+    """A free clock running from t=0 has an edge exactly at ROC_WIDTH (100 ns), where it
+    races glbl's GSR release: the language does not order the two."""
+    v = loads(HDR.replace("mode=stepped", "mode=free") + "t=121000 sample S0\n")
+    errors = validate(v, fdce_map).errors
+    assert any("t=100000" in e and "GSR release" in e for e in errors), errors
+
+
+def test_a_free_clock_clear_of_the_gsr_release_is_fine(fdce_map):
+    v = loads(
+        HDR.replace("phase=0 duty=50 mode=stepped", "phase=2500 duty=50 mode=free")
+        + "t=123500 sample S0\n"
+    )
+    assert not any("GSR release" in e for e in validate(v, fdce_map).errors)
+
+
+def test_an_explicit_event_near_the_gsr_release_is_an_error(fdce_map):
+    """settle_ps may sit within a larger async_sep_ps of ROC_WIDTH: an event there
+    races the release too."""
+    v = loads(
+        HDR.replace("settle_ps=120000", "settle_ps=101000").replace(
+            "seed=0", "seed=0 async_sep_ps=5000"
+        )
+        + "t=101000 set in[2]=1\nt=110000 sample S0\n"
+    )
+    errors = validate(v, fdce_map).errors
+    assert any("t=101000" in e and "GSR release" in e for e in errors), errors

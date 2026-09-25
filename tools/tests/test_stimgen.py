@@ -17,7 +17,10 @@ def _b(prim="FDCE", **kw):
 
 
 def _check(b, m):
-    """Every builder output parses back unchanged and has no validation errors."""
+    """Every builder output parses back unchanged and has no validation errors. A
+    stimulus needs a sample (ruling S15): one is added at the end if the test has none."""
+    if not b._labels:
+        b.sample("END")
     v = b.build()
     assert loads(dumps(v)) == v
     r = validate(v, m)
@@ -284,6 +287,7 @@ def test_glbl_is_spaced_like_async():
         (125000, "edge"),
         (127500, "set"),
         (130000, "glbl"),
+        (132500, "sample"),
     ]
 
 
