@@ -712,9 +712,12 @@ def _result_issues(ms: str, v: View, findings: list[Finding]) -> list[str]:
     return []
 
 
-def check(root: Path, case: TestCase) -> Report:
-    """Gather, classify per model source and account for every result of ``case``."""
+def check(root: Path, case: TestCase, model_source: str | None = None) -> Report:
+    """Gather, classify per model source and account for every result of ``case``;
+    only ``model_source``'s results when it is given."""
     gathered = gather(root, case.id)
+    if model_source is not None:
+        gathered = {ms: v for ms, v in gathered.items() if ms == model_source}
     rep = Report(case, gathered)
     matched: set[str] = set()
     for ms, views in sorted(gathered.items()):

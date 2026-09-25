@@ -969,3 +969,27 @@ def test_cli_all_uncompared_exits_2(repo):
     r = _xc("TOYFF")
     assert r.exit_code == 2, r.output
     assert "uncompared" in r.output
+
+
+def test_cli_unit_without_tests_is_exit_0(repo):
+    _test_yaml(repo)
+    (repo / "docs").mkdir()
+    (repo / "docs/work-units.yaml").write_text(
+        "family: 7series\nunits:\n  flops: {group: register, primitives: [FDRE]}\n"
+    )
+    r = _xc("unit:flops", "--model-source", "unisim-gh-2020.1")
+    assert r.exit_code == 0, r.output
+    assert "no tests selected (unit:flops)" in r.output
+    r = _xc("unit:nosuch")
+    assert r.exit_code == 1 and "unit:nosuch" in r.output
+
+
+def test_cli_model_source_restricts_the_report(repo):
+    _diverging(repo)  # ms1: a doc-gap finding
+    _result(repo, "rtl", "python", "ms2", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms2", TID, trace=T(Q0))
+    r = _xc("TOYFF", "--model-source", "ms2")
+    assert r.exit_code == 0, r.output
+    data = json.loads((repo / f"build/crosscheck/{TID}.json").read_text())
+    assert list(data["model_sources"]) == ["ms2"] and data["findings"] == []
+    assert _xc("TOYFF").exit_code == 1  # both sources: ms1's finding is back
