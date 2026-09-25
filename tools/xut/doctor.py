@@ -160,7 +160,9 @@ def run_checks(probe: Probe | None = None) -> list[Check]:
     """Run every preflight check, in the order of the task-9 brief's table.
 
     The `docker` daemon alone enables nothing: the `sim-container` check (the built
-    xut-sim image, which needs docker) carries `iverilog`, `verilator` and `cocotb`.
+    xut-sim image, which needs docker) carries `iverilog` and `verilator` — spec rev
+    3.1's runner vocabulary (controller Ruling 23). cocotb is a test *style* run inside
+    those runners, not a runner itself, so it is never listed.
     The yosys, `openxc7` (yosys + openXC7 nextpnr + prjxray) and `vpr` (F4PGA/VPR)
     flow containers don't exist yet; later steps add their own checks once they do.
     """
@@ -171,7 +173,7 @@ def run_checks(probe: Probe | None = None) -> list[Check]:
         docker,
         _safe(
             "sim-container",
-            ("iverilog", "verilator", "cocotb"),
+            ("iverilog", "verilator"),
             lambda: _check_sim_container(p, docker),
         ),
         _safe("gh", (), lambda: _check_gh(p)),
