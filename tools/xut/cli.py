@@ -356,3 +356,79 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
         click.echo(f"  reason: {h}")
     # 2-state runners (Verilator, hw) must skip a stimulus that drives x/z.
     click.echo(f"x_inputs: {'yes' if r.x_inputs else 'no'}")
+
+
+@main.command("run")
+@click.argument("selectors", nargs=-1)
+@click.option(
+    "--runner",
+    "runner_names",
+    multiple=True,
+    help="repeatable; default: every runner (iverilog-vz follows verilator)",
+)
+@click.option("--flow", type=click.Choice(["rtl"]), default="rtl", show_default=True)
+@click.option("--model-source", default="auto", show_default=True)
+@click.option("--style", "styles", multiple=True, type=click.Choice(["vector", "sv", "cocotb"]))
+@click.option("--level", "levels", multiple=True, type=click.Choice(["L0", "L1", "L2", "L3"]))
+@click.option("--seed", type=int, help="stimulus seed (default: crc32 of the test id)")
+@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--timeout", type=click.IntRange(min=1), help="per-runner seconds (default 600)")
+def run_cmd(
+    selectors: tuple[str, ...],
+    runner_names: tuple[str, ...],
+    flow: str,
+    model_source: str,
+    styles: tuple[str, ...],
+    levels: tuple[str, ...],
+    seed: int | None,
+    jobs: int,
+    timeout: int | None,
+) -> None:
+    """Run tests: SELECT is a test-id glob, a primitive name or unit:<name> (default: all).
+
+    Every selected (test, runner) pair writes
+    build/<flow>/<runner>/<model-source>/<test-id>/result.json. Exits 1 if any result is
+    fail or error.
+    """
+    from xut import modelsrc
+    from xut import run as run_mod
+    from xut.paths import repo_root
+    from xut.runners import RUNNERS
+    from xut.runners.base import RunContext
+    from xut.testspec import discover, select
+
+    unknown = sorted(set(runner_names) - set(RUNNERS))
+    if unknown:
+        raise XutError(f"unknown runner(s) {unknown} (known: {sorted(RUNNERS)})")
+    names = list(dict.fromkeys(runner_names)) or [r for r in RUNNERS if r != "iverilog-vz"]
+    if "verilator" in names and "iverilog-vz" in RUNNERS and "iverilog-vz" not in names:
+        names.append("iverilog-vz")  # it exists only to guard the Verilator results
+
+    root = repo_root()
+    cases = discover(root)
+    if selectors:
+        cases = select(cases, list(selectors))
+    cases = [
+        c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
+    ]
+    if not cases:
+        what = [*selectors, *(f"--level {v}" for v in levels), *(f"--style {s}" for s in styles)]
+        click.echo(f"no tests selected ({' '.join(what) or 'no tests under tests/'})")
+        return
+
+    ctx = RunContext(root, flow, modelsrc.resolve(model_source), seed, {}, timeout, jobs)
+    results = run_mod.run_tests(cases, names, ctx)
+
+    ran = list(dict.fromkeys(r.runner for r in results))
+    status = {(r.test_id, r.runner): r.status for r in results}
+    id_w = max(len("test"), *(len(c.id) for c in cases))
+    click.echo("")
+    click.echo(f"{'test':<{id_w}}  " + "  ".join(f"{n:<{max(8, len(n))}}" for n in ran))
+    for c in cases:
+        cells = [f"{status.get((c.id, n), '-'):<{max(8, len(n))}}" for n in ran]
+        click.echo(f"{c.id:<{id_w}}  " + "  ".join(cells))
+    bad = [r for r in results if r.status in ("fail", "error")]
+    for r in bad:
+        click.echo(f"{r.status}: {r.test_id} {r.runner}: {r.reason}")
+    if bad:
+        raise SystemExit(1)
