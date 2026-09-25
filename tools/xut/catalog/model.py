@@ -39,9 +39,15 @@ class CatalogEntry:
     design_entry: dict = field(default_factory=dict)
     claims: list[dict] = field(default_factory=list)  # {id, text, page, provenance}
     status_undocumented: bool = False
+    #: Optional override (spec §5.1, Ruling S8-prime): minimum gap between distinct event
+    #: times for stepped hw rendering; None means xut.validate.MIN_SEP_PS.
+    min_event_gap_ps: int | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if d["min_event_gap_ps"] is None:
+            del d["min_event_gap_ps"]  # optional, override-only: never generated
+        return d
 
 
 def validate(data: dict) -> None:
@@ -82,4 +88,4 @@ def load_entry(family: str, name: str, root: Path) -> CatalogEntry:
     if ov.is_file():
         data = merge(data, yaml.safe_load(ov.read_text()) or {}, name)
     validate(data)
-    return CatalogEntry(**{f.name: data[f.name] for f in fields(CatalogEntry)})
+    return CatalogEntry(**{f.name: data[f.name] for f in fields(CatalogEntry) if f.name in data})

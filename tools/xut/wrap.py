@@ -77,6 +77,7 @@ class DutSpec:
     ports: tuple[PortSpec, ...]
     attrs: tuple[tuple[str, str], ...]  # (name, Verilog literal), catalog order
     raw_clock_out: bool = False
+    min_event_gap_ps: int | None = None  # catalog override; None = validate's default
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ class Bit:
     role: str = ""  # "" | drive_en | drive_val | obs
 
 
-_MAP_KEYS = ("prim", "family", "cfg", "attrs", "nclk", "nin", "nout", "bits")
+_MAP_KEYS = ("prim", "family", "cfg", "attrs", "nclk", "nin", "nout", "bits", "min_event_gap_ps")
 _BIT_KEYS = tuple(f.name for f in fields(Bit))
 
 
@@ -103,6 +104,8 @@ class DutMap:
     nin: int
     nout: int
     bits: list[Bit] = field(default_factory=list)
+    #: The primitive's catalog ``min_event_gap_ps`` (None: xut.validate.MIN_SEP_PS).
+    min_event_gap_ps: int | None = None
 
     def of(self, vec: str) -> list[Bit]:
         """The bits of vector ``vec`` (clk | in | out), in bit order."""
@@ -162,6 +165,7 @@ class DutMap:
             raise WrapError(f"map.json: missing key(s) {missing}, unknown key(s) {unknown}")
         if not isinstance(d["bits"], list) or not isinstance(d["attrs"], dict):
             raise WrapError("map.json: 'bits' must be a list and 'attrs' an object")
+        _check_scalars(d)
         bits = []
         for i, b in enumerate(d["bits"]):
             if not isinstance(b, dict) or set(b) != set(_BIT_KEYS):
@@ -179,6 +183,25 @@ class DutMap:
             return cls.from_json(path.read_text())
         except WrapError as e:
             raise WrapError(f"{path}: {e}") from e
+
+
+def _is_int(v: object) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _check_scalars(d: dict) -> None:
+    for k in ("prim", "family", "cfg"):
+        if not isinstance(d[k], str):
+            raise WrapError(f"map.json: {k} must be a string, got {d[k]!r}")
+    for k in ("nclk", "nin", "nout"):
+        if not _is_int(d[k]) or d[k] < 0:
+            raise WrapError(f"map.json: {k} must be a non-negative integer, got {d[k]!r}")
+    g = d["min_event_gap_ps"]
+    if g is not None and (not _is_int(g) or g < 1):
+        raise WrapError(f"map.json: min_event_gap_ps must be null or >= 1, got {g!r}")
+    for k, v in d["attrs"].items():
+        if not isinstance(v, str):
+            raise WrapError(f"map.json: attrs.{k} must be a Verilog literal string, got {v!r}")
 
 
 def _check_map(m: DutMap) -> None:
@@ -383,7 +406,9 @@ def spec_from_catalog(
     _check_cfg(cfg)
     rendered = _render_attrs(entry.name, entry.attributes, attrs, allow_illegal)
     ports = tuple(PortSpec(p["name"], p["direction"], p["width"], p["cls"]) for p in entry.ports)
-    return DutSpec(entry.name, entry.family, cfg, ports, rendered, raw_clock_out)
+    return DutSpec(
+        entry.name, entry.family, cfg, ports, rendered, raw_clock_out, entry.min_event_gap_ps
+    )
 
 
 def spec_from_hdl(
@@ -455,7 +480,15 @@ def build_map(spec: DutSpec) -> DutMap:
         else:
             add("out", p)
     return DutMap(
-        spec.prim, spec.family, spec.cfg, dict(spec.attrs), n["clk"], n["in"], n["out"], bits
+        spec.prim,
+        spec.family,
+        spec.cfg,
+        dict(spec.attrs),
+        n["clk"],
+        n["in"],
+        n["out"],
+        bits,
+        spec.min_event_gap_ps,
     )
 
 
