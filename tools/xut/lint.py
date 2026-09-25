@@ -121,7 +121,7 @@ def check_branch_paths(
     branch: str, changed_files: list[str], units: dict[str, WorkUnit]
 ) -> list[LintIssue]:
     """Every file `branch` touches is within what its branch type owns (AGENTS.md §3,
-    controller ruling 13). `main` is exempt — nothing but `xut status generate` commits
+    controller Rulings 12 and 13). `main` is exempt — nothing but `xut status generate` commits
     there, and every branch-scoping rule below assumes a branch cut from `main`."""
     if branch == "main":
         return []

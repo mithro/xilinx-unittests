@@ -194,7 +194,7 @@ def test_render_todo_lists_uncovered_bins_unsupported_and_findings():
         uncovered=["port:R"],
         findings=["FDRE-reset-glitch"],
     )
-    out = render_todo([fdre], _unit(primitives=("FDRE",)))
+    out = render_todo([fdre], units=_unit(primitives=("FDRE",)))
     assert "port:R" in out
     assert "L1/hw/vivado" in out
     assert "FDRE-reset-glitch" in out

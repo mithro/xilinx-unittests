@@ -246,12 +246,12 @@ def render_progress(statuses: list[dict], units: dict) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def render_todo(statuses: list[dict], entries: dict) -> str:
+def render_todo(statuses: list[dict], units: dict) -> str:
     """Render TODO.md: per unit, per primitive, its uncovered bins, unsupported
     cells (with the primitive's `notes` as the reason, if any) and open findings.
-    `entries` is `xut.workunits.load_units`'s result. Primitives with nothing
+    `units` is `xut.workunits.load_units`'s result. Primitives with nothing
     outstanding are omitted, as are units with no outstanding primitive."""
-    unit_of = _unit_of_map(entries)
+    unit_of = _unit_of_map(units)
     by_unit: dict[str, list[dict]] = {}
     for s in statuses:
         by_unit.setdefault(unit_of.get(s["primitive"], s["work_unit"]), []).append(s)

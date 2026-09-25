@@ -146,9 +146,9 @@ def run_checks(probe: Probe | None = None) -> list[Check]:
 
     `docker` only enables `iverilog` and `verilator` — spec rev 3.1's runner
     vocabulary (controller ruling). cocotb is a test *style* run inside those
-    runners, not a runner itself; yosys/nextpnr-xilinx/vpr containers don't exist
-    yet and later steps add their own checks once they do (the F4PGA/VPR flow is
-    named `openxc7`, not `nextpnr-xilinx`).
+    runners, not a runner itself. The yosys, `openxc7` (yosys + openXC7 nextpnr +
+    prjxray) and `vpr` (F4PGA/VPR) flow containers don't exist yet; later steps add
+    their own checks once they do.
     """
     p = probe or Probe()
     return [
