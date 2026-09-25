@@ -20,7 +20,7 @@ Grammar (``#`` starts a comment everywhere except the header line)::
                | "end"
     clk       := "clk" INT                     (index into the wrapper's clk vector)
     value     := "0x" HEX+ | "0b" ( "0"|"1"|"x"|"z" )+ | DECIMAL
-    label     := [A-Za-z0-9_./-]+
+    label     := [A-Za-z0-9_./-]+           (the shared grammar of xut.formats.common)
 
 Times are integer picoseconds and never decrease. Before ``settle_ps`` only
 ``t=0 set`` initialisation lines may appear. ``in[msb:lsb]`` values are stored
@@ -53,6 +53,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from xut.formats.common import FormatError, is_header_key, is_label
+
 MAGIC = "xut-vec"
 VERSION = 2
 REQUIRED = ("prim", "cfg", "nin", "nout", "nclk", "settle_ps", "seed")
@@ -69,15 +71,10 @@ _EVENT = re.compile(r"^t=(\d+)\s+(?:(simultaneous)\s+)?(\w+)(?:\s+(.*))?$")
 _SET = re.compile(r"^in\[(\d+)(?::(\d+))?\]=(\S+)$")
 _EDGE = re.compile(r"^(clk\d+)\s+([rf])$")
 _GLBL = re.compile(r"^(GSR|GTS|GRESTORE)=([01])$")
-_LABEL = re.compile(r"^[A-Za-z0-9_./-]+$")
 
 
-class XvecError(ValueError):
+class XvecError(FormatError):
     """Syntax or self-consistency error, with the 1-based line number when known."""
-
-    def __init__(self, msg: str, line: int | None = None) -> None:
-        super().__init__(f"line {line}: {msg}" if line else msg)
-        self.line = line
 
 
 @dataclass(frozen=True)
@@ -234,7 +231,8 @@ def _quote(v: str, what: str = "value") -> str:
 
 
 def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: int) -> Event:
-    declared = {c.name for c in vec.clocks}
+    """Parse one event's operand text (syntax only), then apply the shared per-event
+    rules of ``_check_event``."""
     if op == "set":
         m = _SET.match(arg)
         if not m:
@@ -247,40 +245,150 @@ def _event(vec: Vec, t: int, op: str, arg: str, sim: bool, labels: set[str], n: 
             raise XvecError(f"in[{msb}] out of range (nin={vec.nin})", n)
         rng = str(msb) if lsb == msb else f"{msb}:{lsb}"
         value = decode_value(m.group(3), msb - lsb + 1, n, field=f"in[{rng}]")
-        return Event(t, "set", "in", lsb, msb, value, sim)
-    if op == "edge":
+        e = Event(t, "set", "in", lsb, msb, value, sim)
+    elif op == "edge":
         m = _EDGE.match(arg)
-        if not m or m.group(1) not in declared:
+        if not m:
             raise XvecError(f"edge on undeclared clock {arg!r}", n)
-        return Event(t, "edge", m.group(1), value=m.group(2), simultaneous=sim)
-    if op == "glbl":
+        e = Event(t, "edge", m.group(1), value=m.group(2), simultaneous=sim)
+    elif op == "glbl":
         m = _GLBL.match(arg)
         if not m:
             raise XvecError(f"bad glbl event {arg!r}", n)
-        return Event(t, "glbl", m.group(1), value=m.group(2), simultaneous=sim)
-    if op == "sample":
-        if not _LABEL.match(arg):
-            raise XvecError(f"bad sample label {arg!r}", n)
-        if arg in labels:
-            raise XvecError(f"duplicate label {arg!r}", n)
-        labels.add(arg)
-        return Event(t, "sample", arg, simultaneous=sim)
-    if op in ("clock_start", "clock_stop"):
-        if arg not in declared or vec.clock(arg).mode != "free":
-            raise XvecError(f"{op} needs a declared mode=free clock, got {arg!r}", n)
-        return Event(t, op, arg, simultaneous=sim)
-    if op == "end":
+        e = Event(t, "glbl", m.group(1), value=m.group(2), simultaneous=sim)
+    elif op == "end":
         if arg:
             raise XvecError("'end' takes no argument", n)
-        return Event(t, "end", simultaneous=sim)
-    raise XvecError(f"unknown op {op!r}", n)
+        e = Event(t, "end", simultaneous=sim)
+    else:  # sample, clock_start, clock_stop, or an unknown op (refused below)
+        e = Event(t, op, arg, simultaneous=sim)
+    try:
+        _check_event(vec, e, labels)
+    except XvecError as x:
+        raise XvecError(str(x), n) from x
+    return e
+
+
+def _check_header(header: dict[str, str]) -> None:
+    """Header keys, required keys and integer values (shared by parser and writer)."""
+    for k, v in header.items():
+        if not is_header_key(k):
+            raise XvecError(f"header key {k!r} is not [A-Za-z_][A-Za-z0-9_.]*")
+        if not isinstance(v, str):
+            raise XvecError(f"header {k}={v!r} must be a string")
+    missing = [k for k in REQUIRED if k not in header]
+    if missing:
+        raise XvecError(f"header lacks {', '.join(missing)}")
+    for k in INT_KEYS:
+        if k in header and not (header[k].isascii() and header[k].isdigit()):
+            raise XvecError(f"header {k} must be a non-negative integer")
+
+
+def _check_clock(vec: Vec, c: Clock, names: set[str]) -> None:
+    if c.name != f"clk{c.index}" or not 0 <= c.index < vec.nclk or c.name in names:
+        raise XvecError(f"clock {c.name}: index out of range or declared twice")
+    names.add(c.name)
+    if c.period <= 0 or not 0 < c.duty < 100:
+        raise XvecError(f"clock {c.name}: period must be > 0 and 0 < duty < 100")
+    if c.phase < 0:
+        raise XvecError(f"clock {c.name}: phase must be >= 0")
+    if c.mode not in ("stepped", "free"):
+        raise XvecError(f"clock {c.name}: mode must be stepped or free, got {c.mode!r}")
+
+
+def _check_event(vec: Vec, e: Event, labels: set[str]) -> None:
+    """THE per-event rules, applied by the parser to every line and by
+    ``check_structure`` to every in-memory event (review A2): settle window, bit
+    range, value width, declared clocks, glbl signals, label grammar and uniqueness."""
+    if not isinstance(e.t, int) or e.t < 0:
+        raise XvecError(f"negative or non-integer time {e.t!r}")
+    if e.t < vec.settle_ps and not (e.t == 0 and e.op == "set"):
+        raise XvecError(f"only 't=0 set' initialisation may precede settle_ps={vec.settle_ps}")
+    if e.op == "set":
+        if e.target != "in":
+            raise XvecError(f"set target must be 'in', got {e.target!r}")
+        if e.lsb > e.msb:
+            raise XvecError(f"in[{e.msb}:{e.lsb}]: msb < lsb")
+        if e.lsb < 0 or e.msb >= vec.nin:
+            raise XvecError(f"in[{e.msb}] out of range (nin={vec.nin})")
+        width = e.msb - e.lsb + 1
+        if len(e.value) != width or set(e.value) - set("01xz"):
+            raise XvecError(f"in[{e.msb}:{e.lsb}]: value {e.value!r} is not {width} bit(s) of 01xz")
+        return
+    if e.op not in ("glbl", "edge") and e.value:
+        raise XvecError(f"{e.op} takes no value, got {e.value!r}")
+    if e.op == "edge":
+        if e.target not in {c.name for c in vec.clocks}:
+            raise XvecError(f"edge on undeclared clock {e.target!r}")
+        if e.value not in ("r", "f"):
+            raise XvecError(f"edge value must be r or f, got {e.value!r}")
+    elif e.op == "glbl":
+        if e.target not in ("GSR", "GTS", "GRESTORE") or e.value not in ("0", "1"):
+            raise XvecError(f"bad glbl event {e.target}={e.value}")
+    elif e.op == "sample":
+        if not is_label(e.target):
+            raise XvecError(f"bad sample label {e.target!r}")
+        if e.target in labels:
+            raise XvecError(f"duplicate label {e.target!r}")
+        labels.add(e.target)
+    elif e.op in ("clock_start", "clock_stop"):
+        if not any(c.name == e.target and c.mode == "free" for c in vec.clocks):
+            raise XvecError(f"{e.op} needs a declared mode=free clock, got {e.target!r}")
+    elif e.op == "end":
+        if e.target:
+            raise XvecError("'end' takes no argument")
+    else:
+        raise XvecError(f"unknown op {e.op!r}")
 
 
 def check_structure(vec: Vec) -> None:
-    """The parser's structural rules (time order, ``end`` last, co-timing and
-    ``simultaneous`` marking) for a ``Vec`` built in memory rather than parsed.
-    Raises ``XvecError`` naming events by 1-based position (``event #N``)."""
+    """Every rule the parser applies, for a ``Vec`` built in memory rather than parsed
+    (review A2): header keys and integers, clock declarations, the per-event rules of
+    ``_check_event`` (settle window, bit range, declared clocks, label syntax and
+    uniqueness), time order, ``end`` last, co-timing and ``simultaneous`` marking.
+    Finally the Vec must survive ``loads(dumps(vec))`` unchanged, so an in-memory Vec
+    that would not parse back is always an error. Raises ``XvecError`` naming events
+    by 1-based position (``event #N``)."""
+    _check_header(vec.header)
+    names: set[str] = set()
+    for c in vec.clocks:
+        _check_clock(vec, c, names)
+    labels: set[str] = set()
+    for i, e in enumerate(vec.events):
+        try:
+            _check_event(vec, e, labels)
+        except XvecError as x:
+            raise XvecError(f"event #{i + 1}: {x}") from x
     _check_structure(vec, None)
+    if loads(dumps(vec)) != vec:
+        raise XvecError("the stimulus does not survive a write/read round trip unchanged")
+
+
+def checkable(vec: Vec) -> Vec:
+    """The part of an in-memory ``vec`` that satisfies the per-item rules: the clocks
+    and events that ``check_structure`` would not refuse on their own. ``xut.validate``
+    uses it to keep reporting class-rule errors after a structure error, without
+    crashing (an out-of-range bit) or hanging (a zero clock period). Raises
+    ``XvecError`` if the header itself is unusable."""
+    _check_header(vec.header)
+    clocks: list[Clock] = []
+    names: set[str] = set()
+    for c in vec.clocks:
+        try:
+            _check_clock(vec, c, names)
+        except XvecError:
+            continue
+        clocks.append(c)
+    out = Vec(dict(vec.header), clocks, [], vec.hw_renderable, vec.hw_reason)
+    events = []
+    for e in vec.events:
+        try:
+            _check_event(out, e, set())
+        except XvecError:
+            continue
+        events.append(e)
+    out.events = sorted(events, key=lambda e: e.t)
+    return out
 
 
 def _check_structure(vec: Vec, event_lines: list[int] | None) -> None:
@@ -352,15 +460,12 @@ def loads(text: str) -> Vec:
     if int(m.group(1)) != VERSION:
         raise XvecError(f"unsupported xut-vec version {m.group(1)}", 1)
     header = {k: _unquote(v) for k, v in _KV.findall(m.group(2))}
-    missing = [k for k in REQUIRED if k not in header]
-    if missing:
-        raise XvecError(f"header lacks {', '.join(missing)}", 1)
-    for k in INT_KEYS:
-        if k in header and not header[k].isdigit():
-            raise XvecError(f"header {k} must be a non-negative integer", 1)
+    try:
+        _check_header(header)
+    except XvecError as x:
+        raise XvecError(str(x), 1) from x
     vec = Vec(header)
     labels: set[str] = set()
-    last_t = 0
     event_lines: list[int] = []
     for n, raw in enumerate(lines[1:], start=2):
         line = _strip_comment(raw).strip()
@@ -368,11 +473,12 @@ def loads(text: str) -> Vec:
             continue
         if c := _CLOCK.match(line):
             name, idx, period, phase, duty, mode = c.groups()
-            if int(idx) >= vec.nclk or any(k.name == name for k in vec.clocks):
-                raise XvecError(f"clock {name}: index out of range or declared twice", n)
-            if int(period) <= 0 or not 0 < int(duty) < 100:
-                raise XvecError(f"clock {name}: period must be > 0 and 0 < duty < 100", n)
-            vec.clocks.append(Clock(name, int(idx), int(period), int(phase), int(duty), mode))
+            clk = Clock(name, int(idx), int(period), int(phase), int(duty), mode)
+            try:
+                _check_clock(vec, clk, {k.name for k in vec.clocks})
+            except XvecError as x:
+                raise XvecError(str(x), n) from x
+            vec.clocks.append(clk)
             continue
         if h := _HW.match(line):
             vec.hw_renderable = h.group(1) == "yes"
@@ -382,13 +488,6 @@ def loads(text: str) -> Vec:
         if not e:
             raise XvecError(f"unrecognised line {raw.strip()!r}", n)
         t, sim, op, arg = int(e.group(1)), bool(e.group(2)), e.group(3), (e.group(4) or "").strip()
-        if t < last_t:
-            raise XvecError(f"time goes backwards ({t} < {last_t})", n)
-        if t < vec.settle_ps and not (t == 0 and op == "set"):
-            raise XvecError(
-                f"only 't=0 set' initialisation may precede settle_ps={vec.settle_ps}", n
-            )
-        last_t = t
         vec.events.append(_event(vec, t, op, arg, sim, labels, n))
         event_lines.append(n)
     _check_structure(vec, event_lines)
@@ -410,6 +509,14 @@ def _fmt(e: Event) -> str:
 
 
 def dumps(vec: Vec) -> str:
+    """The stimulus as text. Raises ``XvecError`` on a header key, header value, sample
+    label or reason that the format cannot represent (never silently altered)."""
+    for k in vec.header:
+        if not is_header_key(k):
+            raise XvecError(f"header key {k!r} is not [A-Za-z_][A-Za-z0-9_.]*")
+    for e in vec.events:
+        if e.op == "sample" and not is_label(e.target):
+            raise XvecError(f"sample label {e.target!r} is not [A-Za-z0-9_./-]+")
     keys = [k for k in HEADER_ORDER if k in vec.header]
     keys += sorted(k for k in vec.header if k not in HEADER_ORDER)
     out = [

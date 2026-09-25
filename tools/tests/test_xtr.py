@@ -122,3 +122,98 @@ def test_concat_prefixes_labels():
         {"runner": "iverilog", "flow": "rtl", "model": "m", "seed": "1"},
     )
     assert list(t.samples)[:2] == ["cfgA/S0", "cfgA/S1"] and "cfgB/S2" in t.samples
+
+
+# --- A1: one name grammar; the writer never produces a file that reads back differently
+
+
+def _t(**hdr):
+    return Trace({"runner": "x", "flow": "rtl", "model": "m", "seed": "0", **hdr})
+
+
+def test_error_types_share_a_format_base():
+    from xut.errors import XutError
+    from xut.formats.common import FormatError
+    from xut.formats.xvec import XvecError
+
+    assert issubclass(XtrError, FormatError) and issubclass(XvecError, FormatError)
+    assert issubclass(FormatError, XutError) and issubclass(FormatError, ValueError)
+    e = XtrError("bad", 7)
+    assert str(e) == "line 7: bad" and e.line == 7
+
+
+@pytest.mark.parametrize("label", ["a|b=c/S0", "a b", "S#0", "", "S0\n"])
+def test_add_rejects_unrepresentable_labels(label):
+    with pytest.raises(XtrError, match="label"):
+        _t().add(label, {"Q": "0"})
+
+
+@pytest.mark.parametrize("port", ["Q#", "1Q", "a|b", "Q=", ""])
+def test_add_rejects_bad_port_names(port):
+    with pytest.raises(XtrError, match="port"):
+        _t().add("S0", {port: "0"})
+
+
+@pytest.mark.parametrize("bits", ["1#", "", "1_0", "12", "1 0"])
+def test_add_rejects_bad_bits(bits):
+    with pytest.raises(XtrError, match="bits"):
+        _t().add("S0", {"Q": bits})
+
+
+def test_add_rejects_dont_care_in_actual_trace():
+    with pytest.raises(XtrError, match="'-'"):
+        _t().add("S0", {"Q": "-"})
+    _t(kind="expected").add("S0", {"Q": "-"})
+
+
+def test_add_rejects_provenance_for_unknown_port():
+    with pytest.raises(XtrError, match="provenance"):
+        _t(kind="expected").add("S0", {"Q": "0"}, {"R": "doc:1"})
+
+
+@pytest.mark.parametrize(
+    "hdr",
+    [{"model": "a b"}, {"model": ""}, {"bad key": "1"}, {"kind": "golden"}, {"model": "a\nb"}],
+)
+def test_dumps_rejects_unrepresentable_header(hdr):
+    t = _t()
+    t.header.update(hdr)
+    with pytest.raises(XtrError, match="header"):
+        dumps(t)
+
+
+def test_dumps_revalidates_samples_mutated_in_place():
+    t = _t()
+    t.add("S0", {"Q": "0"})
+    t.samples["S0"]["Q"] = "1#"
+    with pytest.raises(XtrError, match="bits"):
+        dumps(t)
+
+
+def test_concat_refuses_a_cfg_outside_the_grammar():
+    part = _t()
+    part.add("S0", {"Q": "1"})
+    with pytest.raises(XtrError, match="configuration"):
+        concat([("a|b=c", part)], {"runner": "x", "flow": "rtl", "model": "m", "seed": "0"})
+    with pytest.raises(XtrError, match="configuration"):
+        concat([("a/b", part)], {"runner": "x", "flow": "rtl", "model": "m", "seed": "0"})
+
+
+def test_round_trip_is_exact():
+    t = _t(kind="expected", prim="FDRE", cfg="a.b-c")
+    t.add("cfg/S0.x-1", {"Q": "-", "DO": "01xz0101z"}, {"Q": "inferred:silent", "DO": "doc:9"})
+    t.add("S1", {})
+    back = loads(dumps(t))
+    assert (back.header, back.samples, back.prov) == (t.header, t.samples, t.prov)
+
+
+def test_loads_rejects_junk_header_tokens():
+    with pytest.raises(XtrError, match="header"):
+        loads("# xut-trace 2  runner=x junk\n")
+
+
+def test_diff_names_a_portless_sample_present():
+    a, b = _t(), _t()
+    a.add("S0", {})
+    (m,) = diff(a, b)
+    assert (m.expected, m.actual, m.kind) == ("present", "missing", "missing-sample")

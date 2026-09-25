@@ -35,7 +35,15 @@ import bisect
 from dataclasses import dataclass, field
 from itertools import groupby
 
-from xut.formats.xvec import Event, Vec, XvecError, check_structure, free_clock_edges, free_runs
+from xut.formats.xvec import (
+    Event,
+    Vec,
+    XvecError,
+    check_structure,
+    checkable,
+    free_clock_edges,
+    free_runs,
+)
 from xut.wrap import DutMap
 
 #: THE minimum spacing, shared by the validator and xut.stimgen.VecBuilder: a sample
@@ -74,7 +82,7 @@ def _desc(e: Event) -> str:
 
 def _check_header(vec: Vec, m: DutMap, r: Report) -> None:
     for key, want in (("nin", m.nin), ("nout", m.nout), ("nclk", m.nclk)):
-        if int(vec.header[key]) != want:
+        if getattr(vec, key) != want:
             r.errors.append(f"header {key}={vec.header[key]} but the wrapper has {want}")
     if vec.prim != m.prim:
         r.errors.append(f"header prim={vec.prim} but the wrapper is {m.prim}")
@@ -128,16 +136,20 @@ def _nearest(ts: list[int], t: int) -> tuple[int, int] | None:
 
 def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) -> Report:
     r = Report()
-    _check_header(vec, m, r)
-    if r.errors and any(int(vec.header[k]) != getattr(m, k) for k in ("nin", "nclk")):
-        return r  # bit classes cannot be looked up against the wrong wrapper
-    sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
-    if sep < MIN_SEP_PS:
-        r.errors.append(f"header async_sep_ps={sep} is below the minimum {MIN_SEP_PS}")
     try:
         check_structure(vec)
     except XvecError as e:
         r.errors.append(f"structure: {e}")
+        try:
+            vec = checkable(vec)  # keep reporting class errors on the well-formed part
+        except XvecError:
+            return r  # the header itself is unusable
+    _check_header(vec, m, r)
+    if r.errors and (vec.nin != m.nin or vec.nclk != m.nclk):
+        return r  # bit classes cannot be looked up against the wrong wrapper
+    sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
+    if sep < MIN_SEP_PS:
+        r.errors.append(f"header async_sep_ps={sep} is below the minimum {MIN_SEP_PS}")
     cls = {b.bit: b.cls for b in m.of("in")}
     _check_free_stops(vec, r)
     for e in vec.events:

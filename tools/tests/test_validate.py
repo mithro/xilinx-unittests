@@ -344,3 +344,31 @@ def test_in_memory_parser_illegal_cotiming_is_an_error(fdce_map):
 def test_in_memory_time_order_is_checked(fdce_map):
     v = _raw(Event(122000, "sample", "S0"), Event(121000, "set", "in", 2, 2, "1"))
     assert any("time goes backwards" in e for e in validate(v, fdce_map).errors)
+
+
+# --- A2: in-memory Vecs are held to the parser's per-event rules
+
+
+@pytest.mark.parametrize(
+    "event,msg",
+    [
+        (Event(121000, "set", "in", 9, 9, "1"), "out of range"),
+        (Event(121000, "sample", "bad label"), "bad sample label"),
+        (Event(5000, "sample", "S0"), "settle_ps"),
+        (Event(121000, "edge", "clk3", value="r"), "undeclared clock"),
+        (Event(121000, "clock_start", "clk0"), "mode=free"),
+    ],
+)
+def test_in_memory_parser_illegal_event_is_an_error_not_a_crash(fdce_map, event, msg):
+    v = _raw(Event(120000, "set", "in", 2, 2, "1"), event, Event(130000, "sample", "S9"))
+    r = validate(v, fdce_map)
+    assert any(e.startswith("structure: event #2: ") and msg in e for e in r.errors), r.errors
+    assert not r.hw_renderable
+
+
+def test_in_memory_bad_clock_does_not_hang(fdce_map):
+    from xut.formats.xvec import Clock
+
+    base = loads(HDR)
+    v = Vec(base.header, [Clock("clk0", 0, 0, 0, 50, "free")], [Event(130000, "sample", "S0")])
+    assert any("period" in e for e in validate(v, fdce_map).errors)
