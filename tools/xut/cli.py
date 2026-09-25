@@ -151,3 +151,31 @@ def status_generate_cmd(force: bool) -> None:
     (out_dir / "TODO.md").write_text(header + render_todo(statuses, units))
     (out_dir / "LOG.md").write_text(header + render_log(root / "log"))
     click.echo(f"wrote PROGRESS.md, TODO.md, LOG.md to {out_dir} ({len(statuses)} statuses)")
+
+
+@main.command("lint")
+@click.option(
+    "--branch",
+    "branch_mode",
+    is_flag=True,
+    help="Also check branch-ownership and generated-file rules against origin/main...HEAD.",
+)
+def lint_cmd(branch_mode: bool) -> None:
+    """Enforce branch ownership, SPDX headers, generated files, docs and status schema.
+
+    Exits non-zero iff any error-severity issue was found; warnings are printed but never
+    fail the build.
+    """
+    from xut.lint import lint
+    from xut.paths import repo_root
+
+    root = repo_root()
+    issues, warnings = lint(root, branch_mode)
+    for w in warnings:
+        click.echo(f"warning: {w}", err=True)
+    for issue in sorted(issues, key=lambda i: (i.path, i.rule)):
+        click.echo(f"{issue.severity} {issue.rule} {issue.path}: {issue.message}")
+    errors = sum(1 for i in issues if i.severity == "error")
+    click.echo(f"{len(issues)} issue(s): {errors} error(s), {len(issues) - errors} warning(s)")
+    if errors:
+        raise SystemExit(1)
