@@ -11,11 +11,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from xut.errors import XutError
 from xut.formats.xtr import Trace
 from xut.formats.xvec import Event, Vec, free_clock_edges
-from xut.validate import ROC_WIDTH_PS
+from xut.validate import ROC_WIDTH_PS, validate
 from xut.wrap import DutMap
 from xut_models.base import Model, ModelUnsupported, Out
+
+
+class InvalidStimulus(XutError, ValueError):
+    """The .xvec breaks the class rules (xut.validate): no golden trace may exist for it."""
 
 
 @dataclass
@@ -96,6 +101,14 @@ def replay(model_cls: type[Model], vec: Vec, m: DutMap) -> tuple[Trace, Reach]:
         raise ModelUnsupported(
             f"simultaneous events at t={sim[:3]}: ordering within one time "
             "step is not modelled (use them only for sim-vs-sim checks)"
+        )
+    # Golden output from an invalid stimulus must be impossible (controller ruling).
+    # hw_renderable=no is fine: replay is simulation-side.
+    report = validate(vec, m)
+    if report.errors:
+        raise InvalidStimulus(
+            f"{vec.prim}/{vec.cfg}: stimulus is invalid, refusing to replay:\n  "
+            + "\n  ".join(report.errors)
         )
     _check_inputs(model_cls, vec, m)
     model = model_cls(vec.attrs)
