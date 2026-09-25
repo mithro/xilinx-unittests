@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 `timescale 1ps / 1ps
 module xut_dut (input wire [0:0] clk, input wire [2:0] in_vec, output wire [0:0] out_vec);
-  // in_vec: [0]=D [1]=CLR(async) [2]=unused
+  // in_vec: [0]=D [1]=unused [2]=CLR(async)
   reg q;
-  always @(posedge clk[0] or posedge in_vec[1] or posedge glbl.GSR)
+  always @(posedge clk[0] or posedge in_vec[2] or posedge glbl.GSR)
     if (glbl.GSR) q <= 1'b1;
-    else if (in_vec[1]) q <= 1'b0;
+    else if (in_vec[2]) q <= 1'b0;
     else q <= in_vec[0];
   assign out_vec[0] = q;
 endmodule
