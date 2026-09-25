@@ -15,8 +15,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-from test_golden import ToyDff
-from test_runner_base import TOY_ENTRY
 
 from xut import schemas
 from xut.cli import main
@@ -75,19 +73,6 @@ def make_model_source(d: Path, reject: bool = True) -> ModelSource:
 
 def test_toy_glbl_is_toy_duts():
     assert "module glbl;" in _toy_glbl() and "GSR_int" in _toy_glbl()
-
-
-@pytest.fixture
-def toy(monkeypatch):
-    """TOYFF without a catalog file or a xut_models module: ToyDff is its golden model."""
-    monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: TOY_ENTRY)
-    monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
-
-
-@pytest.fixture
-def work(tmp_path):
-    """A fresh run root outside the worktree (mounted at /xut-root by the runner)."""
-    return tmp_path
 
 
 @pytest.fixture

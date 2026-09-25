@@ -62,13 +62,6 @@ TOY_ENTRY = CatalogEntry(
 
 
 @pytest.fixture
-def toy(monkeypatch):
-    """TOYFF without a catalog file or a xut_models module: ToyDff is its golden model."""
-    monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: TOY_ENTRY)
-    monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
-
-
-@pytest.fixture
 def ctx(tmp_path):
     return RunContext(tmp_path, "rtl", ModelSource("unisim-test", tmp_path / "ms"))
 

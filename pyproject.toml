@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-xdist>=3.6", "ruff>=0.6"]
 
 [project.scripts]
 xut = "xut.cli:main"
@@ -31,6 +31,7 @@ testpaths = ["tools/tests"]
 markers = [
   "container: needs the xut-sim image (uv run xut container build)",
   "vivado: needs Vivado 2025.2 at /opt/xilinx/Vivado/2025.2",
+  "slow: a long end-to-end run (every vivado test); deselect with -m 'not slow'",
 ]
 
 [tool.ruff]

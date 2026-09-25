@@ -18,7 +18,7 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run ruff check tools models
       - run: uv run ruff format --check tools models
-      - run: uv run pytest -v
+      - run: uv run pytest -v -n auto --dist loadfile
       - run: uv run xut lint
       - name: xut lint --branch (branch-path ownership)
         if: github.event_name == 'pull_request'
@@ -45,4 +45,4 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - run: uv run xut container versions
-      - run: uv run pytest -v -m container
+      - run: uv run pytest -v -n auto --dist loadfile -m container
