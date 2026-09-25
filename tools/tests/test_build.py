@@ -283,3 +283,63 @@ def test_function_review_and_class_notes_reach_the_report(tmp_path):
     report = build_all(FIX / "ug953_layouts.txt", ["TOYSER", "IDDR"], out, [u], family="7series")
     assert "TOYSER: port TODD UG953 function needs review" in report
     assert any(x.startswith("IDDR: port S class depends on SRTYPE") for x in report)
+
+
+def test_one_bit_inversion_attribute_gets_two_bins():
+    from xut.catalog.model import CatalogEntry
+    from xut.status import coverage_bins
+
+    e = CatalogEntry(
+        name="T",
+        family="7series",
+        group="",
+        subgroup="",
+        description="",
+        doc={},
+        model={},
+        attributes=[{"name": "IS_C_INVERTED", "allowed": ["1'b0", "1'b1"]}],
+    )
+    assert coverage_bins(e) == ["attr:IS_C_INVERTED=1'b0", "attr:IS_C_INVERTED=1'b1"]
+
+
+@pytest.mark.parametrize(
+    "attr,expect",
+    [
+        ({"name": "SIM_DEVICE", "default": "ULTRASCALE", "allowed": []}, "default ULTRASCALE"),
+        (
+            {"name": "CE_TYPE", "default": "SYNC", "allowed": ["SYNC", "ASYNC", "HARDSYNC"]},
+            "allowed value HARDSYNC",
+        ),
+        ({"name": "X", "default": "ULTRASCALE_PLUS", "allowed": []}, "ULTRASCALE_PLUS"),
+        ({"name": "X", "default": "VERSAL_AI_CORE", "allowed": []}, "VERSAL_AI_CORE"),
+    ],
+)
+def test_non_7series_values_are_flagged(attr, expect):
+    from xut.catalog.build import family_value_issues
+
+    lines = family_value_issues("BUFGCE", [attr])
+    assert len(lines) == 1
+    assert expect in lines[0]
+    assert "not applicable to 7-series" in lines[0]
+
+
+def test_7series_values_are_not_flagged():
+    from xut.catalog.build import family_value_issues
+
+    attrs = [
+        {"name": "SIM_DEVICE", "default": "7SERIES", "allowed": ["7SERIES"]},
+        {"name": "CE_TYPE", "default": "SYNC", "allowed": ["SYNC", "ASYNC"]},
+        {"name": "INIT", "default": None, "allowed": []},
+    ]
+    assert family_value_issues("BUFR", attrs) == []
+
+
+def test_non_7series_values_have_their_own_report_section():
+    from xut.catalog.build import family_value_issues, render_report
+
+    lines = family_value_issues(
+        "BUFGCE", [{"name": "SIM_DEVICE", "default": "ULTRASCALE", "allowed": []}]
+    )
+    md = render_report(lines, ["BUFGCE"], "toy")
+    section = md.split("## Values not applicable to 7-series")[1].split("##")[0]
+    assert "BUFGCE: attribute SIM_DEVICE" in section

@@ -432,8 +432,25 @@ def _is_prose(text: str) -> bool:
     return len(words) >= 3 and sum(bool(re.fullmatch(r"[a-z][a-z,.()-]*", w)) for w in words) >= 2
 
 
+_ONE_BIT_RANGE = re.compile(r"1'b0\s+to\s+1'b1")
+
+
 def _split_values(text: str) -> list[str]:
-    return [v.strip() for v in re.split(r",|\s+or\s+", text) if v.strip()]
+    """Split an allowed-values cell into values. Whitespace just inside a quoted value
+    (a wrapped cell joined as ``"GENERATE_X_ONLY ", ...``) is dropped, and the 1-bit
+    range ``1'b0 to 1'b1`` becomes its two values, so each gets a coverage bin."""
+    out: list[str] = []
+    for v in re.split(r",|\s+or\s+", text):
+        v = v.strip()
+        if not v:
+            continue
+        if _ONE_BIT_RANGE.fullmatch(v):
+            out += ["1'b0", "1'b1"]
+            continue
+        if len(v) >= 2 and v[0] == v[-1] == '"':
+            v = f'"{v[1:-1].strip()}"'
+        out.append(v)
+    return out
 
 
 def _closed(text: str) -> bool:

@@ -14,7 +14,7 @@ from xut.errors import OverrideError, OverrideTypeError
 
 def is_enumerated(values: list[str]) -> bool:
     """True if an attribute's ``allowed`` values are a set of discrete literals, not a
-    range such as ``1 to 128``, ``190-210`` or ``1'b0 to 1'b1``. Shared by
+    range such as ``1 to 128``, ``190-210`` or ``16'h0000 to 16'hffff``. Shared by
     ``xut.catalog.build`` (UG953 cross-check) and ``xut.status`` (coverage bins, spec
     §9): a non-enumerated or undeclared (``allowed`` is advisory and may be empty)
     attribute collapses to a single ``attr:<A>`` bin, an enumerated one to one

@@ -117,7 +117,7 @@ def test_attribute_cells():
     assert a["SIM_COLL_CHECK"]["default"] == '"ALL"'
     assert a["DOB_REG"] == {"type": "DECIMAL", "allowed": ["0", "1"], "default": "0"}
     assert a["EN_ECC"] == {"type": "BOOLEAN", "allowed": ["FALSE", "TRUE"], "default": "FALSE"}
-    assert a["IS_CLK_INVERTED"]["allowed"] == ["1'b0 to 1'b1"]
+    assert a["IS_CLK_INVERTED"]["allowed"] == ["1'b0", "1'b1"]  # 1-bit range enumerated
     assert a["INIT_0F"] == {"type": "HEX", "allowed": ["256 bit HEX"], "default": "All zeros"}
     assert a["SRVAL_B"]["type"] == "HEX"
     assert a["WIDTH"]["allowed"] == ["0", "1", "2", "4", "9"]
@@ -218,3 +218,26 @@ def test_open_list_fragment_goes_down_and_duplicate_is_the_default():
     assert a["IFACE"]["allowed"] == ['"MEM"', '"MEM_DDR3"', '"MEM_QDR"', '"NET"', '"OVER"']
     assert a["IFACE"]["default"] == '"MEM"'
     assert a["IODLY"]["allowed"] == ['"NONE"', '"BOTH"']
+
+
+def test_split_values_strips_whitespace_inside_quotes():
+    """RAMB18E1 SIM_COLLISION_CHECK wraps as `"GENERATE_X_ONLY` / `", "NONE",` in the
+    UG953 text; the joined cell must not keep the space before the closing quote."""
+    from xut.catalog.ug953 import _split_values
+
+    assert _split_values('"ALL", "GENERATE_X_ONLY ", "NONE", "WARNING_ONLY"') == [
+        '"ALL"',
+        '"GENERATE_X_ONLY"',
+        '"NONE"',
+        '"WARNING_ONLY"',
+    ]
+
+
+def test_split_values_enumerates_one_bit_binary_range():
+    """`1'b0 to 1'b1` (every IS_*_INVERTED) is two discrete values, so each polarity gets
+    its own coverage bin (spec §4.2, §9); wider ranges stay ranges."""
+    from xut.catalog.ug953 import _split_values
+
+    assert _split_values("1'b0 to 1'b1") == ["1'b0", "1'b1"]
+    assert _split_values("16'h0000 to 16'hffff") == ["16'h0000 to 16'hffff"]
+    assert _split_values("1 to 128") == ["1 to 128"]
