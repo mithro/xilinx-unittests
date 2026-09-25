@@ -25,15 +25,9 @@ from xut.formats import xtr
 from xut.modelsrc import ModelSource
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, workdir
-from xut.runners.iverilog import (
-    HDL,
-    IverilogRunner,
-    IverilogVzRunner,
-    ParamError,
-    param_value,
-    sv_check,
-)
+from xut.runners.iverilog import IverilogRunner, IverilogVzRunner, param_value
 from xut.runners.python import PythonRunner
+from xut.runners.sim import HDL, ParamError, sv_check
 from xut.testspec import TestCase, discover
 
 FIX = Path(__file__).parent / "fixtures"

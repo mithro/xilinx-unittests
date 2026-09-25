@@ -31,15 +31,14 @@ from xut.modelsrc import ModelSource
 from xut.paths import VIVADO_SETTINGS, VIVADO_SRC, repo_root
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, workdir
-from xut.runners.iverilog import ParamError, sv_check
 from xut.runners.python import PythonRunner
 from xut.runners.reject import reject_result
+from xut.runners.sim import ParamError, fatal_line, sv_check
 from xut.runners.xsim import (
     LIBRARY_PATH_GUARD,
     MODEL_SOURCE,
     RUN_MARKER,
     XsimRunner,
-    fatal_line,
     generic_value,
     render_script,
     run_script,

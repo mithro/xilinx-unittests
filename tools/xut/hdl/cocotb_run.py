@@ -12,7 +12,7 @@ runner's ``glbl_instance`` strategy does not apply), runs test module ``<stem>``
 cocotb's ``RANDOM_SEED`` = ``--seed`` and ``test_dir`` = ``<work>``, and exits 0 iff
 ``<work>/results.xml`` records at least one test and no failure; a failed HDL build
 exits ``BUILD_FAILED`` (3) without running any test. The calling runner
-classifies the run from ``results.xml`` itself (``xut.runners.iverilog.cocotb_check``).
+classifies the run from ``results.xml`` itself (``xut.runners.sim.cocotb_check``).
 
 ``--lib-first`` directories are searched before UNISIM (the verilatorized models, for
 Verilator and iverilog-vz). ``--x-seed`` is Verilator's X-initialisation seed.
@@ -28,7 +28,7 @@ from pathlib import Path
 
 TOP = "xut_cocotb_top"
 #: Exit code when the HDL build fails (no test ran); the runner reports ``compile failed``.
-#: Keep equal to ``xut.runners.iverilog.COCOTB_BUILD_FAILED`` (pinned by test_runner_cocotb).
+#: Keep equal to ``xut.runners.sim.COCOTB_BUILD_FAILED`` (pinned by test_runner_cocotb).
 BUILD_FAILED = 3
 
 

@@ -27,14 +27,9 @@ from xut.container import NativeExecutor
 from xut.formats import xtr
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, seed_for, workdir
-from xut.runners.iverilog import (
-    COCOTB_BUILD_FAILED,
-    COCOTB_RUN,
-    IverilogRunner,
-    cocotb_check,
-    cocotb_command,
-)
+from xut.runners.iverilog import IverilogRunner
 from xut.runners.python import PythonRunner
+from xut.runners.sim import COCOTB_BUILD_FAILED, COCOTB_RUN, cocotb_check, cocotb_command
 from xut.testspec import TestCase, discover
 from xut.wrap import DutSpec, PortSpec, build_map
 
