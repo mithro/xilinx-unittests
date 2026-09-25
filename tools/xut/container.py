@@ -192,7 +192,9 @@ def executor_for(model_source: _HasModelSrc, work_root: Path | None = None) -> E
     `XUT_NATIVE=1` selects `NativeExecutor`. Otherwise a model source outside the
     repository (the Vivado install) is mounted read-only at `/models/<name>`, and a
     `work_root` (the run's `RunContext.root`) outside the repository -- a pytest
-    `tmp_path` -- is mounted read-write at `/xut-root`. The model mount comes first, so
+    `tmp_path` -- is mounted READ-WRITE at `/xut-root`. `/`, `$HOME` and any ancestor
+    of the repository are refused as a work root (`ContainerError`): the container
+    would get write access to far more than one run's directory. The model mount comes first, so
     a model source inside that root still resolves to its read-only mount."""
     if os.environ.get("XUT_NATIVE") == "1":
         return NativeExecutor()
@@ -204,6 +206,12 @@ def executor_for(model_source: _HasModelSrc, work_root: Path | None = None) -> E
     if work_root is not None:
         w = Path(work_root).resolve()
         if not w.is_relative_to(repo):
+            # Mounted READ-WRITE (the runs write there): never a broad directory.
+            if w == Path(w.anchor) or w == Path.home().resolve() or repo.is_relative_to(w):
+                raise ContainerError(
+                    f"refusing to mount run root {w} read-write in the container: it is "
+                    "/, $HOME or an ancestor of the repository; use a dedicated directory"
+                )
             mounts += (Mount(w, "/xut-root", ro=False),)
     return DockerExecutor(mounts=mounts)
 
