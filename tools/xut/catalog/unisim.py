@@ -3,8 +3,11 @@
 
 No preprocessor defines are passed, so parameters declared only under
 ``ifdef XIL_TIMING`` (LOC, MSGON, XON, ...) never appear. ``localparam``s are
-dropped. Elaboration diagnostics (e.g. unresolved ``glbl.GSR`` references) are
-ignored: only the module header is needed.
+dropped, as are the non-functional parameters in ``NON_FUNCTIONAL_PARAMS``.
+
+Any Error-severity parse/elaboration diagnostic raises ``ValueError``, except
+the narrow allowlist in ``_is_benign`` (things outside the module header that
+slang cannot resolve when a model is compiled on its own).
 """
 
 from dataclasses import dataclass, field
@@ -12,8 +15,31 @@ from pathlib import Path
 
 import pyslang
 
-_DIR = {"In": "input", "Out": "output", "InOut": "inout"}
+_AD = pyslang.ast.ArgumentDirection
+_DIR = {_AD.In: "input", _AD.Out: "output", _AD.InOut: "inout"}
 _EK = pyslang.ast.ExpressionKind
+_D = pyslang.Diags
+
+# Placement (LOC) and timing-check message controls (MSGON, XON) are not
+# functional attributes of a primitive. They are normally guarded by
+# `ifdef XIL_TIMING, but some legacy models (DCM_ADV.v, DCM_SP.v) declare LOC
+# unguarded, so they are filtered by name as well.
+NON_FUNCTIONAL_PARAMS = frozenset({"LOC", "MSGON", "XON"})
+
+# Error codes that are benign for header extraction. Each one arises only in
+# the module body when the model is compiled standalone.
+_BENIGN_CODES = frozenset(
+    {
+        # The body instantiates another library cell (retarget wrappers use LUT2
+        # and similar cells, and some unisims wrap encrypted SIP_* cores).
+        _D.UnknownModule,
+        # A width mismatch on a `specify` parallel path (XADC.v, ICAPE2.v). This is
+        # simulation timing only.
+        _D.ParallelPathWidth,
+        # A field width on `%m` in a $display message (MMCME5.v, X5PLL.v).
+        _D.FormatSpecifierWidthNotAllowed,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +63,14 @@ class HdlModule:
     source: Path
     ports: list[HdlPort] = field(default_factory=list)
     params: list[HdlParam] = field(default_factory=list)
+
+
+def _is_benign(d: pyslang.Diagnostic) -> bool:
+    if d.code in _BENIGN_CODES:
+        return True
+    # The hierarchical reference to the simulator's global module (glbl.GSR,
+    # glbl.GTS). glbl.v is not compiled with the model. Only the 'glbl' name is allowed.
+    return d.code == _D.UndeclaredIdentifier and list(d.args) == ["glbl"]
 
 
 def _is_string_literal(p) -> bool:
@@ -68,19 +102,28 @@ def _param(p) -> HdlParam:
 
 def parse_module(path: Path, name: str) -> HdlModule:
     """Parse module ``name`` from ``path`` and return its ports and user parameters."""
-    tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
-    comp = pyslang.ast.Compilation()
-    comp.addSyntaxTree(tree)
+    try:
+        tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
+        comp = pyslang.ast.Compilation()
+        comp.addSyntaxTree(tree)
+        diags = [d for d in comp.getAllDiagnostics() if d.isError() and not _is_benign(d)]
+    except FileNotFoundError:
+        raise
+    except Exception as e:
+        raise ValueError(f"{path}: pyslang failed: {e}") from e
+    if diags:
+        codes = sorted({str(d.code) for d in diags})
+        text = pyslang.DiagnosticEngine.reportAll(comp.sourceManager, diags)
+        raise ValueError(f"{path}: {len(diags)} unexpected error(s) {codes}\n{text}")
     inst = next((i for i in comp.getRoot().topInstances if i.name == name), None)
     if inst is None:
         raise ValueError(f"module {name} not found as a top-level module in {path}")
     body = inst.body
     mod = HdlModule(name=name, source=path)
     for p in body.portList:
-        direction = _DIR[str(p.direction).rsplit(".", 1)[-1]]
-        mod.ports.append(HdlPort(p.name, direction, p.type.bitWidth))
+        mod.ports.append(HdlPort(p.name, _DIR[p.direction], p.type.bitWidth))
     for p in body.parameters:
-        if p.isLocalParam:
+        if p.isLocalParam or p.name in NON_FUNCTIONAL_PARAMS:
             continue
         mod.params.append(_param(p))
     return mod
