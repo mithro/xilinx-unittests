@@ -9,6 +9,8 @@
   cocotb-on-Verilator is required.
   Rev 3.1 also guards the `deassign` rewrite of §6.2 step 2 with
   `X__ovr_sel != 0`, wrapped in `begin ... end` so that no `else` can dangle.
+  It also states in §8 that an `expected_divergence` never masks a
+  disagreement: it is reported as `known-divergence`.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -487,10 +489,16 @@ classified:
 | `silicon-mismatch` | Hardware ≠ reference |
 | `nondeterminism` | Repeated hardware runs disagree |
 | `harness-error` | The harness self-test failed |
+| `known-divergence` | Any of the above, listed in the test's `expected_divergence` (reports the original class and the finding id) |
 
 - **Recording.** Each finding goes in `findings/<PRIM>-<slug>.md`, is linked
   from the primitive's README, and may be referenced by an
   `expected_divergence` entry in `test.yaml`.
+- **An expected divergence never masks.** Expected bits stay defined, and the
+  disagreement is still computed and reported, classified `known-divergence`
+  with the finding id. It shows in PROGRESS.md and TODO.md while the finding
+  is open. `xut crosscheck` fails only on disagreements that no
+  `expected_divergence` lists.
 - **Weakening tests is forbidden.** A test is never made weaker to hide a
   finding.
 
