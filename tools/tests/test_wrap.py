@@ -560,3 +560,23 @@ def test_cocotb_top_resolves_glbl_upward():
         files = [ex.guest(src.glbl), "xut_dut.v", "xut_cocotb_top.v"]
         rc = ex.run([*argv, *lib, *files], work, log, 300)
         assert rc == 0, log.read_text()
+
+
+# --- A1: configuration names follow the shared format grammar (they prefix .xtr labels)
+
+
+@pytest.mark.parametrize("cfg", ["a|b=c", "a/b", "a b", 'a"b', "a#b", ""])
+def test_cfg_outside_the_shared_grammar_is_refused(cfg):
+    with pytest.raises(WrapError, match="configuration name"):
+        spec_from_catalog(_fdre(), cfg, {})
+
+
+def test_every_accepted_cfg_is_a_valid_xtr_prefix():
+    from xut.formats.xtr import Trace, concat, dumps, loads
+
+    for cfg in ("default", "init1", "a.b-c_d"):
+        spec_from_catalog(_fdre(), cfg, {})
+        part = Trace({"runner": "x", "flow": "rtl", "model": "m", "seed": "0"})
+        part.add("S0", {"Q": "1"})
+        t = concat([(cfg, part)], part.header)
+        assert list(loads(dumps(t)).samples) == [f"{cfg}/S0"]

@@ -285,3 +285,25 @@ def test_glbl_is_spaced_like_async():
         (127500, "set"),
         (130000, "glbl"),
     ]
+
+
+# --- A2: the builder refuses a label the format cannot hold, at the call
+
+
+@pytest.mark.parametrize("label", ["bad label", "S#1", "a|b", ""])
+def test_sample_refuses_bad_labels_at_call_time(label):
+    b, _ = _b()
+    with pytest.raises(BuilderError, match="label"):
+        b.sample(label)
+
+
+def test_sample_refuses_duplicate_labels():
+    b, _ = _b()
+    b.sample("S0")
+    with pytest.raises(BuilderError, match="duplicate"):
+        b.sample("S0")
+    b2, _ = _b()
+    b2.sample("S1")
+    with pytest.raises(BuilderError, match="duplicate"):  # the auto label S1 is taken
+        b2.sample()
+        b2.sample()

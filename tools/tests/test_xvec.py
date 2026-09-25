@@ -391,3 +391,93 @@ def test_vec_int_property_raises_xvec_error_on_non_numeric_header():
     )
     with pytest.raises(XvecError, match="not an integer"):
         _ = v.nin
+
+
+# --- A2: an in-memory Vec is held to every rule the parser applies (check_structure)
+
+from xut.formats.xvec import Clock, check_structure  # noqa: E402
+
+BASE = {
+    "prim": "P",
+    "cfg": "c",
+    "nin": "3",
+    "nout": "1",
+    "nclk": "1",
+    "settle_ps": "1000",
+    "seed": "0",
+}
+CLK = [Clock("clk0", 0, 100, 0, 50, "stepped")]
+
+
+def _mem(*events, header=None, clocks=None):
+    return Vec(dict(header or BASE), list(CLK if clocks is None else clocks), list(events))
+
+
+@pytest.mark.parametrize(
+    "events,msg",
+    [
+        ((Event(1000, "sample", "bad label"),), "bad sample label"),
+        ((Event(1000, "sample", "A"), Event(1100, "sample", "A")), "duplicate label"),
+        ((Event(500, "sample", "A"),), "settle_ps"),
+        ((Event(1000, "set", "in", 9, 9, "1"),), "out of range"),
+        ((Event(1000, "set", "in", 2, 1, "1"),), "msb < lsb"),
+        ((Event(1000, "set", "in", 0, 1, "1"),), "2 bit"),
+        ((Event(1000, "set", "in", 0, 0, "q"),), "01xz"),
+        ((Event(1000, "set", "out", 0, 0, "1"),), "target"),
+        ((Event(1000, "edge", "clk1", value="r"),), "undeclared clock"),
+        ((Event(1000, "edge", "clk0", value="x"),), "r or f"),
+        ((Event(1000, "glbl", "FOO", value="1"),), "glbl"),
+        ((Event(1000, "glbl", "GSR", value="2"),), "glbl"),
+        ((Event(1000, "clock_start", "clk0"),), "mode=free"),
+        ((Event(1000, "end", "x"),), "'end'"),
+        ((Event(1000, "bogus"),), "unknown op"),
+        ((Event(-1, "set", "in", 0, 0, "1"),), "negative"),
+    ],
+)
+def test_check_structure_applies_the_parser_per_event_rules(events, msg):
+    with pytest.raises(XvecError, match=msg) as ei:
+        check_structure(_mem(*events))
+    assert "event #" in str(ei.value)
+
+
+@pytest.mark.parametrize(
+    "header,clocks,msg",
+    [
+        ({k: v for k, v in BASE.items() if k != "seed"}, None, "lacks seed"),
+        ({**BASE, "nin": "x"}, None, "non-negative integer"),
+        ({**BASE, "bad key": "1"}, None, "header key"),
+        (BASE, [Clock("clk0", 1, 100, 0, 50, "stepped")], "index"),
+        (BASE, [Clock("clk5", 5, 100, 0, 50, "stepped")], "index"),
+        (BASE, [Clock("clk0", 0, 0, 0, 50, "stepped")], "period"),
+        (BASE, [Clock("clk0", 0, 100, 0, 100, "stepped")], "duty"),
+        (BASE, [Clock("clk0", 0, 100, 0, 50, "fast")], "mode"),
+        (BASE, [Clock("clk0", 0, 100, -1, 50, "stepped")], "phase"),
+        (BASE, CLK * 2, "declared twice"),
+    ],
+)
+def test_check_structure_checks_header_and_clocks(header, clocks, msg):
+    with pytest.raises(XvecError, match=msg):
+        check_structure(_mem(Event(1000, "sample", "A"), header=header, clocks=clocks))
+
+
+def test_check_structure_accepts_what_parses():
+    v = _mem(
+        Event(0, "set", "in", 0, 2, "01x"),
+        Event(1000, "edge", "clk0", value="r"),
+        Event(1100, "sample", "A.b/c-1"),
+        Event(1200, "end"),
+    )
+    check_structure(v)
+    assert loads(dumps(v)) == v
+
+
+def test_dumps_refuses_unrepresentable_names():
+    with pytest.raises(XvecError, match="header key"):
+        dumps(_mem(header={**BASE, "bad key": "1"}))
+    with pytest.raises(XvecError, match="label"):
+        dumps(_mem(Event(1000, "sample", "a b")))
+
+
+def test_header_value_with_space_and_hash_round_trips():
+    v = _mem(Event(1000, "sample", "A"), header={**BASE, "attr.NOTE": "a b #1"})
+    assert loads(dumps(v)) == v

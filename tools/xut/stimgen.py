@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from xut.errors import XutError
+from xut.formats.common import is_label
 from xut.formats.xvec import Clock, Event, Vec
 from xut.validate import DEFAULT_ASYNC_SEP_PS, DEFAULT_GAP_PS, MIN_SEP_PS, ROC_WIDTH_PS
 from xut.wrap import DutMap, DutSpec, build_map, spec_from_catalog
@@ -71,6 +72,7 @@ class VecBuilder:
         self._last_change = 0
         self._last_edge: int | None = None
         self._n = 0
+        self._labels: set[str] = set()
         self._sim: list[Event] | None = None  # events of the open simultaneous() block
 
     # -- helpers -------------------------------------------------------------
@@ -197,9 +199,15 @@ class VecBuilder:
     def sample(self, label: str | None = None) -> str:
         """Sample the outputs >= gap_ps after the last change; returns the label."""
         self._not_in_sim("sample()")
+        if label is None:
+            label = f"S{self._n}"
+            self._n += 1
+        if not is_label(label):
+            raise BuilderError(f"sample label {label!r} is not [A-Za-z0-9_./-]+")
+        if label in self._labels:
+            raise BuilderError(f"duplicate sample label {label!r}")
+        self._labels.add(label)
         self._after(self._last_change + self.gap)
-        label = label or f"S{self._n}"
-        self._n += 1
         self._emit("sample", label)
         self.t += self.gap
         return label

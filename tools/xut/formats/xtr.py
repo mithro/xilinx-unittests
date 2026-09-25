@@ -17,6 +17,17 @@ format: a provenance value containing whitespace, ``#`` or ``|`` cannot be
 represented on a trace line (those characters would be swallowed by comment
 stripping or the ``|`` separator) and raises ``XtrError`` instead of being
 mangled. Encode any such reason with ``_`` before it reaches this module.
+
+Names follow the grammar of ``xut.formats.common``, shared with ``.xvec`` and
+``xut wrap``: labels are ``[A-Za-z0-9_./-]+``, ports are Verilog identifiers, and a
+``concat`` configuration prefix is a label without ``/``. ``Trace.add``, ``dumps``
+and ``concat`` validate every label, port name, bit string, provenance tag and
+header key/value, and raise ``XtrError`` on anything that could not be read back
+exactly; nothing is ever silently altered.
+
+Unlike ``.xvec``, ``.xtr`` has no quoting: a header value is one whitespace-free
+token, and a ``#`` on a body line always starts a comment. That is safe because no
+token a trace line may hold (label, port, bits, provenance) can contain ``#``.
 """
 
 from __future__ import annotations
@@ -25,17 +36,19 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from xut.formats.common import FormatError, is_cfg, is_header_key, is_label, is_port
+
 MAGIC = "xut-trace"
 VERSION = 2
 _HEADER = re.compile(r"^#\s*xut-trace\s+(\d+)\b(.*)$")
-_KV = re.compile(r"([A-Za-z_][\w.]*)=(\S+)")
-_LABEL = re.compile(r"^[A-Za-z0-9_./-]+$")
-_PORT = re.compile(r"^([A-Za-z_][\w$]*)=([01xz_-]+)$")
+_PORT = re.compile(r"^([^=]*)=([01xz_-]+)$")
 _PROV_BAD = re.compile(r"[\s#|]")
+_HEADER_BAD = re.compile(r"[\s#]")
+KINDS = ("actual", "expected")
 
 
-class XtrError(ValueError):
-    pass
+class XtrError(FormatError):
+    """Malformed or unrepresentable trace, with the 1-based line number when known."""
 
 
 @dataclass(frozen=True)
@@ -56,9 +69,38 @@ class Mismatch:
 
 
 def _check_prov(tag: str) -> str:
-    if not tag or _PROV_BAD.search(tag):
+    if not isinstance(tag, str) or not tag or _PROV_BAD.search(tag):
         raise XtrError(f"provenance {tag!r} must not contain whitespace, '#' or '|'")
     return tag
+
+
+def _check_header(header: dict[str, str]) -> None:
+    for k, v in header.items():
+        if not is_header_key(k):
+            raise XtrError(f"header key {k!r} is not [A-Za-z_][A-Za-z0-9_.]*")
+        if not isinstance(v, str) or not v or _HEADER_BAD.search(v):
+            raise XtrError(f"header {k}={v!r} cannot be represented (empty, whitespace or '#')")
+    if header.get("kind", "actual") not in KINDS:
+        raise XtrError(f"header kind={header['kind']!r} must be one of {KINDS}")
+
+
+def _check_sample(
+    label: str, values: dict[str, str], prov: dict[str, str] | None, kind: str
+) -> None:
+    if not is_label(label):
+        raise XtrError(f"label {label!r} is not [A-Za-z0-9_./-]+")
+    allowed = set("01xz") | ({"-"} if kind == "expected" else set())
+    for port, bits in values.items():
+        if not is_port(port):
+            raise XtrError(f"{label}: port name {port!r} is not a Verilog identifier")
+        if not isinstance(bits, str) or not bits or set(bits) - set("01xz-"):
+            raise XtrError(f"{label} {port}: bits {bits!r} must be one or more of 01xz-")
+        if set(bits) - allowed:
+            raise XtrError(f"{label} {port}: '-' only allowed in kind=expected traces")
+    for port, tag in (prov or {}).items():
+        if port not in values:
+            raise XtrError(f"{label}: provenance for {port!r}, which has no value")
+        _check_prov(tag)
 
 
 @dataclass
@@ -72,12 +114,12 @@ class Trace:
         return self.header.get("kind", "actual")
 
     def add(self, label: str, values: dict[str, str], prov: dict[str, str] | None = None) -> None:
+        """Append sample ``label``; raises ``XtrError`` on anything unrepresentable."""
         if label in self.samples:
             raise XtrError(f"duplicate label {label!r}")
+        _check_sample(label, values, prov, self.kind)
         self.samples[label] = dict(values)
         if prov:
-            for tag in prov.values():
-                _check_prov(tag)
             self.prov[label] = dict(prov)
 
 
@@ -93,46 +135,62 @@ def loads(text: str) -> Trace:
     lines = text.splitlines()
     m = _HEADER.match(lines[0]) if lines else None
     if not m or int(m.group(1)) != VERSION:
-        raise XtrError("first line must be '# xut-trace 2 ...'")
-    t = Trace(dict(_KV.findall(m.group(2))))
-    allowed = set("01xz") | ({"-"} if t.kind == "expected" else set())
+        raise XtrError("first line must be '# xut-trace 2 ...'", 1)
+    header = {}
+    for tok in m.group(2).split():
+        k, eq, v = tok.partition("=")
+        if not eq or k in header:
+            raise XtrError(f"header token {tok!r} is not a new key=value", 1)
+        header[k] = v
+    try:
+        _check_header(header)
+    except XtrError as e:
+        raise XtrError(str(e), 1) from e
+    t = Trace(header)
     for n, raw in enumerate(lines[1:], start=2):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
         values_part, _, prov_part = line.partition("|")
         toks = values_part.split()
-        if not toks or not _LABEL.match(toks[0]):
-            raise XtrError(f"line {n}: missing or bad label")
+        if not toks:
+            raise XtrError("missing label", n)
         values = {}
         for tok in toks[1:]:
             pm = _PORT.match(tok)
             if not pm:
-                raise XtrError(f"line {n}: bad value {tok!r}")
-            bits = pm.group(2).replace("_", "")
-            if set(bits) - allowed:
-                raise XtrError(f"line {n}: '-' only allowed in kind=expected traces")
-            values[pm.group(1)] = bits
+                raise XtrError(f"bad value {tok!r}", n)
+            if pm.group(1) in values:
+                raise XtrError(f"port {pm.group(1)!r} given twice", n)
+            values[pm.group(1)] = pm.group(2).replace("_", "")
         prov = {}
         for tok in prov_part.split():
             port, eq, tag = tok.partition("=")
-            if not eq or not tag:
-                raise XtrError(f"line {n}: bad provenance token {tok!r}")
-            prov[port] = _check_prov(tag)
+            if not eq or not tag or port in prov:
+                raise XtrError(f"bad provenance token {tok!r}", n)
+            prov[port] = tag
         try:
             t.add(toks[0], values, prov or None)
         except XtrError as e:
-            raise XtrError(f"line {n}: {e}") from e
+            raise XtrError(str(e), n) from e
     return t
 
 
 def dumps(t: Trace) -> str:
+    """The trace as text. Re-validates everything (samples may have been mutated in
+    place since ``add``) and raises ``XtrError`` rather than write a file that would
+    read back differently."""
+    _check_header(t.header)
     out = [f"# {MAGIC} {VERSION}  " + " ".join(f"{k}={v}" for k, v in t.header.items())]
     for label, ports in t.samples.items():
+        _check_sample(label, ports, t.prov.get(label), t.kind)
         line = label + "  " + " ".join(f"{p}={_group(b)}" for p, b in ports.items())
-        if label in t.prov:
-            line += "  | " + " ".join(f"{p}={_check_prov(v)}" for p, v in t.prov[label].items())
+        if t.prov.get(label):
+            line += "  | " + " ".join(f"{p}={v}" for p, v in t.prov[label].items())
         out.append(line)
+    extra = sorted(set(t.prov) - set(t.samples))
+    if extra:
+        raise XtrError(f"provenance for label(s) {extra} with no sample")
     return "\n".join(out) + "\n"
 
 
@@ -203,8 +261,8 @@ def diff(a: Trace, b: Trace, *, a_x: bool = True, b_x: bool = True) -> list[Mism
                     label,
                     "*",
                     -1,
-                    "present" if pa else "missing",
-                    "present" if pb else "missing",
+                    "present" if pa is not None else "missing",
+                    "present" if pb is not None else "missing",
                     None,
                     "missing-sample",
                 )
@@ -232,8 +290,12 @@ def diff(a: Trace, b: Trace, *, a_x: bool = True, b_x: bool = True) -> list[Mism
 
 
 def concat(parts: list[tuple[str, Trace]], header: dict[str, str]) -> Trace:
+    """One trace of every configuration's samples, labelled ``<cfg>/<label>``."""
+    _check_header(header)
     t = Trace(dict(header))
     for cfg, part in parts:
+        if not is_cfg(cfg):
+            raise XtrError(f"configuration name {cfg!r} is not [A-Za-z0-9_.-]+")
         for label, ports in part.samples.items():
             t.add(f"{cfg}/{label}", ports, part.prov.get(label))
     return t
