@@ -21,6 +21,7 @@ def test_discover_and_select():
     c = cases[0]
     assert (c.prim, c.level, c.style, c.group) == ("TOYFF", "L1", "vector", "register")
     assert c.source == "vectors/gen.py:l1_capture"  # kept as written in test.yaml
+    assert c.shared_dirs == [FIX / "tests/7series/register/_shared/toy"]
     assert select(cases, ["7series.TOYFF.*"]) == cases
     assert select(cases, ["TOYFF"]) == cases
     assert select(cases, ["7series.TOYFF.L1.*"]) == [cases[0], cases[2]]
@@ -99,7 +100,19 @@ def test_case_fields_and_defaults(tmp_path):
     assert a.source is None and b.source == "sv/tb_b.sv"
     assert b.configs == [{"cfg": "init1", "attrs": {"INIT": "1'b1"}}]
     assert a.configs == [] and a.expected_divergence == [] and a.sv_deviations == []
-    assert a.shared_dirs == []
+    assert a.shared_dirs == []  # no tests/7series/register/_shared/flops yet
+    shared = tmp_path / "tests/7series/register/_shared/flops"
+    shared.mkdir(parents=True)
+    a, b = discover(tmp_path)
+    assert a.shared_dirs == [shared] and b.shared_dirs == [shared]
+
+
+def test_shared_dirs_belong_to_the_work_unit(tmp_path):
+    """Only the test's own unit's ``_shared/<unit>`` is on its path, never another's."""
+    _tree(tmp_path, [_entry("7series.LUT1.L1.c")], prim="LUT1", unit="luts")
+    (tmp_path / "tests/7series/register/_shared/flops").mkdir(parents=True)
+    (c,) = discover(tmp_path)
+    assert c.shared_dirs == []
 
 
 def test_select_unit_and_globs(tmp_path):

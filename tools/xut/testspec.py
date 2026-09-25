@@ -60,9 +60,11 @@ class TestCase:
 
     @property
     def shared_dirs(self) -> list[Path]:
-        """Directories put on the generator / testbench search path. Empty until the
-        per-unit ``_shared/<unit>`` directories exist (Task 18)."""
-        return []
+        """Directories put on the generator / testbench search path: the work unit's
+        shared test code, ``tests/<family>/<group>/_shared/<work_unit>``, when that
+        directory exists (``xut.workunits.owned_paths`` gives it to the unit)."""
+        d = self.test_dir.parent / "_shared" / self.work_unit
+        return [d] if self.work_unit and d.is_dir() else []
 
 
 def _cases_of(path: Path, data: dict) -> list[TestCase]:
