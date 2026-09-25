@@ -712,3 +712,32 @@ def test_summary_is_keyed_by_model_source(ctx, monkeypatch):
         data = json.loads((ctx.root / f"build/rtl/summary-{ms}.json").read_text())
         assert data["model_source"] == ms and len(data["results"]) == 1
     assert not (ctx.root / "build/rtl/summary.json").exists()
+
+
+def test_watchdog_never_starts_work_after_the_deadline():
+    """PR B gate (a), T8 minor: after one golden-model timeout the deadline has passed;
+    no further replay thread may start (a hung model would leave N runaway threads)."""
+    import time
+
+    from xut.runners.python import PythonTimeout, _watchdog
+
+    called = []
+    with pytest.raises(PythonTimeout, match="exceeded the 1 s limit"):
+        _watchdog(lambda: called.append(1), time.monotonic() - 0.001, "golden model (b)", 1)
+    assert called == []
+
+
+def test_missing_python_run_is_a_named_xut_error(ctx):
+    """PR B gate (a) N3: the most common user-facing reason reads cleanly (no
+    'RuntimeError: ' prefix)."""
+    from xut.errors import XutError
+    from xut.runners.base import NoPythonRun, load_generated
+
+    with pytest.raises(NoPythonRun, match="no python run for this test") as ei:
+        load_generated(ctx, _case())
+    assert isinstance(ei.value, XutError)
+    d = workdir(ctx, "python", _case().id)
+    d.mkdir(parents=True)
+    (d / "configs.json").write_text('{"not": "a list"}')
+    with pytest.raises(NoPythonRun, match="not a list of configuration names"):
+        load_generated(ctx, _case())
