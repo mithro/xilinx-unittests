@@ -52,6 +52,8 @@ After this step, fan-out work units can write tests against a working runner mat
 - `xut.doctor`: `Check`, `run_checks`;
 - the schemas in `tools/xut/schemas/`, the templates in `docs/templates/`, and AGENTS.md.
 
+`xut.status`, `xut.lint` and `xut.doctor` come from step-1 Tasks 6–9, which were not implemented when this plan was written. Before Task 1, re-check the names used here (`LintIssue`, `Check(enables=...)`, `current_branch`, `coverage_bins`, `RESULT_VALUES`) against the merged code, and adapt the calls, not the semantics.
+
 ## Global Constraints
 
 - Every source file (`.py .v .sv .svh .vh .yaml .sh .tcl .toml`, Dockerfile, workflows) starts with an `SPDX-License-Identifier: Apache-2.0` comment line. Generated HDL (`xut_dut.v`, `xut_cfg.vh`, transformed models) also carries it. Markdown is exempt.
@@ -94,7 +96,11 @@ After this step, fan-out work units can write tests against a working runner mat
      - `X` read after its `assign`/`deassign` in the same block without an intervening delay;
      - an ANSI `output reg`;
      - a construct inside a macro expansion;
-     - a leftover `assign`/`deassign` in an unelaborated generate branch.
+     - a signal in a trigger cone whose driver cannot be resolved (undriven, or driven by an unknown module's output);
+     - generate conditions whose configurations cannot be enumerated.
+   - Tracing must cross gate primitives, continuous assigns and same-file sub-instances (fixtures `BUFVZ`, `VZSUB`).
+   - Analysis and rewrite cover **every** generate branch. `check_clean` elaborates the result under every generate configuration, and the equivalence check runs for the default plus every configuration a test uses (`VZGEN`).
+   - `deassign` is guarded (`if (X__ovr_sel != 0)`, spec §6.2 rev 3.1), and packed ranges are preserved (`VZRANGE`).
    - The Icarus equivalence check (Task 14) is the backstop. Reviewers must confirm that a mismatch makes the Verilator result `error` (a `transform-bug`), not a pass.
 2. **Golden models are clean-room.**
    - Task 20's model cites a UG953 page for every behaviour. Anything UG953 does not state is `inferred:` (clock edges while GSR is active), or is `-` (undefined) when UG953 is silent on a conflict (GSR versus an active CLR/PRE).
@@ -260,7 +266,11 @@ LABEL org.opencontainers.image.source=https://github.com/mithro/xilinx-unittests
       org.xut.verilator.commit=d0aa828c217410fffc73d92077b6f4f54830357c
 ```
 
-The `test "$(git rev-parse HEAD)" = "$VERILATOR_SHA"` line makes the build fail if the tag ever moves. `VERILATOR_ROOT` matches the `--prefix` install layout; if `verilator --version` or `verilator --getenv VERILATOR_ROOT` disagrees in Step 3, fix the `ENV` line to what the installed `verilator` reports.
+The `test "$(git rev-parse HEAD)" = "$VERILATOR_SHA"` line makes the build fail if the tag ever moves.
+
+Two supply-chain hardenings, both cheap and done in this task:
+- **cocotb with hashes.** Run `pip download cocotb==2.0.1 --no-deps -d .cache/wheels` and `pip hash .cache/wheels/*` inside the base image. Write `containers/sim/requirements-cocotb.txt` (`cocotb==2.0.1 --hash=sha256:…`, one line per platform wheel and the sdist), `COPY` it, and install with `pip install --require-hashes -r`.
+- **The pinned iverilog.** If `iverilog=12.0-2+b1` ever leaves the live trixie mirror, point both stages' apt sources at `snapshot.debian.org` for the base digest's date (the build then keeps working unchanged). Record the snapshot timestamp in the Dockerfile comment when that happens. `VERILATOR_ROOT` matches the `--prefix` install layout; if `verilator --version` or `verilator --getenv VERILATOR_ROOT` disagrees in Step 3, fix the `ENV` line to what the installed `verilator` reports.
 
 - [ ] **Step 3: Build the image and record versions**
 
@@ -556,6 +566,7 @@ def resolve(name: str = "auto") -> ModelSource:
 
 import os
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -662,19 +673,31 @@ def image_digest(image: str = SIM_IMAGE) -> str | None:
     return p.stdout.strip() if p.returncode == 0 else None
 
 
+_VERSIONS: dict[str, dict[str, str]] = {}
+_VERSIONS_LOCK = threading.Lock()
+
+
 def sim_tool_versions(ex: Executor, workdir: Path) -> dict[str, str]:
-    """First line of each tool's version output (recorded in result.json)."""
-    out = {}
-    log = workdir / ".versions.log"
-    for key, argv in (("iverilog", ["iverilog", "-V"]),
-                      ("verilator", ["verilator", "--version"]),
-                      ("cocotb", ["cocotb-config", "--version"])):
-        log.unlink(missing_ok=True)
-        ex.run(argv, cwd=workdir, log=log, timeout_s=60)
-        lines = [ln for ln in log.read_text().splitlines()[1:] if ln.strip()]
-        out[key] = lines[0].strip() if lines else "unknown"
-    log.unlink(missing_ok=True)
-    return out
+    """First line of each tool's version output (recorded in result.json).
+
+    Computed once per process and image, under a lock, with a private log file: runner
+    jobs are threads (xut run --jobs N), so a shared log file would race (review #9)."""
+    key_img = getattr(ex, "image", "native")
+    with _VERSIONS_LOCK:
+        if key_img in _VERSIONS:
+            return dict(_VERSIONS[key_img])
+        workdir.mkdir(parents=True, exist_ok=True)
+        out = {}
+        for key, argv in (("iverilog", ["iverilog", "-V"]),
+                          ("verilator", ["verilator", "--version"]),
+                          ("cocotb", ["cocotb-config", "--version"])):
+            log = workdir / f".versions-{uuid.uuid4().hex}.log"
+            ex.run(argv, cwd=workdir, log=log, timeout_s=60)
+            lines = [ln for ln in log.read_text().splitlines()[1:] if ln.strip()]
+            out[key] = lines[0].strip() if lines else "unknown"
+            log.unlink()
+        _VERSIONS[key_img] = out
+        return dict(out)
 ```
 
 `iverilog -V` with no input prints its banner first, then an error. Taking the first non-command line gives `Icarus Verilog version 12.0 (stable) ()`.
@@ -772,6 +795,7 @@ git commit -m "infra: add pinned xut-sim container, executors and model sources"
 
 **Interfaces:**
 - Produces:
+  - `free_runs(vec)` and `free_clock_edges(vec) -> list[Event]`: the single definition of free-running clock edges used by validation, golden replay and the testbench compiler (review #6)
   - `xut.formats.xvec.Vec` (with properties `prim, cfg, nin, nout, nclk, settle_ps, seed, attrs, expect`, and `clock(name)`)
   - `Clock`, `Event`, `XvecError`
   - `loads(text) -> Vec`, `dumps(vec) -> str`, `load(path) -> Vec`, `dump(vec, path) -> None`
@@ -839,7 +863,8 @@ def test_decode_value(text, width, bits):
     assert decode_value(text, width) == bits
 
 
-@pytest.mark.parametrize("text,width", [("0x1f", 4), ("0b10", 1), ("0xg", 4), ("abc", 4), ("0bx0", 1)])
+@pytest.mark.parametrize("text,width", [("0x1f", 4), ("0b10", 1), ("0xg", 4), ("abc", 4), ("0bx0", 1),
+                                        ("0x-1", 4), ("0x+1", 4), ("0x1_0", 8), ("-1", 4)])
 def test_decode_value_rejects(text, width):
     with pytest.raises(XvecError):
         decode_value(text, width)
@@ -1034,11 +1059,10 @@ def decode_value(text: str, width: int, line: int | None = None) -> str:
         if not bits or set(bits) - set("01xz"):
             raise XvecError(f"bad binary value {text!r}", line)
     elif t.startswith("0x"):
-        try:
-            bits = format(int(t[2:], 16), "b")
-        except ValueError:
-            raise XvecError(f"bad hex value {text!r}", line) from None
-    elif t.isdigit():
+        if not re.fullmatch(r"[0-9a-f]+", t[2:]):  # int() would accept "-1", "+1", "1_0"
+            raise XvecError(f"bad hex value {text!r}", line)
+        bits = format(int(t[2:], 16), "b")
+    elif re.fullmatch(r"[0-9]+", t):
         bits = format(int(t), "b")
     else:
         raise XvecError(f"bad value {text!r}", line)
@@ -1201,6 +1225,41 @@ def dump(vec: Vec, path: Path) -> None:
 
 def digest(vec: Vec) -> str:
     return hashlib.sha256(dumps(vec).encode()).hexdigest()
+
+
+def free_runs(vec: Vec) -> list[tuple[Clock, int, int | None]]:
+    """(clock, start, stop) for every mode=free clock. A free clock with no clock_start
+    runs from max(0, phase); stop is None when it runs to the end of the file."""
+    runs, open_ = [], {}
+    for c in vec.clocks:
+        if c.mode == "free" and not any(e.op == "clock_start" and e.target == c.name
+                                        for e in vec.events):
+            open_[c.name] = max(0, c.phase)
+    for e in vec.events:
+        if e.op == "clock_start":
+            open_[e.target] = e.t
+        elif e.op == "clock_stop" and e.target in open_:
+            runs.append((vec.clock(e.target), open_.pop(e.target), e.t))
+    return runs + [(vec.clock(n), t0, None) for n, t0 in open_.items()]
+
+
+def free_clock_edges(vec: Vec) -> list[Event]:
+    """THE definition of free-clock edges, shared by xut.validate, xut.golden and
+    xut.stimcompile (review #6): a rise at start + k*period, a fall period*duty/100
+    later, nothing at or after a clock_stop (validate requires a stop to fall strictly
+    inside a low phase, which is exactly where the testbench's generator stops), and
+    nothing after the last event."""
+    end = vec.events[-1].t if vec.events else 0
+    out: list[Event] = []
+    for c, start, stop in free_runs(vec):
+        limit = end if stop is None else stop - 1
+        high, t = c.period * c.duty // 100, start
+        while t <= limit:
+            out.append(Event(t, "edge", c.name, value="r"))
+            if t + high <= limit:
+                out.append(Event(t + high, "edge", c.name, value="f"))
+            t += c.period
+    return sorted(out, key=lambda e: e.t)
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -1418,8 +1477,8 @@ def loads(text: str) -> Trace:
             continue
         values_part, _, prov_part = line.partition("|")
         toks = values_part.split()
-        if not _LABEL.match(toks[0]):
-            raise XtrError(f"line {n}: bad label {toks[0]!r}")
+        if not toks or not _LABEL.match(toks[0]):
+            raise XtrError(f"line {n}: missing or bad label")
         values = {}
         for tok in toks[1:]:
             pm = _PORT.match(tok)
@@ -1429,7 +1488,12 @@ def loads(text: str) -> Trace:
             if set(bits) - allowed:
                 raise XtrError(f"line {n}: '-' only allowed in kind=expected traces")
             values[pm.group(1)] = bits
-        prov = dict(tok.split("=", 1) for tok in prov_part.split())
+        prov = {}
+        for tok in prov_part.split():
+            port, eq, tag = tok.partition("=")
+            if not eq or not tag:
+                raise XtrError(f"line {n}: bad provenance token {tok!r}")
+            prov[port] = tag
         t.add(toks[0], values, prov or None)
     return t
 
@@ -2112,7 +2176,29 @@ def test_settle_too_short(fdce_map):
 def test_free_clock_edges_count_for_async_separation(fdce_map):
     v = loads(HDR.replace("mode=stepped", "mode=free")
               + "t=120000 clock_start clk0\nt=130200 set in[1]=1\nt=135000 sample S0\n")
-    assert any("from a clock edge" in e for e in validate(v, fdce_map).errors)
+    errors = validate(v, fdce_map).errors
+    assert any("from a clock edge" in e for e in errors)
+    assert any("t=135000: a sample shares its time" in e for e in errors)  # 135000 is a free edge
+
+
+def test_free_clock_stop_must_be_in_low_phase(fdce_map):
+    base = HDR.replace("mode=stepped", "mode=free") + "t=120000 clock_start clk0\n"
+    assert any("low phase" in e for e in validate(loads(base + "t=122000 clock_stop clk0\n"),
+                                                  fdce_map).errors)       # high phase
+    assert not any("low phase" in e for e in validate(loads(base + "t=127000 clock_stop clk0\n"),
+                                                      fdce_map).errors)   # low phase
+
+
+def test_one_edge_definition_everywhere(fdce_map):
+    from xut.formats.xvec import free_clock_edges
+    from xut.golden import expand_free_clocks
+    from xut.stimcompile import compile_vec
+
+    v = loads(HDR.replace("mode=stepped", "mode=free")
+              + "t=120000 clock_start clk0\nt=137000 clock_stop clk0\nt=150000 end\n")
+    edges = [(e.t, e.value) for e in free_clock_edges(v)]
+    assert edges == [(120000, "r"), (125000, "f"), (130000, "r"), (135000, "f")]
+    assert [(e.t, e.value) for e in expand_free_clocks(v) if e.op == "edge"] == edges
 ```
 
 `tools/tests/test_stimgen.py`:
@@ -2201,7 +2287,7 @@ import bisect
 from dataclasses import dataclass, field
 from itertools import groupby
 
-from xut.formats.xvec import Event, Vec
+from xut.formats.xvec import Event, Vec, free_clock_edges, free_runs
 from xut.wrap import DutMap
 
 DEFAULT_GAP_PS = 1_000  # sample/change spacing; clears the UNISIM 100 ps clock-to-Q
@@ -2230,29 +2316,19 @@ def _desc(e: Event) -> str:
     return f"{e.op} {e.target}".strip()
 
 
-def _edge_times(vec: Vec) -> list[int]:
-    times = [e.t for e in vec.events if e.op == "edge"]
-    end = vec.events[-1].t if vec.events else 0
-    running: dict[str, int] = {}
-    for e in vec.events:
-        if e.op == "clock_start":
-            running[e.target] = e.t
-        elif e.op == "clock_stop" and e.target in running:
-            c = vec.clock(e.target)
-            times += _free_edges(c.period, c.duty, running.pop(e.target), e.t)
-    for name, start in running.items():
-        c = vec.clock(name)
-        times += _free_edges(c.period, c.duty, start, end)
-    return sorted(times)
-
-
-def _free_edges(period: int, duty: int, start: int, stop: int) -> list[int]:
-    high = period * duty // 100
-    out, t = [], start
-    while t <= stop:
-        out += [t, t + high]
-        t += period
-    return [x for x in out if x <= stop]
+def _check_free_stops(vec: Vec, r: Report) -> None:
+    """A clock_stop must fall strictly inside a low phase (the testbench's generator then
+    stops without another edge), and a restart must wait for that low phase to end."""
+    for c, start, stop in free_runs(vec):
+        if stop is None:
+            continue
+        high, pos = c.period * c.duty // 100, (stop - start) % c.period
+        if not high < pos:
+            r.errors.append(f"t={stop}: clock_stop {c.name} must fall strictly inside a low phase")
+        restart = next((e.t for e in vec.events if e.op == "clock_start" and e.target == c.name
+                        and e.t > stop), None)
+        if restart is not None and restart < stop + (c.period - pos):
+            r.errors.append(f"t={restart}: clock_start {c.name} before its previous low phase ended")
 
 
 def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) -> Report:
@@ -2266,10 +2342,16 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
         r.errors.append(f"settle_ps={vec.settle_ps} < glbl ROC_WIDTH {ROC_WIDTH_PS} + margin")
     sep = int(vec.header.get("async_sep_ps", DEFAULT_ASYNC_SEP_PS))
     cls = {b.bit: b.cls for b in m.of("in")}
-    edges = _edge_times(vec)
+    _check_free_stops(vec, r)
+    # Free-clock edges are changes like any other (review #6c): merged into the timeline,
+    # they take part in the alone, sample-coincidence, sample-gap and async-separation rules.
+    computed = free_clock_edges(vec)
+    auto = {(e.t, e.target, e.value) for e in computed}
+    timed = sorted([e for e in vec.events if not (e.t == 0 and e.op == "set")] + computed,
+                   key=lambda e: e.t)  # stable: file order within a time
+    edges = [e.t for e in timed if e.op == "edge"]
     level: dict[str, str] = {c.name: "f" for c in vec.clocks}
     last_change: int | None = None
-    timed = [e for e in vec.events if not (e.t == 0 and e.op == "set")]
     for t, grp in groupby(timed, key=lambda e: e.t):
         grp = list(grp)
         changes = [e for e in grp if e.op not in ("sample", "end")]
@@ -2297,7 +2379,8 @@ def validate(vec: Vec, m: DutMap, *, min_sample_gap_ps: int = DEFAULT_GAP_PS) ->
         for e in changes:
             if e.op == "edge":
                 if vec.clock(e.target).mode == "free":
-                    r.errors.append(f"t={t}: edge on free-running {e.target}")
+                    if (e.t, e.target, e.value) not in auto:
+                        r.errors.append(f"t={t}: explicit edge on free-running {e.target}")
                 elif level[e.target] == e.value:
                     r.errors.append(f"t={t}: edges on {e.target} must alternate r/f from idle 0")
                 level[e.target] = e.value
@@ -2609,7 +2692,8 @@ Semantics of `replay` (it mirrors the testbench exactly):
    - `edge`: `clock_edge(port, value == "r")`.
    - `glbl`: `glbl(sig, int(value))`.
    - `sample`: record `outputs()` as bits plus provenance.
-5. Expand free clocks into edge events beforehand.
+5. Expand free clocks into edge events beforehand with the shared `free_clock_edges`.
+6. Refuse (`ModelUnsupported`) any file containing `simultaneous` events (review #7). Those appear only in equivalence stimuli, which compare two simulators and never use the golden model.
 
 - [ ] **Step 1: Write the failing tests** at `tools/tests/test_golden.py`
 
@@ -2679,6 +2763,13 @@ def test_replay_trace_and_reach():
     assert "attr:INIT=1'b1" in reach.bins()
 
 
+def test_simultaneous_events_are_refused():
+    text = VEC.replace("t=127000 set in[0]=1\nt=128000 edge clk0 r",
+                       "t=128000 simultaneous edge clk0 r\nt=128000 simultaneous set in[0]=1")
+    with pytest.raises(ModelUnsupported, match="simultaneous"):
+        replay(ToyDff, loads(text), MAP)
+
+
 def test_x_stimulus_is_unsupported():
     with pytest.raises(ModelUnsupported):
         replay(ToyDff, loads(VEC.replace("in[0]=1", "in[0]=0bx")), MAP)
@@ -2717,7 +2808,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
-_PROV = re.compile(r"^(doc:\d+|inferred:\S.*)$")
+_PROV = re.compile(r"^(doc:\d+|inferred:[^#|=]+)$")  # '#', '|', '=' would break .xtr lines
 _LIT = re.compile(r"^\s*\d*\s*'\s*[sS]?([bBoOdDhH])\s*([0-9a-fA-F_]+)\s*$")
 
 
@@ -2819,7 +2910,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from xut.formats.xtr import Trace
-from xut.formats.xvec import Event, Vec
+from xut.formats.xvec import Event, Vec, free_clock_edges
 from xut.validate import ROC_WIDTH_PS
 from xut.wrap import DutMap
 from xut_models.base import Model, ModelUnsupported
@@ -2839,28 +2930,9 @@ class Reach:
 
 
 def expand_free_clocks(vec: Vec) -> list[Event]:
+    """Explicit events plus the shared free-clock edges (xvec.free_clock_edges)."""
     out = [e for e in vec.events if e.op not in ("clock_start", "clock_stop")]
-    end = vec.events[-1].t if vec.events else 0
-    starts = {}
-    for e in vec.events:
-        if e.op == "clock_start":
-            starts[e.target] = e.t
-        elif e.op == "clock_stop":
-            out += _edges(vec, e.target, starts.pop(e.target), e.t)
-    for name, t0 in starts.items():
-        out += _edges(vec, name, t0, end)
-    return sorted(out, key=lambda e: (e.t, e.op != "edge"))
-
-
-def _edges(vec: Vec, name: str, start: int, stop: int) -> list[Event]:
-    c = vec.clock(name)
-    high, t, out = c.period * c.duty // 100, start, []
-    while t <= stop:
-        out.append(Event(t, "edge", name, value="r"))
-        if t + high <= stop:
-            out.append(Event(t + high, "edge", name, value="f"))
-        t += c.period
-    return out
+    return sorted(out + free_clock_edges(vec), key=lambda e: e.t)
 
 
 def _port_value(m: DutMap, bits: list[str], port: str) -> int:
@@ -2871,6 +2943,13 @@ def _port_value(m: DutMap, bits: list[str], port: str) -> int:
 
 
 def replay(model_cls: type[Model], vec: Vec, m: DutMap) -> tuple[Trace, Reach]:
+    # The testbench applies every operation of one time step before the DUT wakes, so a
+    # simultaneous `edge r` + `set D` captures the NEW D. File-order replay would predict
+    # the old one: refuse rather than emit a silently wrong expectation (review #7).
+    sim = sorted({e.t for e in vec.events if e.simultaneous})
+    if sim:
+        raise ModelUnsupported(f"simultaneous events at t={sim[:3]}: ordering within one time "
+                               "step is not modelled (use them only for sim-vs-sim checks)")
     model = model_cls(vec.attrs)
     reach = Reach(attrs=dict(vec.attrs))
     trace = Trace({"runner": "python", "flow": "rtl", "model": "golden", "seed": str(vec.seed),
@@ -3292,12 +3371,12 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
   - sv style: `sv/<file>.sv`, whose top module is the file stem;
   - cocotb style: `cocotb/<file>.py`, whose test module is the file stem.
 - `configs` (sv and cocotb only): a list of `{cfg: <name>, attrs: {NAME: literal}}`. Vector tests get their configurations from the generator.
-- `runners` values:
-  - `true` (YAML `yes` also loads as `true`);
-  - `{unsupported: "<reason>"}`.
-  - A runner missing from the map is treated as unsupported with the reason `not declared`, which lint flags.
+- `runners` values stay exactly as step 1's `test.schema.json` defines them: the **strings** `"yes"`, `"no"` or `"unsupported"`, always quoted in YAML. The schema's `$comment` explains why: PyYAML turns a bare `yes` into the boolean `true`, which the schema rejects.
+- `unsupported_reasons` (new, optional): a map `{<runner>: "<reason>"}`. Every runner whose value is `"no"` or `"unsupported"` must have an entry, and lint (`runner-reasons`, error) enforces it. `"unsupported"` means the runner cannot run this test; `"no"` means the test is deliberately not run there, e.g. python for a self-checking sv testbench.
+- A runner missing from `runners` is treated as `"no"` with the reason `not declared`, which lint flags.
+- **Infra task (this task, on `infra/sim-core`):** amend step 1's `tools/xut/schemas/test.schema.json` to add the optional keys `source`, `configs`, `unsupported_reasons`, `expected_divergence`, `timeout_s` and `sv_deviations`, keeping `runners` as the string enum and keeping its `$comment`. Update `docs/templates/test.yaml` to match. Add a schema test that bare `yes` still fails and that `unsupported_reasons` validates.
 - `expected_divergence`: a list of `{finding: findings/<PRIM>-<slug>.md, cls: <finding class>, runners: [..]}`.
-- `timeout_s` (default 600).
+- `timeout_s` (optional; when absent, `--timeout`, otherwise 600).
 - `sv_deviations`: a list of strings (spec §4.3).
 
 **Runner contract.**
@@ -3340,6 +3419,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
    - `replay` through `registry.get(family, prim)` and write `expected.xtr`. Write the same trace to `trace.xtr` too, so the test-level `trace.xtr` (`kind=expected`) is assembled like every other runner's.
    - The config is `pass` if the model ran. `ModelUnsupported` makes it `error`.
 4. Union the `Reach.bins()` into `bins_reached`.
+5. Write `configs.json`, the list of **every** configuration the generator produced, including those that errored. Other runners take their configuration list from it (review #10), and `prepare_vector` returns `error "no expected trace (python: <reason>)"` for a configuration whose `expected.xtr` is missing.
 
 The python run directory is the **source of truth** for the other runners: they read `cfg-*/dut/`, `cfg-*/stim.xvec` and `cfg-*/expected.xtr` from `build/<flow>/python/<test-id>/`. `xut run` always runs `python` first for vector tests whenever another runner is selected.
 
@@ -3360,7 +3440,8 @@ tests:
     source: vectors/gen.py:l1_capture
     exercises: [port:D, claim:TOYFF.C1]
     attr_sampling: {INIT: [0, 1]}
-    runners: {python: yes, xsim: yes, iverilog: yes, verilator: yes, hw: {unsupported: "toy"}}
+    runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {hw: "toy"}
     flows: [rtl]
     related: []
     gaps: []
@@ -3403,6 +3484,9 @@ def test_declared():
 
 - An unsupported runner writes `result.json` with `status: skip` and the declared reason. It validates against `result.schema.json`.
 - A runner whose `run_config` raises produces `status: error` whose reason contains the exception text, and `run.log` exists.
+- A runner whose `tools()` or `finish()` raises, or whose config writes a malformed `trace.xtr`, still leaves an `error` `result.json` (review #9).
+- If the python runner errors on one of two configurations, the iverilog result has both configurations, the missing one as `error` "no expected trace" (review #10).
+- `sim_tool_versions` called from 16 threads at once returns identical, non-"unknown" values (container test).
 - `worst(["pass", "fail", "error"]) == "fail"`, `worst(["pass", "error"]) == "error"`, `worst(["skip", "pass"]) == "pass"` and `worst([]) == "skip"`.
 - The python runner on the TOYFF fixture writes `cfg-init0/expected.xtr`, `cfg-init1/expected.xtr` and `cfg-init0/dut/xut_dut.map.json`, returns `pass`, and has `bins_reached` containing `claim:TOYFF.C1`.
 - `run_tests` with `runners=["iverilog"]` on a vector case schedules `python` first. Use a fake iverilog runner class that records the order.
@@ -3430,6 +3514,8 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import ClassVar
+
+import json
 
 from xut.formats import xtr
 from xut.modelsrc import ModelSource
@@ -3521,10 +3607,15 @@ class Runner(ABC):
         return None
 
     def configs(self, case: TestCase, ctx: RunContext) -> list[str]:
-        """Configuration names: from the python run for vector tests, test.yaml otherwise."""
+        """Configuration names: every config the python run generated (its configs.json,
+        errored ones included) for vector tests; test.yaml otherwise. A config without an
+        expected trace is NOT dropped: prepare_vector returns error "no expected trace"
+        for it, so a python failure can never shrink another runner's matrix (review #10)."""
         if case.style == "vector":
-            py = workdir(ctx, "python", case.id)
-            return sorted(p.name[4:] for p in py.glob("cfg-*") if (p / "expected.xtr").is_file())
+            listing = workdir(ctx, "python", case.id) / "configs.json"
+            if not listing.is_file():
+                raise RuntimeError("no python run for this test (configs.json missing)")
+            return json.loads(listing.read_text())
         return [c["cfg"] for c in case.configs] or ["default"]
 
     @abstractmethod
@@ -3540,9 +3631,23 @@ class Runner(ABC):
         return r
 
     def run(self, case: TestCase, ctx: RunContext) -> RunResult:
+        """Template method. Every exit path writes result.json (spec §14, review #9):
+        any exception outside run_config becomes an `error` result with the traceback."""
         d = workdir(ctx, self.name, case.id)
         shutil.rmtree(d, ignore_errors=True)
         d.mkdir(parents=True)
+        try:
+            return self._run(case, ctx, d)
+        except Exception as e:
+            with (d / "run.log").open("a") as f:
+                f.write(traceback.format_exc())
+            r = RunResult(case.id, self.name, ctx.flow, case.style, "error",
+                          f"{type(e).__name__}: {e}", model_source=ctx.model_source.name,
+                          started=dt.datetime.now(dt.UTC).isoformat(timespec="seconds"))
+            r.write(d)
+            return r
+
+    def _run(self, case: TestCase, ctx: RunContext, d: Path) -> RunResult:
         ok, why = declared(case, self.name)
         if not ok:
             return self._skip(case, ctx, d, f"declared unsupported: {why}")
@@ -3566,11 +3671,15 @@ class Runner(ABC):
             try:
                 cr = self.run_config(case, cfg, cd, ctx)
             except Exception as e:  # recorded as error with the traceback in the log
-                (cd / "run.log").open("a").write(traceback.format_exc())
+                with (cd / "run.log").open("a") as f:
+                    f.write(traceback.format_exc())
                 cr = ConfigResult(cfg, "error", f"{type(e).__name__}: {e}")
-            res.configs.append(cr)
             if (cd / "trace.xtr").is_file():
-                parts.append((cfg, xtr.load(cd / "trace.xtr")))
+                try:
+                    parts.append((cfg, xtr.load(cd / "trace.xtr")))
+                except xtr.XtrError as e:
+                    cr = ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
+            res.configs.append(cr)
             logs.append(f"===== cfg {cfg}: {cr.status} {cr.reason or ''}\n"
                         + ((cd / "run.log").read_text() if (cd / "run.log").is_file() else ""))
         if res.configs:
@@ -3595,8 +3704,9 @@ class Runner(ABC):
 
 `tools/xut/testspec.py`, `declared()`:
 - `iverilog-vz` inherits the `verilator` declaration, because it only exists to guard Verilator results.
+- `declared(case, runner)` returns `(True, "")` for `"yes"`, and `(False, <reason from unsupported_reasons>)` for `"no"` and `"unsupported"`.
 - A runner missing from `runners` gives `(False, "not declared")`.
-- `timeout_s` comes from the test, otherwise `ctx.timeout_s`, otherwise 600.
+- `TestCase.timeout_s` is `None` unless test.yaml sets it. The effective timeout is the test's value, otherwise `--timeout` (`ctx.timeout_s`), otherwise 600.
 
 `tools/xut/run.py`, `run_tests(cases, runner_names, ctx)`:
 - Schedule `python` first for every vector case, sequentially. The model is fast.
@@ -3677,6 +3787,11 @@ The paths above are container paths from `executor.guest(...)`. `ctx.defines` be
 `endif
 integer xut_fd;
 integer xut_errors;
+`ifdef XUT_GLBL_INSTANCE
+// Verilator fallback (Task 15, Step 1): glbl as an instance of the testbench, found by
+// UNISIM's upward name lookup and by this testbench's own glbl.GSR_int writes.
+glbl glbl ();
+`endif
 initial begin
   xut_errors = 0;
   xut_fd = $fopen("trace.body", "w");
@@ -3759,7 +3874,11 @@ def sv_check(cd: Path, log_text: str, header: dict) -> ConfigResult:
 class IverilogRunner(Runner):
     name = "iverilog"
     x_observable = True
-    lib_first: tuple[Path, ...] = ()  # iverilog-vz prepends the verilatorized dir
+
+    def lib_first(self, case: TestCase, cfg: str, ctx: RunContext) -> tuple[Path, ...]:
+        """Library dirs searched before the model source. iverilog-vz returns the
+        verilatorized dir. Returned, never stored on self: jobs run in threads."""
+        return ()
 
     def available(self, ctx):
         if shutil.which("docker") is None and not _native():
@@ -3773,20 +3892,24 @@ class IverilogRunner(Runner):
     def container(self, ctx):
         return {"image": SIM_IMAGE, "digest": image_digest(SIM_IMAGE)}
 
-    def _libs(self, ex, ctx) -> list[str]:
+    def _libs(self, ex, ctx, first: tuple[Path, ...]) -> list[str]:
         out = []
-        for d in (*self.lib_first, *ctx.model_source.search):
+        for d in (*first, *ctx.model_source.search):
             out += ["-y", ex.guest(d)]
         return out + ["-Y", ".v"]
 
     def _defs(self, ctx) -> list[str]:
         return [f"-D{k}" if v == "" else f"-D{k}={v}" for k, v in ctx.defines.items()]
 
+    def _glbl_defs(self, ctx) -> list[str]:
+        return []  # Icarus and xsim keep glbl as a second top (spec §6)
+
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
         ex = executor_for(ctx.model_source)
         log = cd / "run.log"
         timeout = case.timeout_s or ctx.timeout_s or 600
         glbl = ex.guest(ctx.model_source.glbl)
+        first = self.lib_first(case, cfg, ctx)
         header = {"runner": self.name, "flow": ctx.flow, "model": ctx.model_source.name,
                   "prim": case.prim, "cfg": cfg}
         if case.style == "vector":
@@ -3798,9 +3921,11 @@ class IverilogRunner(Runner):
             comp = write_stim(vec, m, cd)
             shutil.copy(TB, cd / "xut_vector_tb.sv")
             argv = ["iverilog", "-g2012", "-o", "sim.vvp", "-s", "xut_vector_tb", "-s", "glbl",
-                    "-I", ".", "-I", "dut", *self._libs(ex, ctx), *self._defs(ctx),
+                    "-I", ".", "-I", "dut", *self._libs(ex, ctx, first), *self._defs(ctx),
                     "xut_vector_tb.sv", "dut/xut_dut.v", glbl]
             if ex.run(argv, cwd=cd, log=log, timeout_s=timeout) != 0:
+                if vec.expect == "reject":  # elaboration-time rejection also counts
+                    return ConfigResult(cfg, "pass", "rejected at compile/elaboration")
                 return ConfigResult(cfg, "error", "compile failed")
             ex.run(["vvp", "-n", "sim.vvp"], cwd=cd, log=log, timeout_s=timeout)
             text = log.read_text()
@@ -3820,7 +3945,7 @@ class IverilogRunner(Runner):
         argv = ["iverilog", "-g2012", "-o", "sim.vvp", "-s", stem, "-s", "glbl",
                 *sum((["-I", ex.guest(p)] for p in incs), []),
                 *[f"-P{stem}.{k}={v}" for k, v in attrs.items()],
-                *self._libs(ex, ctx), *self._defs(ctx),
+                *self._libs(ex, ctx, first), *self._defs(ctx), *self._glbl_defs(ctx),
                 ex.guest(case.test_dir / str(case.source)), glbl]
         if ex.run(argv, cwd=cd, log=log, timeout_s=timeout) != 0:
             return ConfigResult(cfg, "error", "compile failed")
@@ -3834,6 +3959,9 @@ class IverilogVzRunner(IverilogRunner):
 
     name = "iverilog-vz"
 
+    def lib_first(self, case, cfg, ctx):  # wired in Task 15 (ensure_model + vz_dir)
+        raise NotImplementedError("iverilog-vz is completed in Task 15")
+
 
 def _native() -> bool:
     import os
@@ -3841,7 +3969,7 @@ def _native() -> bool:
     return os.environ.get("XUT_NATIVE") == "1"
 ```
 
-`-P<stem>.<NAME>=<value>` is Icarus's syntax for overriding a top-level parameter. The value is the Verilog literal from `configs` (e.g. `1'b1`). Icarus takes it verbatim.
+`-P<stem>.<NAME>=<value>` is Icarus's syntax for overriding a top-level parameter. The value is the Verilog literal from `configs` (e.g. `1'b1`). That Icarus 12 accepts a *sized* literal here is not assumed: a container test compiles a two-line module with `-Ptop.P=1'b1` and checks `$display` prints 1. If it does not, convert the literal to its decimal value in the runner.
 
 - [ ] **Step 3: Run the tests.** Expected: all pass, including the container tests. Then commit:
 
@@ -3910,9 +4038,13 @@ bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && \
 
 **Interfaces:**
 - Produces:
-  - `xut.cocotb_dut.XutDut(dut, map_path, trace_path, header)`, with:
+  - `xut.cocotb_dut.XutDut(dut, map_path, trace_path, header=None)`, with:
+    - `attrs: dict[str, str]`, the configuration's attributes from the map;
+    - `in_ports: list[str]`;
     - async methods `settle()`, `set(**ports)`, `edge(port, rising)`, `cycle(port, n=1)`, `gsr(value)`;
+    - `value(port) -> int`, the current driven value of an input (from the shadow);
     - `get(port) -> str`, `sample(label, prov=None)`, `close()`.
+    - `header` defaults to `{"runner": <XUT_RUNNER env>, "flow": "rtl", "model": <XUT_MODEL env>, "seed": <XUT_SEED env>}`; the runner sets those variables. This is exactly the surface `flops_cocotb.random_session` uses (review #8).
 
     It is used only inside the container, and imports `cocotb` and `xut.formats.xtr` only.
   - `tools/xut/hdl/cocotb_run.py`, the in-container launcher:
@@ -3967,7 +4099,8 @@ Write `log/<ts>-infra-sim-core-part-b.md` and commit it. Push, then open PR B, "
   - `ForcedReg`, with fields `name, width, signed, decl_name, decl_end, is_port, overrides: list[tuple[Span, Span]], deassigns: list[Span], writes: set[Span], sensitivity, triggers, enablers`
   - `Analysis` (`model, path, text, endmodule, forced`, plus properties `triggers` and `enablers`)
   - `has_procedural_assign(path) -> bool`, a syntax-level scan (no elaboration)
-  - `analyze(path, module, glbl) -> Analysis`
+  - `generate_configs(path, module, choices=None, limit=64) -> list[dict[str, str]]`: parameter-override sets that together elaborate **every** generate branch (always including `{}`, the defaults)
+  - `analyze(path, module, glbl, choices=None) -> Analysis`: runs the walker once per `generate_configs` entry and takes the union, so spans in every generate branch are rewritten (controller ruling on review #3)
 
 **Create the worktree** (stacked on `infra/sim-core`):
 
@@ -4004,6 +4137,9 @@ Check any other attribute with `dir()` before using it.
 | `vz_delay.v` / `VZDELAY` | non-blocking writes with delays (`q <= #100 D`) | `{R}` / `{}` |
 | `vz_async.v` / `VZASYNC` | interaction with async CLR (`always @(posedge C or posedge CLR)`) | `{glbl.GSR}` / `{}` |
 | `vz_cone.v` / `MMCMVZ` | fan-in cone through a registered stage (the spec's RST\|PWRDWN example) | `{RST, PWRDWN}` / `{CLKIN1}` |
+| `vz_gate.v` / `BUFVZ` | triggers reached only through gate primitives, BUFR-style: `buf b0 (clr_in, CLR); not n0 (gsr_n, gsr_in_raw); and a0 (gsr_in, ~gsr_n, 1'b1);` with `always @(gsr_in or clr_in)` | `{glbl.GSR, CLR}` / `{}` |
+| `vz_sub.v` / `VZSUB` | a trigger reached through a same-file sub-instance (`VZSUB_INV u (.o(clr_n), .i(CLR));`, `always @(clr_n)`) | `{CLR}` / `{}` |
+| `vz_generate.v` / `VZGEN` | the forced reg written in **both** arms of `generate if (IS_C_INVERTED) ... else ...` (posedge vs negedge capture), with `parameter [0:0] IS_C_INVERTED = 1'b0` | `{R}` / `{}` |
 
 Two representative fixtures, verbatim (the others follow the one-line description in the table):
 
@@ -4054,8 +4190,11 @@ endmodule
 | `vz_bad_rao.v` / `VZRAO` | `always @(S) begin assign r = 1'b0; x = r; end` | `read after its procedural assign` |
 | `vz_bad_ansi.v` / `VZANSI` | `module VZANSI (output reg Q, input S);` with `always @(S) if (S) assign Q = 1'b0; else deassign Q;` | `ANSI output reg` |
 | `vz_bad_macro.v` / `VZMACRO` | `` `define FORCE_R assign r = 1'b0 `` then `` always @(S) if (S) `FORCE_R; else deassign r; `` | `macro expansion` |
+| `vz_bad_undriven.v` / `VZUNDRIVEN` | `always @(en) if (en) assign r = 1'b0; else deassign r;` where `en` is a `wire` with no driver at all | `cannot resolve the driver of en` |
+| `vz_bad_blackbox.v` / `VZBLACKBOX` | `SOMETHING_UNKNOWN u (.o(en), .i(S));` (module not in the file) feeding the forcing block | `driven by an instance output` |
+| `vz_bad_genparam.v` / `VZBADGEN` | `generate if (WIDTH > DEPTH)` with integer parameters and no literal to derive candidate values from | `cannot enumerate generate configurations` |
 
-The unelaborated-generate case (`generate if (P == 1) always ... assign ...` with `P` defaulting to 0) is pinned in Task 13, because it is detected after the rewrite.
+Generate branches are no longer a refusal: `analyze` covers every branch (`VZGEN`). Task 13's `check_clean` then elaborates the rewrite under every generate configuration, so a missed rename in any branch fails loudly (`test_missed_rename_is_caught`).
 
 `tools/tests/fixtures/verilatorize/glbl.v` is a copy of the toy glbl module from `tools/tests/fixtures/tb/toy_dut.v` (Task 7), with its SPDX header.
 
@@ -4067,7 +4206,8 @@ from pathlib import Path
 
 import pytest
 
-from xut.verilatorize.analyze import TransformError, analyze, has_procedural_assign
+from xut.verilatorize.analyze import (TransformError, analyze, generate_configs,
+                                     has_procedural_assign)
 
 FIX = Path(__file__).parent / "fixtures" / "verilatorize"
 GLBL = FIX / "glbl.v"
@@ -4084,6 +4224,9 @@ CASES = {
     "vz_delay.v": ("VZDELAY", {"R"}, set()),
     "vz_async.v": ("VZASYNC", {"glbl.GSR"}, set()),
     "vz_cone.v": ("MMCMVZ", {"RST", "PWRDWN"}, {"CLKIN1"}),
+    "vz_gate.v": ("BUFVZ", {"glbl.GSR", "CLR"}, set()),
+    "vz_sub.v": ("VZSUB", {"CLR"}, set()),
+    "vz_generate.v": ("VZGEN", {"R"}, set()),
 }
 
 
@@ -4122,6 +4265,9 @@ def test_self_referencing_read_is_not_a_write():
     ("vz_bad_rao.v", "VZRAO", "read after its procedural assign"),
     ("vz_bad_ansi.v", "VZANSI", "ANSI output reg"),
     ("vz_bad_macro.v", "VZMACRO", "macro expansion"),
+    ("vz_bad_undriven.v", "VZUNDRIVEN", "cannot resolve the driver of en"),
+    ("vz_bad_blackbox.v", "VZBLACKBOX", "driven by an instance output"),
+    ("vz_bad_genparam.v", "VZBADGEN", "cannot enumerate generate configurations"),
 ])
 def test_refusals(fname, module, msg):
     with pytest.raises(TransformError, match=msg):
@@ -4131,6 +4277,15 @@ def test_refusals(fname, module, msg):
 def test_prescan():
     assert has_procedural_assign(FIX / "vz_single.v")
     assert not has_procedural_assign(GLBL)
+
+
+def test_generate_configs_cover_both_arms():
+    assert generate_configs(FIX / "vz_generate.v", "VZGEN") == [{}, {"IS_C_INVERTED": "1'b1"}]
+    a = analyze(FIX / "vz_generate.v", "VZGEN", GLBL)
+    text = a.text
+    # the writes in BOTH generate arms are collected, not only the default elaboration's
+    assert len(a.forced["r"].writes) == 2
+    assert all(text[w.start:w.end] == "r" for w in a.forced["r"].writes)
 ```
 
 - [ ] **Step 2: Run the tests and confirm they fail** (ImportError)
@@ -4154,6 +4309,8 @@ Anything it cannot prove it handles raises TransformError naming the model.
 
 from __future__ import annotations
 
+import itertools
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -4168,6 +4325,9 @@ _EDGES = (ast.EdgeKind.PosEdge, ast.EdgeKind.NegEdge, ast.EdgeKind.BothEdges)
 _DELAYS = (_TK.Delay, _TK.Delay3, _TK.OneStepDelay, _TK.CycleDelay)
 _SYNTAX_FORCE = {pyslang.syntax.SyntaxKind.ProceduralAssignStatement,
                  pyslang.syntax.SyntaxKind.ProceduralDeassignStatement}
+_CONSTANT_SYMBOLS = (_SY.Parameter, _SY.Specparam, _SY.EnumValue, _SY.Genvar)
+# Gate primitives: how many leading terminals are outputs (buf/not may have several).
+_MULTI_OUT = ("buf", "not")
 
 
 class TransformError(Exception):
@@ -4185,12 +4345,11 @@ class Span:
 @dataclass
 class ForcedReg:
     name: str
-    width: int
-    signed: bool
+    dims: str  # declaration text between the type keyword and the name, e.g. "signed [4:1] "
     decl_name: Span
     decl_end: int
     is_port: bool
-    overrides: list[tuple[Span, Span]] = field(default_factory=list)  # (statement, rhs)
+    overrides: list[tuple[Span, Span]] = field(default_factory=list)  # (statement, rhs), source order
     deassigns: list[Span] = field(default_factory=list)
     writes: set[Span] = field(default_factory=set)
     sensitivity: set[str] = field(default_factory=set)
@@ -4241,8 +4400,8 @@ def has_procedural_assign(path: Path) -> bool:
 
 
 class _Walker:
-    def __init__(self, model: str, inst):
-        self.model, self.inst, self.body = model, inst, inst.body
+    def __init__(self, model: str, inst, text: str):
+        self.model, self.inst, self.body, self.text = model, inst, inst.body, text
         self.buffer = inst.body.location.buffer
         self.prefix = inst.body.hierarchicalPath + "."
         self.inputs = {p.name for p in self.body.portList
@@ -4272,7 +4431,8 @@ class _Walker:
         def v(n):
             k = n.kind
             if k in (_EK.NamedValue, _EK.HierarchicalValue):
-                out.add(self.key(n.symbol))
+                if n.symbol.kind not in _CONSTANT_SYMBOLS:
+                    out.add(self.key(n.symbol))
             elif k == _EK.Call and not n.isSystemCall and n.subroutine not in self._stack:
                 self._stack.append(n.subroutine)
                 n.subroutine.body.visit(v)
@@ -4380,7 +4540,14 @@ class _Walker:
         is_port = any(p.internalSymbol is not None and p.internalSymbol.name == sym.name
                       for p in self.body.portList)
         loc = sym.location.offset
-        self.regs[name] = ForcedReg(name, sym.type.bitWidth, sym.type.isSigned,
+        # Keep the packed range exactly as declared ([4:1], [0:3], signed), so every existing
+        # X[i] / X[a:b] read indexes the new net the same way (review #5).
+        t = self.span(decl.type)
+        m = re.match(r"^\s*(?:reg|logic|bit)\b\s*(.*)$", self.text[t.start:t.end], re.S)
+        if m is None:
+            raise self.err(f"{name}: forced variable is not declared as reg/logic/bit")
+        dims = m.group(1).strip()
+        self.regs[name] = ForcedReg(name, dims + " " if dims else "",
                                     Span(loc, loc + len(sym.name)), self.span(decl).end, is_port)
 
     # ---- pass 2: drivers, writes, forcing sites ------------------------------------
@@ -4388,6 +4555,10 @@ class _Walker:
         def v(n):
             k = n.kind
             if k == _SY.Instance and n is not self.inst:
+                self.sub_instance(n)
+                return ast.VisitAction.Skip
+            if k == _SY.PrimitiveInstance:
+                self.gate(n)
                 return ast.VisitAction.Skip
             if k == _SY.UninstantiatedDef:
                 for e in n.portConnections:
@@ -4409,6 +4580,34 @@ class _Walker:
             return ast.VisitAction.Advance
 
         self.inst.visit(v)
+
+    def gate(self, prim) -> None:
+        """buf/not/and/or/nand/nor/xor/xnor/bufif*/notif* and UDPs: outputs <- inputs."""
+        terms = [e for e in prim.portConnections if e is not None]
+        name = prim.primitiveType.name
+        n_out = len(terms) - 1 if name in _MULTI_OUT else 1
+        reads = set()
+        for e in terms[n_out:]:
+            self.reads(e, reads)
+        for e in terms[:n_out]:
+            for nv in self.lvalues(e):
+                self.drivers[self.key(nv.symbol)].append(_Driver(frozenset(reads), frozenset()))
+
+    def sub_instance(self, inst) -> None:
+        """A module from the same file: conservatively, every output depends on every input
+        (over-approximation adds triggers, it never drops one)."""
+        ins, outs = set(), []
+        for conn in inst.portConnections:
+            e = conn.expression
+            if e is None:
+                continue
+            if conn.port.direction == ast.ArgumentDirection.In:
+                self.reads(e, ins)
+            else:
+                outs.append(e)
+        for e in outs:
+            for nv in self.lvalues(e):
+                self.drivers[self.key(nv.symbol)].append(_Driver(frozenset(ins), frozenset()))
 
     def block(self, pb) -> None:
         body, edges, levels = pb.body, set(), set()
@@ -4556,43 +4755,102 @@ class _Walker:
                 continue
             if s in self.opaque:
                 raise self.err(f"cannot trace {s}: it is driven by an instance output")
+            if not self.drivers.get(s):
+                raise self.err(f"cannot resolve the driver of {s} while tracing triggers "
+                               "(spec §6.2: never drop a signal silently)")
             for d in self.drivers.get(s, ()):
                 work += [(r, via_clock) for r in d.reads]
                 work += [(c, True) for c in d.clocks]
         return trig, en - trig
 
 
-def analyze(path: Path, module: str, glbl: Path) -> Analysis:
-    text = Path(path).read_text()
-    comp = ast.Compilation()
+def _compile(path: Path, module: str, glbl: Path, overrides: dict[str, str]):
+    opts = ast.CompilationOptions()
+    opts.paramOverrides = [f"{k}={v}" for k, v in overrides.items()]
+    comp = ast.Compilation(pyslang.Bag([opts]))
     comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromFile(str(path)))
     comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromFile(str(glbl)))
     diags = [d for d in comp.getAllDiagnostics() if d.isError() and not _is_benign(d)]
     if diags:
         report = pyslang.DiagnosticEngine.reportAll(comp.sourceManager, diags)
-        raise TransformError(module, f"pyslang errors:\n{report}")
+        raise TransformError(module, f"pyslang errors with {overrides or 'defaults'}:\n{report}")
     inst = next((i for i in comp.getRoot().topInstances if i.name == module), None)
     if inst is None:
         raise TransformError(module, f"module not found in {path}")
-    w = _Walker(module, inst)
-    w.prescan()
-    w.walk()
-    for x in w.regs.values():
-        if not x.overrides:
-            raise TransformError(module, f"{x.name} is deassigned but never assigned")
-        x.triggers, x.enablers = w.trace(x.sensitivity)
-        if not x.triggers:
-            raise TransformError(module, f"{x.name}: no trigger found (the forcing block has no "
-                                 "sensitivity list or its cone has no primitive input)")
-    end = inst.body.definition.syntax.endmodule.location.offset
-    return Analysis(module, Path(path), text, end, dict(w.regs))
+    return comp, inst
+
+
+def generate_configs(path: Path, module: str, choices: dict[str, list[str]] | None = None,
+                     limit: int = 64) -> list[dict[str, str]]:
+    """Parameter overrides that together elaborate every generate branch (review #3).
+
+    Syntax-level: for each `if`/`case` generate construct, take the module parameters its
+    condition names. Candidate values are `choices[name]` (the catalog's allowed values)
+    when given; otherwise both values for a 1-bit parameter; otherwise every literal the
+    condition compares the parameter with, plus the default. Take
+    the product per construct (other parameters at default), union over constructs,
+    deduplicate, and put `{}` first. Loop generates need nothing: every iteration is
+    elaborated. Raises if a condition has a parameter with no candidates, or the total
+    exceeds `limit`."""
+    tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
+    params = _module_parameters(tree, module)            # name -> default text
+    out: list[dict[str, str]] = [{}]
+    for cond in _generate_conditions(tree, module):      # syntax nodes of if/case conditions
+        names = sorted(_identifiers(cond) & set(params))
+        cands = {n: (choices or {}).get(n)
+                 or (["1'b0", "1'b1"] if _is_one_bit(tree, module, n) else None)
+                 or _literals_compared_with(cond, n, params[n]) for n in names}
+        empty = [n for n, c in cands.items() if not c]
+        if empty:
+            raise TransformError(module, f"cannot enumerate generate configurations: no candidate "
+                                 f"values for {empty} in `{cond}`")
+        for combo in itertools.product(*(cands[n] for n in names)):
+            cfg = {n: v for n, v in zip(names, combo, strict=True) if v != params[n]}
+            if cfg not in out:
+                out.append(cfg)
+    if len(out) > limit:
+        raise TransformError(module, f"cannot enumerate generate configurations: {len(out)} > {limit}")
+    return out
+
+
+def analyze(path: Path, module: str, glbl: Path,
+            choices: dict[str, list[str]] | None = None) -> Analysis:
+    text = Path(path).read_text()
+    merged: dict[str, ForcedReg] = {}
+    end = None
+    for overrides in generate_configs(path, module, choices):
+        _, inst = _compile(path, module, glbl, overrides)
+        w = _Walker(module, inst, text)
+        w.prescan()
+        w.walk()
+        for x in w.regs.values():
+            if not x.overrides:
+                raise TransformError(module, f"{x.name} is deassigned but never assigned")
+            trig, en = w.trace(x.sensitivity)
+            if not trig:
+                raise TransformError(module, f"{x.name}: no trigger found (the forcing block has "
+                                     "no sensitivity list or its cone has no primitive input)")
+            m = merged.setdefault(x.name, ForcedReg(x.name, x.dims, x.decl_name, x.decl_end,
+                                                    x.is_port))
+            m.overrides = sorted(set(m.overrides) | set(x.overrides), key=lambda o: o[0].start)
+            m.deassigns = sorted(set(m.deassigns) | set(x.deassigns), key=lambda d: d.start)
+            m.writes |= x.writes
+            m.sensitivity |= x.sensitivity
+            m.triggers |= trig
+            m.enablers |= en
+        end = inst.body.definition.syntax.endmodule.location.offset
+    return Analysis(module, Path(path), text, end, merged)
 ```
+
+The helpers `_module_parameters`, `_generate_conditions`, `_identifiers`, `_is_one_bit` and `_literals_compared_with` (which returns `[]` when the condition compares with no literal, so the default alone never counts as a candidate list) are small syntax-tree walks over `pyslang.syntax` (`ModuleDeclaration` → `ParameterDeclaration`; `IfGenerate`/`CaseGenerate` → condition expression; `IdentifierName`; integer/vector/string literal tokens). Unit-test each on `vz_generate.v` and `vz_bad_genparam.v`.
 
 **Implementer notes.**
 
 - `_SK.Return`, `_SK.Break`, `_SK.Continue`, `_SK.Disable` and the loop kinds must exist in pyslang 11. Check `dir(ast.StatementKind)` and drop any that do not.
 - A local variable declared in a named block has a hierarchical path like `VZ.blk.i`. After the module prefix is stripped it still contains a `.`, which is how `force()` recognises a local. glbl signals keep their `glbl.` prefix.
-- The `rvalue_names` rule treats the lvalue of a `deassign X` as a *read*. That is intended: the rewrite turns it into `X__base = X`.
+- The `rvalue_names` rule treats the lvalue of a `deassign X` as a *read*. That is intended: the rewrite turns it into `if (X__ovr_sel != 0) begin X__base = X; ... end`.
+- Still to verify with `dir()`: `CompilationOptions.paramOverrides` (slang's `-G`), `PrimitiveInstance.portConnections` and `.primitiveType.name`, `Instance.portConnections[i].port`/`.expression`, and the syntax kinds `IfGenerate`/`CaseGenerate`. If `paramOverrides` is not exposed, generate a wrapper module that instantiates the model with `#(.NAME(value))` and analyse that instance instead: same result.
+- Spans from different generate configurations are identical source offsets, so `set` union deduplicates them.
 
 - [ ] **Step 4: Run the tests**
 
@@ -4612,21 +4870,24 @@ git add tools && git commit -m "verilatorize: derive forced regs, triggers and e
 ### Task 13: `xut verilatorize` — the shadow-register rewrite
 
 **Files:**
-- Create: `tools/xut/verilatorize/rewrite.py`, `tools/xut/verilatorize/driver.py`, `tools/tests/test_vz_rewrite.py`, `tools/tests/fixtures/verilatorize/vz_bad_generate.v`
+- Create: `tools/xut/verilatorize/rewrite.py`, `tools/xut/verilatorize/driver.py`, `tools/tests/test_vz_rewrite.py`, `tools/tests/fixtures/verilatorize/vz_ranges.v`
 - Modify: `tools/xut/cli.py`
 
 **Interfaces:**
 - Consumes: `Analysis`, `TransformError`, `analyze`, `has_procedural_assign` (Task 12); `ModelSource` (Task 1)
 - Produces:
   - `xut.verilatorize.rewrite.rewrite(an) -> str`
-  - `check_clean(text, model) -> None`, which raises if any procedural `assign`/`deassign` syntax remains or the output does not parse
-  - `xut.verilatorize.driver.ModelEntry` (`status` = `transformed`|`unchanged`|`unsupported`, `reason, triggers, enablers, forced, source_sha256, equiv` = `None`|`pass`|`fail`|`error`)
+  - `check_clean(text, model, glbl, configs) -> None`. It raises if any procedural `assign`/`deassign` syntax remains anywhere (every generate branch included), or if the rewritten text fails to elaborate without errors under **each** of `configs` (the `generate_configs` list). pyslang reports a procedural write to a net as an error, so a missed `X` → `X__base` rename in any generate branch is caught here.
+  - `xut.verilatorize.driver.ModelEntry` (`status` = `transformed`|`unchanged`|`unsupported`, `reason, triggers, enablers, forced, generate_configs, source_sha256`, and `equiv: dict[str, str]` mapping a configuration key (`"default"` or sorted `NAME=value,...`) to `pass`|`fail`|`error`)
   - `Manifest` (`model_source`, `models: dict[str, ModelEntry]`, with `load`/`save`)
   - `vz_dir(ms) -> Path`
   - `verilatorize(ms, models=None, *, jobs=1) -> Manifest`, which is incremental by source sha256
   - CLI `xut verilatorize [--model-source auto] [--check] [--jobs N] [MODEL...]`
 
-The rewrite follows spec §6.2 steps 1–3 exactly, with one refinement. Each override expression gets its own width-`W` net `X__ovr_k`, and the mux selects among same-width nets. `assign X__ovr_k = e_k;` extends and truncates `e_k` exactly as the original `assign X = e_k;` did, so mixing signed and unsigned `e_k` cannot change the result.
+The rewrite follows spec §6.2 steps 1–3 (rev 3.1), with two refinements:
+
+- Each override expression gets its own net `X__ovr_k`, declared with the **same packed range and signedness text** as `X` (`[4:1]`, `[0:3]`, `signed`), and the mux selects among nets of identical type. `assign X__ovr_k = e_k;` extends and truncates `e_k` exactly as the original `assign X = e_k;` did, and every existing `X[i]`/`X[a:b]` read indexes the new net exactly as it indexed the reg (review #5).
+- `deassign X;` becomes `if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end`. A `deassign` of a reg that is not forced is a no-op in Verilog; the guard keeps it one, so a stale `X` (not yet propagated this time step) can never clobber an `X__base` written earlier in the same step (review #4, spec §6.2 step 2 rev 3.1).
 
 Output for `VZTRIG` (reference for the golden test, whitespace as produced):
 
@@ -4637,7 +4898,7 @@ Output for `VZTRIG` (reference for the golden test, whitespace as produced):
     if (gsr_in) q__ovr_sel = 2'd1;
     else if (CLR) q__ovr_sel = 2'd2;
     else if (PRE) q__ovr_sel = 2'd3;
-    else begin q__base = q; q__ovr_sel = 2'd0; end
+    else if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end
   always @(posedge C) q__base <= D;
   // xut verilatorize: shadow-register override muxes (spec §6.2)
   assign q__ovr_1 = 1'b0;
@@ -4659,7 +4920,7 @@ import pytest
 
 from xut.container import SIM_IMAGE, DockerExecutor, image_digest
 from xut.paths import repo_root
-from xut.verilatorize.analyze import TransformError, analyze
+from xut.verilatorize.analyze import TransformError, analyze, generate_configs
 from xut.verilatorize.rewrite import check_clean, rewrite
 
 FIX = Path(__file__).parent / "fixtures" / "verilatorize"
@@ -4667,19 +4928,20 @@ GLBL = FIX / "glbl.v"
 MODS = {"vz_single.v": "VZSINGLE", "vz_multi.v": "VZMULTI", "vz_retain.v": "VZRETAIN",
         "vz_nonconst.v": "VZNONCONST", "vz_trig.v": "VZTRIG", "vz_select.v": "VZSEL",
         "vz_task.v": "VZTASK", "vz_shift.v": "VZSHIFT", "vz_delay.v": "VZDELAY",
-        "vz_async.v": "VZASYNC", "vz_cone.v": "MMCMVZ"}
+        "vz_async.v": "VZASYNC", "vz_cone.v": "MMCMVZ", "vz_gate.v": "BUFVZ",
+        "vz_sub.v": "VZSUB", "vz_generate.v": "VZGEN", "vz_ranges.v": "VZRANGE"}
 
 
 @pytest.mark.parametrize("fname", sorted(MODS))
-def test_output_is_clean_and_parses(fname):
+def test_output_is_clean_and_elaborates_in_every_generate_config(fname):
     out = rewrite(analyze(FIX / fname, MODS[fname], GLBL))
-    check_clean(out, MODS[fname])  # no procedural assign/deassign left, pyslang parses it
+    check_clean(out, MODS[fname], GLBL, generate_configs(FIX / fname, MODS[fname]))
 
 
 def test_vztrig_golden_fragments():
     out = rewrite(analyze(FIX / "vz_trig.v", "VZTRIG", GLBL))
     assert "reg q__base; reg [1:0] q__ovr_sel = 2'd0; wire q;" in out
-    assert "else begin q__base = q; q__ovr_sel = 2'd0; end" in out
+    assert "else if (q__ovr_sel != 2'd0) begin q__base = q; q__ovr_sel = 2'd0; end" in out
     assert "always @(posedge C) q__base <= D;" in out
     assert ("assign q = (q__ovr_sel == 2'd0) ? q__base : (q__ovr_sel == 2'd1) ? q__ovr_1 : "
             "(q__ovr_sel == 2'd2) ? q__ovr_2 : q__ovr_3;") in out
@@ -4700,10 +4962,21 @@ def test_select_writes_renamed():
     assert "v__base[0] <=" in out and "v__base[2:1] <=" in out
 
 
-def test_unelaborated_generate_leftover_fails_loudly():
-    an = analyze(FIX / "vz_bad_generate.v", "VZGEN", GLBL)
-    with pytest.raises(TransformError, match="unelaborated"):
-        check_clean(rewrite(an), "VZGEN")
+def test_both_generate_arms_rewritten():
+    out = rewrite(analyze(FIX / "vz_generate.v", "VZGEN", GLBL))
+    assert out.count("r__base <=") == 2          # posedge arm and negedge arm
+
+
+def test_packed_range_preserved():
+    out = rewrite(analyze(FIX / "vz_ranges.v", "VZRANGE", GLBL))
+    assert "wire [4:1] a;" in out and "wire [0:3] b;" in out and "wire signed [7:0] c;" in out
+
+
+def test_missed_rename_is_caught(monkeypatch):
+    an = analyze(FIX / "vz_generate.v", "VZGEN", GLBL)
+    an.forced["r"].writes = set(sorted(an.forced["r"].writes, key=lambda w: w.start)[:1])
+    with pytest.raises(TransformError, match="IS_C_INVERTED"):   # the config that fails is named
+        check_clean(rewrite(an), "VZGEN", GLBL, generate_configs(FIX / "vz_generate.v", "VZGEN"))
 
 
 @pytest.mark.container
@@ -4723,7 +4996,7 @@ def test_verilator_lints_transformed(fname):
     assert rc == 0, log.read_text()
 ```
 
-`vz_bad_generate.v`: module `VZGEN #(parameter P = 0)` containing a forced reg that *is* transformed in the elaborated code, plus `generate if (P == 1) begin : g always @(S) if (S) assign r = 1'b1; else deassign r; end endgenerate`. The analysis succeeds, because the generate branch is not elaborated. The rewrite leaves the branch's `assign`/`deassign` in place, and `check_clean` must reject that.
+`vz_ranges.v` (`VZRANGE`): three forced regs `reg [4:1] a;`, `reg [0:3] b;` and `reg signed [7:0] c;`, each read through selects (`a[4]`, `b[0:1]`, `c[7]`) in continuous assigns.
 
 - [ ] **Step 2: Implement `rewrite.py`**
 
@@ -4733,9 +5006,13 @@ def test_verilator_lints_transformed(fname):
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pyslang
 
-from xut.verilatorize.analyze import _SYNTAX_FORCE, Analysis, TransformError, _syntax_kinds
+from xut.verilatorize.analyze import (_SYNTAX_FORCE, Analysis, TransformError, _compile,
+                                      _syntax_kinds)
 
 BANNER = ("// SPDX-License-Identifier: Apache-2.0\n"
           "// GENERATED by xut verilatorize from {src} (spec §6.2). Never commit.\n")
@@ -4761,7 +5038,7 @@ def rewrite(an: Analysis) -> str:
         n = len(x.overrides)
         w = max(1, n.bit_length())
         sel, base = f"{x.name}__ovr_sel", f"{x.name}__base"
-        typ = ("signed " if x.signed else "") + (f"[{x.width - 1}:0] " if x.width > 1 else "")
+        typ = x.dims  # the declaration's own packed range/signedness text
         edits.append((x.decl_name.start, x.decl_name.end, base))
         decl = [f"reg [{w - 1}:0] {sel} = {w}'d0;"]
         if not x.is_port:
@@ -4773,7 +5050,8 @@ def rewrite(an: Analysis) -> str:
             edits.append((stmt.start, stmt.end, f"{sel} = {w}'d{k};"))
             tail.append(f"  assign {x.name}__ovr_{k} = {an.text[expr.start:expr.end]};")
         for d in x.deassigns:
-            edits.append((d.start, d.end, f"begin {base} = {x.name}; {sel} = {w}'d0; end"))
+            edits.append((d.start, d.end,
+                          f"if ({sel} != {w}'d0) begin {base} = {x.name}; {sel} = {w}'d0; end"))
         mux = f"{x.name}__ovr_{n}"
         for k in range(n - 1, 0, -1):
             mux = f"({sel} == {w}'d{k}) ? {x.name}__ovr_{k} : {mux}"
@@ -4784,14 +5062,18 @@ def rewrite(an: Analysis) -> str:
     return BANNER.format(src=an.path.name) + _apply(an.model, an.text, edits)
 
 
-def check_clean(text: str, model: str) -> None:
+def check_clean(text: str, model: str, glbl: Path, configs: list[dict[str, str]]) -> None:
     tree = pyslang.syntax.SyntaxTree.fromText(text)
     if _syntax_kinds(tree.root, set()) & _SYNTAX_FORCE:
-        raise TransformError(model, "procedural assign/deassign remains after the rewrite "
-                                    "(inside an unelaborated generate branch?)")
-    errs = [d for d in tree.diagnostics if d.isError()]
-    if errs:
-        raise TransformError(model, f"rewritten text does not parse ({len(errs)} error(s))")
+        raise TransformError(model, "procedural assign/deassign remains after the rewrite")
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / f"{model}.v"
+        f.write_text(text)
+        for cfg in configs:
+            try:
+                _compile(f, model, glbl, cfg)  # raises on any non-benign error, naming cfg
+            except TransformError as e:
+                raise TransformError(model, f"rewritten model does not elaborate: {e}") from e
 ```
 
 The mux expression reproduces spec §6.2 step 3, `(sel == 0) ? X__base : (sel == 1) ? e_1 : ...`. Its innermost arm is `e_n` rather than a redundant `(sel == n) ? e_n : X__base`: `sel` never holds a value above `n`, because only the rewrite writes it.
@@ -4800,7 +5082,7 @@ The mux expression reproduces spec §6.2 step 3, `(sel == 0) ? X__base : (sel ==
   - `verilatorize(ms, models, jobs)` iterates `ms.unisims/*.v` and `ms.retarget/*.v` (restricted to `models` when given).
   - Per file:
     - no procedural assign (`has_procedural_assign` false) → `unchanged`;
-    - else `analyze(f, f.stem, ms.glbl)` → `rewrite` → `check_clean` → write `vz_dir(ms)/<file>` → `transformed`, with the triggers, enablers and forced names recorded;
+    - else `configs = generate_configs(f, f.stem, choices)` (with `choices` taken from the catalog's `allowed` values when the model is a catalogued primitive), `analyze(f, f.stem, ms.glbl, choices)` → `rewrite` → `check_clean(..., configs)` → write `vz_dir(ms)/<file>` → `transformed`, recording the triggers, enablers, forced names and `generate_configs`;
     - `TransformError` → `unsupported`, with `reason = str(e)`.
   - Re-transform only when the source sha256 or `xut.__version__` changed.
   - Use a `ProcessPoolExecutor(jobs)` for the analysis.
@@ -4816,12 +5098,12 @@ uv run xut verilatorize --model-source unisim-gh-2020.1 --jobs 32 > .cache/vz-gh
 
 Expected:
 - about 45 models are `transformed` or `unsupported` for 2025.2 (45 files contain the word `deassign`), and 40 for the 2020.1 submodule (spec §6.2);
-- `FDRE`, `FDSE`, `FDCE` and `FDPE` are `transformed`, each with a non-empty trigger list. UG953 says GSR initialises these registers, so `glbl.GSR` is expected among the triggers. If it is not, record the tool's actual list in the log entry: that is information, not an error;
+- `FDRE`, `FDSE`, `FDCE` and `FDPE` are `transformed`, each with a non-empty trigger list and more than one generate configuration recorded (their models select behaviour through generate blocks). UG953 says GSR initialises these registers, so `glbl.GSR` is expected among the triggers. If it is not, record the tool's actual list in the log entry: that is information, not an error;
 - every `unsupported` line names a construct.
 
 Record the counts in the log entry. Do **not** open the FD\* UNISIM sources to check the triggers (clean-room rule for the flops unit, Task 20). The trigger list comes from the tool.
 
-- [ ] **Step 5: Commit** with `verilatorize: add shadow-register rewrite, leftover check, and model-source driver`.
+- [ ] **Step 5: Commit** with `verilatorize: add shadow-register rewrite, per-configuration elaboration check, and model-source driver`.
 
 ---
 
@@ -4836,13 +5118,15 @@ Record the counts in the log entry. Do **not** open the FD\* UNISIM sources to c
 - Produces:
   - `xut.verilatorize.equiv.equiv_stimulus(an, m, seed=1) -> Vec`
   - `EquivResult` (`model, status, reason, mismatches, triggers, enablers`)
-  - `check_model(an, ms, out_dir) -> EquivResult`
-  - Driver: `verilatorize(..., check=True)` runs `check_model` for every transformed model and stores `equiv` in the manifest.
+  - `check_model(an, ms, out_dir, attrs: dict[str, str] | None = None) -> EquivResult`, for one attribute configuration
+  - `config_key(attrs) -> str` (`"default"`, or sorted `NAME=value` joined by `,`)
+  - Driver: `verilatorize(..., check=True)` runs `check_model` for every transformed model under the default configuration **and** every entry of its `generate_configs`, storing each result in `manifest.models[M].equiv[config_key]`.
+  - Runners: `ensure_model(ms, prim, attrs)` (Task 15) runs `check_model` on demand for any other configuration a test uses. So every attribute configuration any test uses, plus the default, is equivalence-checked before a Verilator result for it counts (controller ruling on review #3).
 
 **Equivalence stimulus** (spec §6.2). It is generated from the analysis, is mandatory, and is deterministic for a given seed:
 
 - All ports are at idle 0.
-- The wrapper uses `spec_from_hdl(..., raw_clock_out=True)`, so clock outputs are sampled directly. This is acceptable for an original-vs-transformed comparison, which never meets the hardware harness.
+- The wrapper uses `spec_from_hdl(mod, key, attrs, raw_clock_out=True)` with the configuration's attributes, so clock outputs are sampled directly. This is acceptable for an original-vs-transformed comparison, which never meets the hardware harness.
 - Enabler clocks always run: every clock-class input cycles in each `activity(n)` step.
 - `activity(n)` means `n` cycles on every clock-class input with random data on the non-trigger data ports, sampling after every edge. With no clock ports it is `n` samples with random data.
 - A trigger is pulsed through the glbl channel (`glbl.*`), through `async_` for async/gate ports, with `set` for data ports, and with `edge` for clock ports.
@@ -4863,12 +5147,14 @@ The file is `hw_renderable no`. `validate` must report no errors, and a test pin
 - Write `dut/`, `stim.xvec` and `stim.memh` once.
 - Compile and run twice on Icarus: `orig/` with `-y ms.unisims [-y ms.retarget]`, and `vz/` with `-y vz_dir(ms)` first.
 - Both runs must print `XUT_DONE`, else the result is `error`.
-- `diff(orig, vz)` is exact (4-state) → `pass`/`fail`. `mismatches.txt` lists the differences, and `result.json` goes in `vz_dir(ms)/equiv/<MODEL>/`.
+- `diff(orig, vz)` is exact (4-state) → `pass`/`fail`. `mismatches.txt` lists the differences, and `result.json` goes in `vz_dir(ms)/equiv/<MODEL>/<config_key>/`.
+- A `glbl.*` trigger other than `GSR`, `GTS` or `GRESTORE` has no glbl channel: `equiv_stimulus` raises `TransformError` (never skips it), which makes the result `error`.
 
 - [ ] **Step 1: Write the tests** `tools/tests/test_vz_equiv.py`:
   - `equiv_stimulus` for `VZTRIG` validates with zero errors, contains `simultaneous` events, pulses `glbl GSR`, `CLR` and `PRE` at least three times each, and has at least three overlapping-pair sections (three pairs).
   - For `MMCMVZ`, the stimulus pulses RST and PWRDWN, and every pulse has a `CLKIN1` edge both before and after it.
-  - Container tests: for every fixture in `MODS` (Task 13), build a `ModelSource` in `tmp_path/src/` (`unisims/` holds the fixture, `glbl.v` the fixture glbl). Run the driver with `check=True`, and expect `equiv == "pass"` for all eleven.
+  - Container tests: for every fixture in `MODS` (Task 13), build a `ModelSource` in `tmp_path/src/` (`unisims/` holds the fixture, `glbl.v` the fixture glbl). Run the driver with `check=True`, and expect `equiv[key] == "pass"` for every recorded configuration of all fifteen. `VZGEN` must have two keys (`default`, `IS_C_INVERTED=1'b1`).
+  - A **guard test** for the rev-3.1 `deassign` rule: fixture `VZRETAIN` extended with an `initial r = 1'b1;` and a forcing block whose control goes x→0 at t=0 (so it runs `deassign` while unforced). Equivalence must pass; with the guard removed by monkeypatching `rewrite`, it must fail.
   - A **mutation test.** Deliberately corrupt the rewrite: monkeypatch `rewrite` so that `deassign` becomes `X__ovr_sel = 0;` without `X__base = X;`, which breaks retention. `VZRETAIN` must then give `equiv == "fail"` with at least one mismatch. This proves the check can fail.
 
 - [ ] **Step 2: Implement `equiv.py`** following the phase list. Keep the phase functions small and named after the spec bullets: `_independent`, `_coincident`, `_pairs`, `_with_async`.
@@ -4879,7 +5165,7 @@ The file is `hw_renderable no`. `validate` must report no errors, and a test pin
 uv run xut verilatorize --model-source unisim-2025.2 --check --jobs 32 > .cache/vz-check-2025.2.log 2>&1
 ```
 
-Expected: the `progress:` lines reach `done=M total=M`, and the summary shows `equiv: pass` for FDRE, FDSE, FDCE and FDPE. Every `fail` is a **finding**, not something to fix silently:
+Expected: the `progress:` lines reach `done=M total=M`, and the summary shows `equiv: pass` for **every** recorded configuration of FDRE, FDSE, FDCE and FDPE. Every `fail` is a **finding**, not something to fix silently:
 - first confirm it with the mutation-free rewrite;
 - if it is real, record `findings/<PRIM>-transform-bug.md` in the pilot branch later (Task 24), and note it in this branch's log entry.
 
@@ -4898,7 +5184,7 @@ Expected: the `progress:` lines reach `done=M total=M`, and the summary shows `e
 - Produces:
   - `VerilatorRunner` (`name="verilator"`, `x_observable=False`)
   - `x_seeds(seed) -> tuple[int, int]` = `((2*seed+1) % 2**31 or 1, (2*seed+2) % 2**31 or 2)`
-  - `ensure_model(ms, prim) -> ModelEntry`, which transforms and checks on demand and is cached
+  - `ensure_model(ms, prim, attrs) -> ModelEntry`, which transforms on demand and runs the equivalence check for this configuration if `equiv[config_key(attrs)]` is missing. It is cached, and guarded by a per-model lock because runner jobs are threads.
 
 - [ ] **Step 1: Spike — is glbl as a second top usable on Verilator v5.048?** (The step-2 research only exercised 5.032; nothing about multi-top support is assumed from it.) Using the Task 7 toy DUT, whose testbench writes `glbl.GSR_int` and whose DUT reads `glbl.GSR`:
 
@@ -4914,7 +5200,7 @@ Decision:
 - If the log shows `XUT_DONE` and the samples match Task 7's `{S0: 1, S1: 1, S2: 0}`, keep glbl as a second top (spec §6).
 - Otherwise, set `+define+XUT_GLBL_INSTANCE` for Verilator only: the testbench then instantiates `glbl` and UNISIM resolves `glbl.GSR` upward. Record the choice in the runner docstring and in the log entry.
 
-Either way, the choice is fixed in code and pinned by `test_runner_verilator.py::test_glbl_mode`.
+Either way, the choice is fixed in code and pinned by `test_runner_verilator.py::test_glbl_mode`. If the fallback is chosen, pass `+define+XUT_GLBL_INSTANCE` to **every** Verilator build (vector **and** sv): `xut_trace.svh`, which every sv testbench includes, then instantiates `glbl`, so `flop_gsr_tb.svh`'s `glbl.GSR_int` writes keep working (review #12). cocotb tops already instantiate `glbl`. A test runs the TOYFF sv fixture on Verilator with that define set.
 
 - [ ] **Step 2: Write the tests** (marker `container`):
   - The TOYFF vector test passes on `verilator` (use a TOYFF model source containing only the toy model; the manifest marks it `unchanged`).
@@ -4929,9 +5215,9 @@ Either way, the choice is fixed in code and pinned by `test_runner_verilator.py:
 
 Per config:
 
-1. `ensure_model(ctx.model_source, case.prim)`:
+1. `ensure_model(ctx.model_source, case.prim, attrs)`, where `attrs` is the configuration's attributes (the `.xvec` `attr.*` header, or the sv/cocotb `configs` entry):
    - status `unsupported` → `error "verilatorize cannot transform <PRIM>: <reason>"`;
-   - status `transformed` with `equiv != "pass"` → `error "transform-bug: Icarus equivalence <equiv> for <PRIM> blocks Verilator results (spec §6.2)"`.
+   - status `transformed` with `equiv[config_key(attrs)] != "pass"` → `error "transform-bug: Icarus equivalence <status> for <PRIM> <config> blocks Verilator results (spec §6.2)"`.
 2. Prepare exactly as iverilog does (`prepare_vector`).
 3. Build once:
 
@@ -4956,7 +5242,7 @@ For the sv style, the same applies with `-G<NAME>=<value>` for the configuration
 
 Build and run timeouts come from `case.timeout_s` (default 600 s). Verilator builds are slow, so recommend `--jobs 40` or more for full runs (spec machine: 88 CPUs).
 
-In `iverilog.py`, `IverilogVzRunner.run_config` sets `self.lib_first = (vz_dir(ctx.model_source),)` after `ensure_model`. If the primitive's entry is `unsupported`, it returns `skip` "model not transformed: <reason>".
+In `iverilog.py`, `IverilogVzRunner` overrides `lib_first(case, cfg, ctx)`: it calls `ensure_model(ctx.model_source, case.prim, attrs)` and **returns** `(vz_dir(ctx.model_source),)`. The value is used as a local in `run_config` and never stored on `self`, because runner jobs are threads. If the primitive's entry is `unsupported`, `IverilogVzRunner.run_config` returns `skip` "model not transformed: <reason>" before compiling.
 
 - [ ] **Step 4: Run the tests. Commit** with `runners: add verilator runner with paired X-seed runs and iverilog-vz companion`.
 
@@ -4995,7 +5281,8 @@ endmodule
 ```
 
 **Execution.**
-- Generate `build/portability/<ms>/<MODEL>/{smoke.v, iverilog.sh, verilator.sh}` for every model: `unisims/*.v`, plus the `retarget/*.v` files named by catalog entries whose `model.library` is `retarget`.
+- **Configurations** (review #3): each model is elaborated under its default parameters, under every `generate_configs` entry (Task 12), and with each `IS_*_INVERTED` parameter flipped one at a time. A model's row is `yes` only if every configuration compiles and runs; otherwise the reason names the first failing configuration. The smoke top passes the overrides as `#(.NAME(value))`.
+- Generate `build/portability/<ms>/<MODEL>/<config_key>/{smoke.v, iverilog.sh, verilator.sh}` for every model and configuration: `unisims/*.v`, plus the `retarget/*.v` files named by catalog entries whose `model.library` is `retarget`.
 - Generate one `driver.sh`: `ls */iverilog.sh */verilator.sh | xargs -P "$JOBS" -n 1 bash`. Each script writes `<tool>.log` and `<tool>.rc`, then appends its name to `done.txt`.
 - Run `driver.sh` in **one** container. Meanwhile Python polls `done.txt` every 10 s and prints `progress: done=N total=M elapsed_s=E`.
 - The Verilator script uses the transformed copy when the manifest says `transformed`. It builds with the Task 15 flags and runs `./obj/simx`.
@@ -5026,7 +5313,7 @@ Generated by `xut portability` on <UTC time> at <git HEAD>. Container xut-sim:1 
 **Lint rules** (added to `xut lint`):
 - `portability-agreement` (error):
   - a test declares `iverilog: yes` or `verilator: yes` for P while the row for P (in any section) says `no`;
-  - the message quotes the table's reason and tells the author to declare `{unsupported: "<reason>"}`.
+  - the message quotes the table's reason and tells the author to declare `runners.<runner>: "unsupported"` with the reason in `unsupported_reasons.<runner>`.
 - `verilatorize-equiv` (error):
   - a row with `verilatorize = transformed` and `equiv` of `—` (missing), whatever the tests say ("`xut lint` fails if a transformed model has no equivalence stimulus", spec §6.2);
   - a row with `equiv` of `fail` or `error` while any test of that primitive declares `verilator: yes`.
@@ -5295,7 +5582,7 @@ def _mark(f: Finding, expected: tuple[dict, ...]) -> Finding:
 
 - **`results`.** The key is `<level>/<runner>/<flow>` for runners `python`, `xsim`, `iverilog`, `verilator` and `hw`. `iverilog-vz` is not recorded: it feeds `transform-bug` findings only.
   - The value is the worst status over that primitive's tests at that level, with the precedence `fail > error > pass > not-run > unsupported > skip`.
-  - A runner declared unsupported gives `unsupported`.
+  - A runner declared `"unsupported"` gives `unsupported`, and one declared `"no"` gives `n/a` (both are step-1 `RESULT_VALUES`).
   - A skip because the runner is unavailable gives `not-run`.
   - A declared runner with no result gives `not-run`.
 - **`measured.tree_hash`** = `git rev-parse HEAD:tests/<family>/<group>/<PRIM>`. `record` refuses (with a `ClickException` naming the files) when `git status --porcelain -- <that dir>` is not empty, because a tree hash of uncommitted tests would be a lie.
@@ -5590,8 +5877,12 @@ def test_gsr_midrun_and_inferred_edge(prim):
 
 @pytest.mark.parametrize("prim", [p for p in PRIMS if KINDS[p].is_async])
 def test_gsr_versus_async_control_is_undefined(prim):
-    k = KINDS[prim]
-    m = fresh(prim)
+    k, f = KINDS[prim], forced(prim)
+    same = fresh(prim, INIT=f"1'b{f}")
+    same.glbl("GSR", 1)
+    same.set_input(k.ctrl, 1)
+    assert q(same).bits == str(f) and q(same).prov.startswith("doc:")  # both rules agree
+    m = fresh(prim, INIT=f"1'b{1 - f}")
     m.glbl("GSR", 1)
     m.set_input(k.ctrl, 1)
     assert q(m).bits == "-" and q(m).prov.startswith("inferred:")
@@ -5688,9 +5979,9 @@ class SdrFlop(Model):
         return active
 
     def _under_gsr(self) -> Out:
-        if self.CTRL_ASYNC and self._ctrl_active():
-            return Out("-", _GSR_VS_CTRL)
-        self._hit("gsr_init")
+        if self.CTRL_ASYNC and self._ctrl_active() and self.init != self.CTRL_VALUE:
+            return Out("-", _GSR_VS_CTRL)  # the two documented behaviours disagree
+        self._hit("gsr_init")  # (when they agree, both documented rules give INIT)
         return self._doc(self.init)
 
     def _force(self) -> None:
@@ -5914,8 +6205,9 @@ def l0_smoke(ctx, k):
 
 
 def l1_capture(ctx, k):
-    for init in (0, 1):
-        f = _init_only(ctx, k, init)
+    # "default" sets no attribute at all: the one vector config where the model's
+    # documented defaults meet the UNISIM defaults (Review Focus 2).
+    for f in [Flop(ctx, k, "default", {})] + [_init_only(ctx, k, init) for init in (0, 1)]:
         for d in (1, 0, 1, 1, 0, 0):
             f.data(d=d, ce=1)
             f.clock()
@@ -6117,21 +6409,27 @@ TITLE = {"FDRE": "D flip-flop with clock enable and synchronous reset",
          "FDCE": "D flip-flop with clock enable and asynchronous clear",
          "FDPE": "D flip-flop with clock enable and asynchronous preset"}
 ALL_FLOWS = ["rtl", "vivado", "yosys", "openxc7", "vpr"]
-HW_GSR = {"unsupported": "GSR pulses need the GSR-immune harness state of spec §7.2"}
-SV_PY = {"unsupported": "self-checking sv testbench; there is no golden-model replay"}
-SV_HW = {"unsupported": "sv testbenches are simulation-only (spec §4.3)"}
-CO_XS = {"unsupported": "cocotb has no xsim backend (spec §4.3)"}
-CO_HW = {"unsupported": "cocotb runs in simulation; failing seeds are frozen into vector tests"}
-CO_PY = {"unsupported": "the cocotb test compares against the golden model itself"}
+RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
+# (value, reason) pairs; values are the step-1 schema strings "no" | "unsupported".
+HW_GSR = ("unsupported", "GSR pulses need the GSR-immune harness state of spec §7.2")
+SV_PY = ("no", "self-checking sv testbench; there is no golden-model replay")
+SV_HW = ("unsupported", "sv testbenches are simulation-only (spec §4.3)")
+X_VL = ("unsupported", "2-state simulator: x stimulus is randomised per X seed (spec §5.6), so "
+        "the undocumented x checkpoints cannot be compared")
+CO_XS = ("unsupported", "cocotb has no xsim backend (spec §4.3)")
+CO_HW = ("unsupported", "cocotb runs in simulation; failing seeds are frozen into vector tests")
+CO_PY = ("no", "the cocotb test compares against the golden model itself")
 
 
-def hw_inv_d(ap: int) -> dict:
-    return {"unsupported": f"UG953 p{ap}: IS_D_INVERTED must be 0 unless the flop is an I/O "
-                           "register; the fabric harness uses SLICE flops"}
+def hw_inv_d(ap: int) -> tuple[str, str]:
+    return ("unsupported", f"UG953 p{ap}: IS_D_INVERTED must be 0 unless the flop is an I/O "
+                           "register; the fabric harness uses SLICE flops")
 
 
-def _runners(**over) -> dict:
-    return {"python": True, "xsim": True, "iverilog": True, "verilator": True, "hw": True, **over}
+def _runners(**over: tuple[str, str]) -> tuple[dict, dict]:
+    """(runners, unsupported_reasons) in the step-1 schema's string form."""
+    runners = {r: over[r][0] if r in over else "yes" for r in RUNNERS}
+    return runners, {r: reason for r, (_, reason) in over.items()}
 
 
 def _claims(k: FlopKind, *ns: int) -> list[str]:
@@ -6164,10 +6462,13 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
 
     def add(level, suffix, style, source, exercises, why, *, sampling=None, runners=None,
             flows=None, gaps=(), configs=None):
+        declared, reasons = runners or _runners()
         e = {"id": f"7series.{k.prim}.{level}.{suffix}", "level": level, "style": style,
              "source": source, "exercises": exercises, "attr_sampling": sampling or {},
-             "runners": runners or _runners(), "flows": flows or ALL_FLOWS,
+             "runners": declared, "flows": flows or ALL_FLOWS,
              "related": _related(k, level, suffix), "gaps": list(gaps)}
+        if reasons:
+            e["unsupported_reasons"] = reasons
         if configs:
             e["configs"] = configs
         out.append((e, why))
@@ -6182,7 +6483,8 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
               f"(UG953 p{ap}), so no illegal value exists"])
     add("L1", "capture", "vector", "vectors/gen.py:l1_capture",
         _ports(k, "C", "CE", "D", "Q") + _claims(k, 1),
-        "Pins the basic D-to-Q transfer on the active edge, for both INIT values.",
+        "Pins the basic D-to-Q transfer on the active edge, for both INIT values and for "
+        "the all-defaults configuration (model defaults vs UNISIM defaults).",
         sampling=init_s)
     add("L1", "ce_hold", "vector", "vectors/gen.py:l1_ce_hold",
         _ports(k, "C", "CE", "D", "Q") + _claims(k, 2),
@@ -6210,15 +6512,15 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         "in every simulator and, later, every flow's INIT mapping.",
         sampling=init_s, runners=_runners(hw=HW_GSR))
     add("L1", "is_c_inverted", "vector", "vectors/gen.py:l1_is_c_inverted",
-        _ports(k, "C", "Q") + _attrs(["IS_C_INVERTED"]) + _claims(k, 5),
+        _ports(k, "C", "Q") + ["attr:IS_C_INVERTED=1'b1"] + _claims(k, 5),
         "Samples after both edges show capture only on the falling edge.",
         sampling={"INIT": [0, 1], "IS_C_INVERTED": [1]})
     add("L1", f"is_{lc}_inverted", "vector", f"vectors/gen.py:l1_is_{lc}_inverted",
-        _ports(k, c, "Q") + _attrs([f"IS_{c}_INVERTED"]) + _claims(k, 6),
+        _ports(k, c, "Q") + [f"attr:IS_{c}_INVERTED=1'b1"] + _claims(k, 6),
         f"{c} held Low acts as active; a flow that drops the inversion fails at once.",
         sampling={"INIT": [0, 1], f"IS_{c}_INVERTED": [1]})
     add("L1", "is_d_inverted", "vector", "vectors/gen.py:l1_is_d_inverted",
-        _ports(k, "D", "Q") + _attrs(["IS_D_INVERTED"]) + _claims(k, 7),
+        _ports(k, "D", "Q") + ["attr:IS_D_INVERTED=1'b1"] + _claims(k, 7),
         "Q takes the complement of D.",
         sampling={"INIT": [0, 1], "IS_D_INVERTED": [1]}, runners=_runners(hw=hw_inv_d(ap)),
         gaps=[f"claim:{k.prim}.C8 — IS_D_INVERTED=1 is only legal on I/O registers; a "
@@ -6244,8 +6546,8 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         _ports(k, "CE", "D", c, "Q") + _claims(k, 2, 3),
         "X on D, CE or the control: the documented cases (CE Low holds; the control "
         "overrides) are checked; the undocumented ones are recorded for cross-simulator "
-        "comparison.",
-        runners=_runners(python=SV_PY, hw=SV_HW), flows=["rtl"],
+        "comparison. Not run on Verilator: see unsupported_reasons (plan ambiguity 8).",
+        runners=_runners(python=SV_PY, verilator=X_VL, hw=SV_HW), flows=["rtl"],
         gaps=["UG953 does not define X behaviour; X on D with CE High, X on CE and X on the "
               "control are checkpoints only"],
         configs=[{"cfg": "default", "attrs": {}}])
@@ -6271,11 +6573,14 @@ def render_test_yaml(k: FlopKind) -> str:
     doc = {"primitive": k.prim, "family": "7series", "work_unit": "flops",
            "doc_refs": [{"guide": "UG953", "version": "2026.1", "section": k.prim, "page": p}],
            "tests": [e for e, _ in tests_for(k)]}
+    # safe_dump quotes the strings "yes"/"no" ('yes'), so they reload as strings, as the
+    # step-1 schema requires; test_flop_tests.py validates the output against that schema.
     return HEADER + yaml.safe_dump(doc, sort_keys=False, width=100, allow_unicode=True)
 
 
-def _cell(v) -> str:
-    return "yes" if v is True else f"unsupported: {v['unsupported']}"
+def _cell(e: dict, runner: str) -> str:
+    v = e["runners"][runner]
+    return v if v == "yes" else f"{v}: {e['unsupported_reasons'][runner]}"
 
 
 def render_readme(k: FlopKind, root: Path = ROOT) -> str:
@@ -6313,9 +6618,7 @@ def render_readme(k: FlopKind, root: Path = ROOT) -> str:
     lines += ["", "## Runner support and expected divergences", "",
               "| Test | python | xsim | iverilog | verilator | hw |", "|---|---|---|---|---|---|"]
     for e, _ in tests:
-        r = e["runners"]
-        lines.append(f"| `{e['id']}` | " + " | ".join(_cell(r[x]) for x in
-                     ("python", "xsim", "iverilog", "verilator", "hw")) + " |")
+        lines.append(f"| `{e['id']}` | " + " | ".join(_cell(e, x) for x in RUNNERS) + " |")
     lines += ["", "Findings:" if findings else "Findings: none recorded.", ""]
     lines += [f"- [{f.stem}](../../../../findings/{f.name})" for f in findings]
     lines += ["", "## Related tests", ""]
@@ -6369,6 +6672,22 @@ def test_every_generator_exists(prim):
     for t in yaml.safe_load((ROOT / "tests/7series/register" / prim / "test.yaml").read_text())["tests"]:
         if t["style"] == "vector":
             assert t["source"].split(":", 1)[1] in names
+
+
+@pytest.mark.parametrize("prim", PRESENT)
+def test_validates_against_step1_schema(prim):
+    import json
+
+    import jsonschema
+    import yaml
+
+    schema = json.loads((ROOT / "tools/xut/schemas/test.schema.json").read_text())
+    doc = yaml.safe_load((ROOT / "tests/7series/register" / prim / "test.yaml").read_text())
+    jsonschema.validate(doc, schema)
+    for t in doc["tests"]:
+        assert set(t["runners"].values()) <= {"yes", "no", "unsupported"}
+        need = {r for r, v in t["runners"].items() if v != "yes"}
+        assert need == set(t.get("unsupported_reasons", {})), t["id"]
 ```
 
 - [ ] **Step 4: Generate FDRE's files and inspect them**
@@ -6606,7 +6925,9 @@ endmodule
 uv run xut run 7series.FDRE.L1.sv_gsr_midsim 7series.FDRE.L1.sv_x_inputs --runner iverilog --runner xsim --runner verilator --jobs 8 > .cache/run-fdre-sv.log 2>&1; tail -n 20 .cache/run-fdre-sv.log
 ```
 
-Expected: `pass` on `iverilog`, `xsim`, `verilator` and `iverilog-vz`. Every `trace.xtr` has the checkpoint labels `P0`, `P1.gsr` … `P2.after` and `X1` … `X5`.
+Expected:
+- `sv_gsr_midsim`: `pass` on `iverilog`, `xsim`, `verilator` and `iverilog-vz`, with checkpoint labels `P0`, `P1.gsr` … `P2.after`.
+- `sv_x_inputs`: `pass` on `iverilog` and `xsim`, with labels `X1` … `X5`; `skip` on `verilator` and `iverilog-vz` with the declared reason. On a 2-state simulator the `1'bx` stimulus is randomised per X seed, so the undocumented checkpoints would differ by construction (spec §5.6). That is a property of the test, not an `x-dependence` of the model.
 
 A `fail` means one of two things:
 - **A documented behaviour** (C1–C4) fails on a UNISIM simulator. That is a `doc-vs-model`-class finding: write it up in Task 24.
@@ -6727,7 +7048,7 @@ Expected:
 - Create: `log/<ts>-unit-7series-flops-fdre-pilot.md`
 
 - [ ] **Step 1: Full run.**
-  - **Estimate:** about 13 tests; vector configurations total 16 + 2 + 2 + 4 + 2 + 2 + 2 + 2 + 16 + 16 = 64, plus 2 sv and 4 cocotb. Verilator builds dominate: about 70 × 40 s ≈ 47 CPU-minutes. At `--jobs 40` that is about 2–4 minutes, and xsim adds about 64 × 15 s ÷ 40 ≈ 0.5 min.
+  - **Estimate:** about 13 tests; vector configurations total 16 + 3 + 2 + 4 + 2 + 2 + 2 + 2 + 16 + 16 = 65, plus 2 sv and 4 cocotb. Verilator builds dominate: about 70 × 40 s ≈ 47 CPU-minutes. At `--jobs 40` that is about 2–4 minutes, and xsim adds about 65 × 15 s ÷ 40 ≈ 0.5 min.
   - **Cadence:** expected under 10 minutes, so report every 60 s with the remaining time and the finish clock-time, from the `progress:` lines.
 
 ```bash
@@ -6750,7 +7071,7 @@ Expected in the best case: `exit=0` and no findings. For each finding reported:
 3. Otherwise complete the finding file's **Analysis** section. For a `doc-gap`, the model's `inferred:` choice was not what UNISIM does: keep the finding open. If you conclude UG953 is silent, change that behaviour to `-` (undefined) in the model, keeping the provenance tag, and add an `expected_divergence` entry. Never make the model copy UNISIM.
 4. Add `{finding: findings/FDRE-<slug>.md, cls: <class>, runners: [...]}` to the test in `flop_tests.py`, regenerate (`flop_tests.py FDRE`), and re-run crosscheck until `exit=0`.
 
-For a `transform-bug` or `x-dependence`: record it and declare `verilator: {unsupported: "<finding link>"}` in `flop_tests.py` for the affected tests. That is the spec's "blocks the Verilator results for that model". Never delete a check.
+For a `transform-bug` or `x-dependence`: record it and declare `verilator` `"unsupported"`, with the finding link as its `unsupported_reasons` entry, in `flop_tests.py` for the affected tests. That is the spec's "blocks the Verilator results for that model". Never delete a check.
 
 - [ ] **Step 3: Commit the tests, then record status** (`record` requires a clean test dir):
 
@@ -6864,7 +7185,7 @@ async def fdse_random(dut):
 
 Then generate `test.yaml` and `README.md`: `uv run python tests/7series/register/_shared/flops/flop_tests.py FDSE > .cache/flop-tests.log 2>&1; cat .cache/flop-tests.log`. Also re-run it for `FDRE`, because FDRE's `related` targets now partly exist; this changes nothing in its content.
 
-- [ ] **Step 4: Run, crosscheck and record.** The estimate is the same as FDRE's: 64 vector configurations, under 10 minutes at `--jobs 40`, so report every 60 s from the `progress:` lines.
+- [ ] **Step 4: Run, crosscheck and record.** The estimate is the same as FDRE's: 65 vector configurations, under 10 minutes at `--jobs 40`, so report every 60 s from the `progress:` lines.
 
 ```bash
 uv run xut run '7series.FDSE.*' --jobs 40 > .cache/run-fdse.log 2>&1
@@ -7064,7 +7385,7 @@ Expected: no `error:` lines and `hw_renderable: yes`.
 
 - [ ] **Step 5: Run, crosscheck and record both primitives**
 
-- **Estimate:** 2 × (64 vector configurations + 8 for `_async`/`_recovery`) ≈ 144 Verilator builds ≈ 96 CPU-minutes. At `--jobs 40` that is about 3–6 minutes.
+- **Estimate:** 2 × (65 vector configurations + 8 for `_async`/`_recovery`) ≈ 144 Verilator builds ≈ 96 CPU-minutes. At `--jobs 40` that is about 3–6 minutes.
 - **Cadence:** report every 60 s.
 
 ```bash
@@ -7158,7 +7479,9 @@ git commit -m "status: regenerate" -m "Co-Authored-By: Claude Opus 5.5 (1M conte
   - the shadow-register transform, with per-expression width-matched override nets;
   - loud failure with the model named;
   - `build/verilatorized/` only;
-  - fixtures for all ten listed cases plus the RST|PWRDWN cone and seven refusal cases;
+  - fixtures for all ten listed cases, plus the RST|PWRDWN cone, gate-primitive and sub-instance cones, both generate arms, packed ranges, and ten refusal cases;
+  - analysis over every generate branch, elaboration-checked per generate configuration, and equivalence per used configuration;
+  - the guarded `deassign` of spec rev 3.1;
   - a generated, mandatory equivalence stimulus: independent, coincident, pairwise and async-interaction pulses;
   - Icarus original-vs-transformed runs, with a mutation test proving the check can fail;
   - `iverilog-vz` on every verilator test;
@@ -7193,4 +7516,8 @@ git commit -m "status: regenerate" -m "Co-Authored-By: Claude Opus 5.5 (1M conte
 4. **Trace readability and provenance.** Traces are written as `<label>  <port>=<bits>` (`_` every 4 bits), with golden provenance after `|`.
 5. **Shared unit test code.** It lives in `tests/<family>/<group>/_shared/<unit>/**`, a new owned path (Task 18), so the four flops share recipes, testbenches and the metadata generator.
 6. **Where glbl lives.** glbl stays a second top level (spec §6). The testbench writes `glbl.*_int` for the glbl channel. A Verilator spike (Task 15, Step 1) decides the fallback: an in-testbench glbl instance, which UNISIM resolves by upward name lookup.
-7. **Portability scope.** The table covers every `unisims/*.v` plus the `retarget/` models that are in the catalog. xsim is not in the smoke run, because it uses Vivado's precompiled library.
+7. **Portability scope.** The table covers every `unisims/*.v` plus the `retarget/` models that are in the catalog, each under its default, generate-selecting and `IS_*_INVERTED` configurations. xsim is not in the smoke run, because it uses Vivado's precompiled library.
+8. **Runner declarations** (controller ruling on PR #3 review item 1). `runners` values stay step 1's strings `"yes"|"no"|"unsupported"`, and reasons go in a separate `unsupported_reasons` map. The schema amendment is part of Task 8 (`infra/sim-core`).
+9. **`sv_x_inputs` on Verilator** (review item 11). Declared `"unsupported"` with a reason. A 2-state simulator randomises the `1'bx` stimulus per X seed (spec §5.6), so the undocumented checkpoints would differ by construction. That is a property of the stimulus, not a model `x-dependence` finding (§8). Its `iverilog-vz` companion is skipped with it, because it follows the Verilator declaration.
+10. **Trigger tracing and generate branches** (controller rulings on review items 2 and 3). Tracing crosses gate primitives, continuous assigns and same-file sub-instances (over-approximated: outputs depend on all inputs). Any unresolvable driver makes the model `unsupported`. Analysis and rewrite cover every generate branch, and equivalence runs for the default plus every attribute configuration a test uses.
+11. **Guarded `deassign`** (review item 4). `if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end`. Spec §6.2 step 2 is amended in rev 3.1.
