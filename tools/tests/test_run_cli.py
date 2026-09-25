@@ -86,10 +86,11 @@ def test_selectors_and_runner_default(repo):
     assert "7series.TOYFF.L2.c" in r.output and "pass" in r.output
 
 
-def test_nothing_selected_is_exit_0_with_message(repo):
-    r = _run("NOSUCH", "--level", "L3")
+def test_filters_leaving_nothing_is_exit_0_with_message(repo):
+    """The selectors matched tests; --level/--style filtered them all out: exit 0."""
+    r = _run("TOYFF", "--level", "L3")
     assert r.exit_code == 0, r.output
-    assert "no tests selected" in r.output and "NOSUCH" in r.output and "L3" in r.output
+    assert "no tests selected" in r.output and "TOYFF" in r.output and "L3" in r.output
     assert repo == []
 
 
@@ -140,14 +141,35 @@ def test_end_to_end_python_on_fixture(tmp_path, monkeypatch):
     assert "progress: done=4 total=4" in r.output
     res = tmp_path / "build/rtl/python/unisim-test/7series.TOYFF.L1.capture/result.json"
     assert res.is_file()
-    assert (tmp_path / "build/rtl/summary.json").is_file()
+    assert (tmp_path / "build/rtl/summary-unisim-test.json").is_file()
+    # the declared-unsupported skips say why (one line per distinct reason)
+    assert "skip: declared unsupported: sv testbench (1 result)" in r.output
 
 
-def test_selector_matching_nothing_warns(repo):
-    r = CliRunner().invoke(main, ["run", "TOYFF", "NOSUCH"])
+@pytest.mark.parametrize("args", [["NOSUCH"], ["TOYFF", "NOSUCH"], ["NOSUCH", "--level", "L3"]])
+def test_selector_matching_nothing_is_an_error(repo, args):
+    """PR B gate (a) N8a: a typo in an explicit selector must not exit 0 in CI."""
+    r = _run(*args)
+    assert r.exit_code != 0, r.output
+    assert "no tests matched selector(s) ['NOSUCH']" in r.output and "Traceback" not in r.output
+    assert repo == []
+
+
+def test_skip_reasons_are_printed(repo, monkeypatch):
+    """PR B gate (a) N8b: an all-skip run says why, one line per distinct reason."""
+
+    def skipping(cases, runners, ctx):
+        return [
+            RunResult(c.id, r, ctx.flow, c.style, "skip", f"runner unavailable: no {r}")
+            for c in cases
+            for r in runners
+        ]
+
+    monkeypatch.setattr("xut.run.run_tests", skipping)
+    r = _run("TOYFF", "--runner", "xsim", "--runner", "iverilog")
     assert r.exit_code == 0, r.output
-    assert "warning: selector 'NOSUCH' matched no test" in r.output
-    assert "warning: selector 'TOYFF'" not in r.output
+    assert "skip: runner unavailable: no xsim (4 results)" in r.output
+    assert "skip: runner unavailable: no iverilog (4 results)" in r.output
 
 
 def test_keyboard_interrupt_exits_130(repo, monkeypatch):
