@@ -693,6 +693,22 @@ def test_cli_exit_codes_never_collide(repo):
 # --- end to end: xut run, then xut crosscheck, on the TOYFF fixture ------------------------
 
 
+def _committed(root: Path) -> None:
+    """Make ``root`` a committed git checkout (build/ ignored), so ``xut run`` stamps a
+    clean tree hash: crosscheck never compares unstamped results (gate review (a) #1)."""
+    import subprocess
+
+    (root / ".gitignore").write_text("build/\n")
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "t"],
+        ["add", "-A"],
+        ["commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
 def _demo(capsys, title: str, output: str) -> None:
     with capsys.disabled():
         print(f"\n[T17 demo: {title}]\n{output}")
@@ -715,6 +731,7 @@ def test_cli_run_then_crosscheck_on_the_toyff_fixture(work, toy, monkeypatch, ca
     bad = make_model_source(work / "bad")
     v = bad.unisims / "TOYFF.v"
     v.write_text(v.read_text().replace("assign Q = q;", "assign Q = ~q;"))
+    _committed(work)
     good = dataclasses.replace(good, name="toyff-good")
     bad = dataclasses.replace(bad, name="toyff-bad")
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
@@ -791,6 +808,8 @@ def test_cli_run_python_iverilog_xsim_then_crosscheck(work, toy, monkeypatch, ca
     class ToyXsim(XsimRunner):
         def __init__(self) -> None:
             super().__init__(extra_files=[toyff])
+
+    _committed(work)
 
     monkeypatch.setitem(RUNNERS, "xsim", ToyXsim)
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: work)
