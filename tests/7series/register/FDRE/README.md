@@ -10,7 +10,7 @@ FDRE is a single D flip-flop with clock enable and a synchronous reset input `R`
 
 | ID | Level | Style | Exercises |
 |---|---|---|---|
-| `7series.FDRE.L0.smoke` | L0 | vector | port:C, port:CE, port:D, port:Q, port:R, port:C:edge, port:CE:1, port:D:1, port:R:0, port:R:1, attr:INIT=1'b0, attr:INIT=1'b1, attr:IS_C_INVERTED=1'b0, attr:IS_C_INVERTED=1'b1, attr:IS_D_INVERTED=1'b0, attr:IS_D_INVERTED=1'b1, attr:IS_R_INVERTED=1'b0, attr:IS_R_INVERTED=1'b1, claim:FDRE.C1, claim:FDRE.C4 |
+| `7series.FDRE.L0.smoke` | L0 | vector | port:C, port:CE, port:D, port:Q, port:R, port:C:edge, port:CE:1, port:D:1, attr:INIT=1'b0, attr:INIT=1'b1, attr:IS_C_INVERTED=1'b0, attr:IS_C_INVERTED=1'b1, attr:IS_D_INVERTED=1'b0, attr:IS_D_INVERTED=1'b1, attr:IS_R_INVERTED=1'b0, attr:IS_R_INVERTED=1'b1, claim:FDRE.C1, claim:FDRE.C4 |
 | `7series.FDRE.L0.illegal_init` | L0 | vector |  |
 | `7series.FDRE.L1.capture` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:1, port:D:0, port:D:1, claim:FDRE.C1 |
 | `7series.FDRE.L1.ce_hold` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:0, port:CE:1, port:D:0, port:D:1, claim:FDRE.C2 |
