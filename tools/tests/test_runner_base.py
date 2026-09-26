@@ -269,6 +269,11 @@ def test_python_runner_on_toyff(ctx, toy):
     assert json.loads((d / "configs.json").read_text()) == ["init0", "init1"]
     data = _result(d)
     assert "claim:TOYFF.C1" in data["bins_reached"]
+    # per configuration too (ruling S23: coverage is credited per configuration)
+    per_cfg = {c["cfg"]: c["bins_reached"] for c in data["configs"]}
+    assert set(per_cfg) == {"init0", "init1"} and all(per_cfg.values())
+    assert sorted(set().union(*per_cfg.values())) == data["bins_reached"]
+    assert "attr:INIT=1'b0" in per_cfg["init0"] and "attr:INIT=1'b0" not in per_cfg["init1"]
     assert data["tools"]["python"]
     c0 = data["configs"][0]
     stim = (d / "cfg-init0/stim.xvec").read_bytes()
