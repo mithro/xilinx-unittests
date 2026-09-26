@@ -463,14 +463,14 @@ def test_check_declared_runner_without_result_is_not_run(repo):
     assert rep.verdict == "agree" and rep.exit_code == 0
 
 
-def test_check_error_result_is_an_issue_exit_2(repo):
+def test_check_error_result_is_an_issue_exit_4(repo):
     _test_yaml(repo)
     _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
     _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
     _result(repo, "rtl", "xsim", "ms1", TID, status="error", reason="compile failed")
     rep = xc.check(repo, _case(repo))
     assert rep.issues == ["ms1 rtl/xsim: error: compile failed"]
-    assert rep.verdict == "incomplete" and rep.exit_code == 2
+    assert rep.verdict == "incomplete" and rep.exit_code == 4
 
 
 def test_check_config_error_inside_a_pass_is_an_issue(repo):
@@ -500,7 +500,7 @@ def test_check_unexplained_fail_is_an_issue(repo):
     _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
     _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0), status="fail", reason="model error")
     rep = xc.check(repo, _case(repo))
-    assert rep.findings == [] and rep.exit_code == 2
+    assert rep.findings == [] and rep.exit_code == 4
     assert rep.issues == ["ms1 rtl/iverilog: fail not explained by any disagreement: model error"]
 
 
@@ -614,10 +614,10 @@ def _diverging(repo, expected_divergence=()):
     _result(repo, "rtl", "xsim", "ms1", TID, trace=T(Q1), status="fail", reason="1 mismatch")
 
 
-def test_cli_unlisted_finding_exits_1_and_writes_json(repo):
+def test_cli_unlisted_finding_exits_3_and_writes_json(repo):
     _diverging(repo)
     r = _xc("TOYFF")
-    assert r.exit_code == 1, r.output
+    assert r.exit_code == 3, r.output
     assert "doc-gap" in r.output and "| rtl | pass | fail | fail |" in r.output
     data = json.loads((repo / f"build/crosscheck/{TID}.json").read_text())
     assert data["format"] == "xut-crosscheck 1" and data["verdict"] == "divergence"
@@ -649,7 +649,7 @@ def test_cli_known_divergence_exits_0_still_reported(repo):
 def test_cli_write_findings_writes_a_stub_once(repo):
     _diverging(repo)
     r = _xc("TOYFF", "--write-findings")
-    assert r.exit_code == 1
+    assert r.exit_code == 3
     p = repo / "findings/TOYFF-doc-gap-L1-capture.md"
     assert p.is_file() and f"wrote {p.relative_to(repo)}" in r.output
     r = _xc("TOYFF", "--write-findings")
@@ -665,10 +665,10 @@ def test_cli_clean_exit_0(repo):
     assert "agree" in r.output
 
 
-def test_cli_nothing_run_exits_2(repo):
+def test_cli_nothing_run_exits_4(repo):
     _test_yaml(repo)
     r = _xc("TOYFF")
-    assert r.exit_code == 2, r.output
+    assert r.exit_code == 4, r.output
     assert "not-run" in r.output
 
 
@@ -676,6 +676,18 @@ def test_cli_unmatched_selector_is_clean_error(repo):
     _test_yaml(repo)
     r = _xc("NOSUCH")
     assert r.exit_code == 1 and "NOSUCH" in r.output and "Traceback" not in r.output
+
+
+def test_cli_exit_codes_never_collide(repo):
+    """Ruling S23: 0 clean, 3 an unlisted finding (wins over 4), 4 incomplete; 1 stays
+    a user error (XutError), 2 a click usage error."""
+    assert _xc("--no-such-flag").exit_code == 2
+    _diverging(repo)  # an unlisted doc-gap ...
+    _result(repo, "rtl", "verilator", "ms1", TID, status="error", reason="boom")  # ... + issue
+    r = _xc("TOYFF")
+    assert r.exit_code == 3 and "issue: ms1 rtl/verilator: error: boom" in r.output
+    help_text = _xc("--help").output
+    assert "3  a finding not listed" in help_text and "4  incomplete" in help_text
 
 
 # --- end to end: xut run, then xut crosscheck, on the TOYFF fixture ------------------------
@@ -724,7 +736,7 @@ def test_cli_run_then_crosscheck_on_the_toyff_fixture(work, toy, monkeypatch, ca
     assert r.exit_code == 1, r.output  # iverilog fails against the golden model
     r = CliRunner().invoke(main, ["crosscheck", TID, "--write-findings"])
     _demo(capsys, "crosscheck with toyff-bad also run", r.output)
-    assert r.exit_code == 1, r.output
+    assert r.exit_code == 3, r.output
     cap = json.loads((work / f"build/crosscheck/{TID}.json").read_text())
     assert set(cap["model_sources"]) == {"toyff-good", "toyff-bad"}
     (f,) = cap["findings"]  # none from comparing good with bad
@@ -861,7 +873,7 @@ def test_check_pass_without_trace_is_an_issue(repo):
     _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
     _result(repo, "rtl", "iverilog", "ms1", TID, configs=[{"cfg": "c", "status": "pass"}])
     rep = xc.check(repo, _case(repo))
-    assert rep.exit_code == 2 and rep.verdict == "incomplete"
+    assert rep.exit_code == 4 and rep.verdict == "incomplete"
     assert "wrote no trace.xtr" in rep.issues[0]
 
 
@@ -907,7 +919,7 @@ def test_probe_b_golden_config_absent_or_skipped_is_visible(repo):
         "ms1 rtl/iverilog: cfg b, run by the golden model, is absent from its result"
     ]
     assert rep.coverage_gaps == ["ms1 rtl/xsim: cfg b skipped: excluded: hw only"]
-    assert rep.exit_code == 2
+    assert rep.exit_code == 4
     data = rep.to_dict()
     assert data["coverage_gaps"] == rep.coverage_gaps and data["issues"] == rep.issues
 
@@ -1004,11 +1016,11 @@ def test_cli_write_findings_recorded_for_a_second_model_source(repo):
     assert r.output.count(f"exists: {rel}") == 2
 
 
-def test_cli_all_uncompared_exits_2(repo):
+def test_cli_all_uncompared_exits_4(repo):
     _test_yaml(repo)
     _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
     r = _xc("TOYFF")
-    assert r.exit_code == 2, r.output
+    assert r.exit_code == 4, r.output
     assert "uncompared" in r.output
 
 
@@ -1033,7 +1045,7 @@ def test_cli_model_source_restricts_the_report(repo):
     assert r.exit_code == 0, r.output
     data = json.loads((repo / f"build/crosscheck/{TID}.json").read_text())
     assert list(data["model_sources"]) == ["ms2"] and data["findings"] == []
-    assert _xc("TOYFF").exit_code == 1  # both sources: ms1's finding is back
+    assert _xc("TOYFF").exit_code == 3  # both sources: ms1's finding is back
 
 
 def test_cli_model_source_must_be_known(repo):
