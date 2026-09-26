@@ -17,7 +17,7 @@ Task 20 re-review).
     data output (Q) High"; logic-table row PRE=1 gives Q=1) and p373 (INIT default
     `1'b1`). So `CTRL=PRE`, `CTRL_VALUE=1`, `CTRL_ASYNC=True`, `INIT_DEFAULT=1`,
     `PAGE=372`, `ATTR_PAGE=373`.
-  - Doc note: on p373/p374 the FDPE VHDL and Verilog instantiation templates show
+  - Doc note: on p374 the FDPE VHDL and Verilog instantiation templates show
     `INIT => '0'` / `.INIT(1'b0)`, which contradicts the attribute-table default
     `1'b1`. The model follows the attribute table. The `L1.capture` config
     `default` (no INIT set) passes on iverilog and xsim, so UNISIM's default agrees
@@ -142,3 +142,24 @@ asserts the control while GSR is high. Otherwise crosscheck will never see it.
   - Decide how to put the GSR-vs-control case into a committed test, and file the
     doc-gap.
   - Consider the FDPE template-vs-table INIT inconsistency as a doc note.
+
+## Fix round 1 (review minors 1-4, ruling S44)
+
+- Commit `ed1117a`, model and tests:
+  - Under S44, the S30 branch credits no claim.
+  - `power_on()` gives INIT and C4 without evaluating the undriven control.
+  - The power-on test now runs over IS_<ctrl>_INVERTED × INIT.
+  - The S30 test now checks exactly {C4}, then no hit, then {C3} (plus C6 when
+    inverted).
+- Claim-hit changes, from replaying every real vector of all four flops:
+  - no expected-trace change;
+  - FDCE/FDPE `L0.smoke` loses a false C3, which was not in its exercises;
+  - FDRE/FDSE unchanged.
+- The page citation above is corrected: the template INIT lines are on p374, and the
+  table default on p373.
+- Results:
+  - model tests: 134 passed, 2 skipped;
+  - shared flops suite: 152 passed, 2 skipped, reach guard passes for all four flops;
+  - python runs of all four flops: 48 pass, 12 declared skips;
+  - `xut lint` and `xut lint --branch`: 0 errors, 0 warnings;
+  - fast suite: 1428 passed, 2 skipped.
