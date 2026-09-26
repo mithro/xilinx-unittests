@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Constrained-random cocotb session shared by the flops unit (spec §4.3 cocotb style).
 
-Runs inside the xut-sim container. Each step drives random inputs, applies the same
-events to the golden model, and compares Q after every clock edge and every async
-control change. Every comparison point is written to trace.xtr. When a seed fails,
-freeze it: copy the session into vectors/frozen/<seed>.xvec as a new vector test.
+Runs inside the xut-sim container. One check right after GSR release compares the
+power-on INIT value (claim:*.C4/gsr_init), then each step drives random inputs, applies
+the same events to the golden model, and compares Q after every clock edge and every
+async control change. Every comparison point is written to trace.xtr: 2 * cycles + 1
+samples for a synchronous-control kind (FDRE/FDSE). When a seed fails, freeze it: copy
+the session into vectors/frozen/<seed>.xvec as a new vector test.
 """
 
 import os
@@ -41,9 +43,17 @@ async def random_session(dut, prim: str, cycles: int = 2000) -> None:
         exp = model.outputs()["Q"]
         got = x.get("Q")
         x.sample(f"S{n}", {"Q": exp.prov})
+        # The flops model never emits a don't-care ("-") bit, but this session is shared
+        # by later primitives whose models may (spec §5.3); keep the guard so a future
+        # don't-care is never reported as a mismatch here.
         if exp.bits != "-" and got != exp.bits:
             errors.append(f"S{n}: Q={got}, model {exp.bits} ({exp.prov})")
         n += 1
+
+    # claim:*.C4 (gsr_init): compare the power-on/GSR-release INIT value before the main
+    # loop's first draw can overwrite it (review Task 23 round 1) -- without this, the
+    # claim was exercised only when the first draw happened to leave Q untouched.
+    check()
 
     for _ in range(cycles):
         if k.is_async and rng.random() < 0.1:
