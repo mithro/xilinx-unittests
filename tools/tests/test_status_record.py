@@ -92,15 +92,20 @@ def _result(
     reason: str | None = None,
     bins=None,
     style: str = "vector",
-    configs=(),
+    configs=None,
     tree_hash: str | None = "current",
     dirty: bool | None = False,
     tools: dict | None = None,
 ) -> None:
     """A result.json as `xut run` writes it, stamped with the CURRENT tree hash (or
-    ``tree_hash``/``dirty`` as given)."""
+    ``tree_hash``/``dirty`` as given). A pass or fail runs configuration ``a`` unless
+    ``configs`` (``[(cfg, status)]``) says otherwise: a result that ran no configuration
+    is no evidence (review (b) #2). ``bins`` is the python run's reach, per passing
+    configuration too."""
     d = root / "build/rtl" / runner / ms / tid
     d.mkdir(parents=True, exist_ok=True)
+    if configs is None:
+        configs = [("a", status)] if status in ("pass", "fail") else []
     if tree_hash == "current":
         tree_hash = tree_state(root, tree_paths("7series", "register", "FDRE", "flops")).tree_hash
     RunResult(
@@ -114,7 +119,15 @@ def _result(
         tools=tools if tools is not None else {"iverilog": "12.0"} if runner == "iverilog" else {},
         container={"image": "xut-sim:1", "digest": "sha256:abc"} if runner == "iverilog" else None,
         bins_reached=bins,
-        configs=[ConfigResult(c, st, None if st == "pass" else "r") for c, st in configs],
+        configs=[
+            ConfigResult(
+                c,
+                st,
+                None if st == "pass" else "r",
+                bins_reached=bins if runner == "python" and st == "pass" else None,
+            )
+            for c, st in configs
+        ],
         tree_hash=tree_hash,
         head="abc",
         dirty=dirty,
@@ -400,6 +413,20 @@ def test_an_unusable_result_is_an_error_warned_once(repo):
     s = record(repo, "FDRE", warn=warnings.append)
     assert s["results"]["L1/xsim/rtl"] == "error"
     assert sum("unreadable result.json" in w for w in warnings) == 1
+
+
+def test_a_pass_that_ran_no_configuration_is_no_simulator_pass(repo):
+    """Review (b) #2: a pass with ``configs: []`` is recorded as error, and never meets
+    the S21 simulator pass that vector coverage needs."""
+    _results(repo)
+    cap = TESTS[0]["id"]
+    _result(repo, cap, "xsim", "pass", configs=[])
+    _result(repo, cap, "iverilog", "pass", configs=[])
+    warnings: list[str] = []
+    s = record(repo, "FDRE", warn=warnings.append)
+    assert s["results"]["L1/xsim/rtl"] == "error"
+    assert s["coverage"]["covered"] == ["port:R"]  # only the sv test's
+    assert any("ran no configuration" in w for w in warnings)
 
 
 def test_record_without_any_result_is_an_error(repo):
