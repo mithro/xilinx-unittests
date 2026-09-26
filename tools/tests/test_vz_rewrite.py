@@ -299,3 +299,83 @@ def test_verilator_and_icarus_accept_transformed(fname):
         cwd=work, log=log, timeout_s=120,
     )  # fmt: skip
     assert rc == 0, log.read_text()
+
+
+# ---- slow sweep: every analysable UNISIM model, transformed, parses and elaborates ----------
+def _errors(log):
+    """Icarus error messages without their file:line prefix (lines shift in the rewrite)."""
+    return {
+        re.sub(r"^\S+?:\d+: ", "", line)
+        for line in log.read_text().splitlines()
+        if "error" in line and not line.startswith("$ ")
+    }
+
+
+def _lint(ms, model, work):
+    """(verilator ok, icarus ok, icarus errors the ORIGINAL model has too) for ``model``'s
+    transformed copy, logging to ``work``."""
+    from xut.container import executor_for
+    from xut.verilatorize.driver import model_files, vz_dir
+
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    ex = executor_for(ms, work)
+    libs = [a for d in ms.search for a in ("-y", ex.guest(d))]
+    src, glbl = ex.guest(vz_dir(ms) / f"{model}.v"), ex.guest(ms.glbl)
+    vl = ex.run(
+        ["verilator", "--lint-only", "--timing", "-Wno-fatal", "-Wno-lint", "-Wno-style",
+         "-Wno-MULTITOP", "-y", ex.guest(vz_dir(ms)), *libs, "+libext+.v", src, glbl],
+        cwd=work, log=work / "verilator.log", timeout_s=600,
+    )  # fmt: skip
+    iv = ex.run(
+        ["iverilog", "-g2012", "-o", "sim.vvp", "-s", model, "-s", "glbl",
+         "-y", ex.guest(vz_dir(ms)), *libs, src, glbl],
+        cwd=work, log=work / "iverilog.log", timeout_s=600,
+    )  # fmt: skip
+    if iv == 0:
+        return vl == 0, True, False
+    orig = ex.guest(model_files(ms)[model])
+    ex.run(
+        ["iverilog", "-g2012", "-o", "orig.vvp", "-s", model, "-s", "glbl", *libs, orig, glbl],
+        cwd=work, log=work / "iverilog-orig.log", timeout_s=600,
+    )  # fmt: skip
+    new = _errors(work / "iverilog.log")
+    return vl == 0, False, bool(new) and new <= _errors(work / "iverilog-orig.log")
+
+
+@pytest.mark.slow
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 43), ("unisim-gh-2020.1", 38)])
+def test_sweep_every_transformed_model_lints(source, n_transformed):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from xut.modelsrc import model_sources
+    from xut.verilatorize.driver import verilatorize
+
+    ms = model_sources().get(source)
+    if ms is None:
+        pytest.skip(f"model source {source} not available")
+    man = verilatorize(ms, jobs=16, progress=lambda _line: None)
+    done = sorted(m for m, e in man.models.items() if e.status == "transformed")
+    refused = {m: e.reason for m, e in man.models.items() if e.status == "unsupported"}
+    assert len(done) == n_transformed, refused
+    assert sorted(refused) == ["RAMB18E1", "RAMB36E1"]  # nested generate (TODO before bram)
+    for m in ("FDRE", "FDSE", "FDCE", "FDPE"):
+        e = man.models[m]
+        assert "glbl.GSR" in e.triggers and len(e.generate_configs) > 1
+    root = repo_root() / "build" / "vz-lint-sweep" / source
+    with ThreadPoolExecutor(16) as pool:
+        res = dict(zip(done, pool.map(lambda m: _lint(ms, m, root / m), done), strict=True))
+    vl_ok = [m for m, r in res.items() if r[0]]
+    iv_ok = [m for m, r in res.items() if r[1]]
+    iv_orig = [m for m, r in res.items() if r[2]]
+    (root / "summary.txt").write_text(
+        f"{source}: transformed {len(done)}; verilator lint clean {len(vl_ok)}; icarus clean "
+        f"{len(iv_ok)}; icarus fails as the original does: {iv_orig}\n"
+    )
+    bad = [f"{m}: verilator={v} icarus={i} (logs {root / m})" for m, (v, i, o) in res.items()
+           if not v or not (i or o)]  # fmt: skip
+    assert not bad, "\n".join(bad)
+    # known Icarus 12 limitation of the model itself: a scalar port redeclared [1:0]
+    assert iv_orig == (["OSERDESE1"] if "OSERDESE1" in done else [])
