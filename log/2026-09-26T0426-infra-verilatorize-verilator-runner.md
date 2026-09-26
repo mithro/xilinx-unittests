@@ -82,3 +82,28 @@ Timestamp is UTC.
 - **Verilator lint:** 154/157 and 92/94 models are clean. In the wrapper lint, 110/140 and 61/77 models are clean, and every remaining failure is secureip or a refused dependency. No "tristate in top-level IO" error remains.
 - **FDRE hand check:** verilator 7/7 pass with x_dependence false; iverilog-vz 7/7 pass.
 - **Tests:** fast suite 1349 passed; runner/vz/container suites 619 passed; the sweep 2 passed. ruff and `xut lint` report 0 issues.
+
+## Fix round 1 (review C1, I1, I2, M1-M7; ruling S45)
+
+- **C1: hierarchy gating.**
+  - The manifest records `instantiates`, `depends_on_transformed`, `depends_on_unsupported`, `effective_rewrites` and `deps_sha256`.
+  - verilatorize transforms each requested model's whole hierarchy, so vz_dir is the union of closures and does not depend on run order. A change in a dependency discards the dependant's verdicts.
+  - A model over a transformed dependency is gated. Its equivalence check compares the original hierarchy against the vz hierarchy, with each vz copy compiled explicitly.
+  - A refused dependency blocks the model.
+- **I1/I2: the sv gate elaborates the testbench** (pyslang, with shared_dirs includes and the runner's defines).
+  - Every instance is checked: each input must be connected and not tied to z.
+  - Every instantiated parameterisation is gated.
+  - It fails closed on an unknown module, on no instance found, and on an elaboration error.
+- **Minors:** all 7 fixed (M7 is replaced by the I1 elaboration).
+- **Sweep with --check**
+  - 2025.2:
+    - Transformed models: 218 checks, 131 pass, 1 fail (ODELAYE5, as before), 86 errors. That is 3 errors fewer: MMCME3_BASE, MMCME4_BASE and PLLE4XP_BASE are now blocked by a refused dependency.
+    - 80 gated unchanged models: 72 pass, 8 errors (DSP48/DSP48E wrapper `C` port; FIFO16/18/18_36/36/36_72 reset protocol; XPLL DRP check).
+    - 88 models are blocked by a refused dependency.
+  - gh-2020.1:
+    - Transformed models: 152 checks, 105 pass, 47 errors, 0 fail.
+    - Gated unchanged: BUFHCE and BUFMRCE, both pass.
+    - 6 models are blocked by a refused dependency.
+  - The lint sweep still passes on both sources.
+- **FDRE hand check:** L1 vector 7/7 and sv_gsr_midsim pass on verilator (x_dependence false) and on iverilog-vz. Run alone, sv_gsr_midsim checks both of its instantiated configurations (default and INIT=1'b1).
+- **Tests:** fast suite 1368 passed; runner/vz/container suites (slow included) 743 passed. ruff and `xut lint` report 0 issues.
