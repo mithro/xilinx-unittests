@@ -135,10 +135,20 @@ def render_script(
     params: dict[str, str],
     defines: dict[str, str],
     glbl_instance: bool = False,
+    *,
+    glbl: str | None = None,
+    libs: Sequence[str] = ("unisims_ver", "unimacro_ver"),
+    sourcelibdirs: Sequence[str] = (),
 ) -> str:
     """``xsim.sh`` for one configuration directory ``cd`` (see the module docstring).
     Every argument is shell-quoted; the whole Vivado command chain is one ``bash -c``
-    argument, so ``settings64.sh`` is sourced only in that subshell."""
+    argument, so ``settings64.sh`` is sourced only in that subshell.
+
+    The runner uses the defaults. The verilatorize equivalence oracle (spec §6.2, ruling
+    S31) compiles a model source's own model file instead: ``libs=()`` (no precompiled
+    ``unisims_ver``), ``glbl`` that source's ``glbl.v``, and ``sourcelibdirs`` its
+    ``unisims``/``retarget`` directories (xvlog ``--sourcelibdir``, like Icarus ``-y``)
+    for any model the file instantiates."""
     q = shlex.quote
     defs = [a for k, v in defines.items() for a in ("-d", k if v == "" else f"{k}={v}")]
     if glbl_instance:
@@ -146,10 +156,14 @@ def render_script(
     inc_args = [a for i in (".", "dut", *incs) for a in ("-i", i)]
     gens = [a for k, v in params.items() for a in ("-generic_top", f"{k}={v}")]
     tops = [f"work.{top}"] + ([] if glbl_instance else ["work.glbl"])
-    xvlog = ["xvlog", "-sv", *inc_args, *defs, *files, str(VIVADO_SRC / "glbl.v")]
+    srclib = [a for d in sourcelibdirs for a in ("--sourcelibdir", d)]
+    if srclib:
+        srclib += ["--sourcelibext", ".v"]
+    glbl_file = str(VIVADO_SRC / "glbl.v") if glbl is None else glbl
+    xvlog = ["xvlog", "-sv", *inc_args, *defs, *srclib, *files, glbl_file]
     xelab = [
         "xelab",
-        *("-L", "unisims_ver", "-L", "unimacro_ver"),
+        *(a for lib in libs for a in ("-L", lib)),
         *("--timescale", "1ps/1ps", "--debug", "off"),
         *gens,
         *("-s", SNAPSHOT, *tops),
