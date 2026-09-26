@@ -80,7 +80,8 @@ def test_selectors_and_runner_default(repo):
     assert r.exit_code == 0, r.output
     ids, runners, ctx = repo[0]
     assert ids == ["7series.TOYFF.L2.c"]
-    assert runners == ["python", "xsim", "iverilog"]  # every RUNNERS entry but iverilog-vz
+    # every RUNNERS entry; iverilog-vz comes with verilator
+    assert runners == ["python", "xsim", "iverilog", "verilator", "iverilog-vz"]
     assert (ctx.seed, ctx.jobs, ctx.timeout_s, ctx.flow) == (5, 3, 9, "rtl")
     assert ctx.model_source.name == "unisim-test"
     assert "7series.TOYFF.L2.c" in r.output and "pass" in r.output
