@@ -296,12 +296,13 @@ def test_attr_value_with_hash_roundtrips():
     assert 'attr.NOTE="release #5"' in dumps(v)
 
 
-def test_dumps_raises_on_unrepresentable_quote_in_hw_reason():
+def test_hw_reason_with_quote_round_trips():
+    """S34.3 reverses I1 narrowly: a literal quote is escaped, not refused."""
     v = loads(H + "t=100 sample A\n")
     v.hw_renderable = False
     v.hw_reason = 'has a "quote" in it'
-    with pytest.raises(XvecError, match="cannot be represented"):
-        dumps(v)
+    assert loads(dumps(v)) == v
+    assert v.hw_reason == 'has a "quote" in it'
 
 
 def test_dumps_raises_on_unrepresentable_newline_in_header_value():
@@ -309,6 +310,81 @@ def test_dumps_raises_on_unrepresentable_newline_in_header_value():
     v.header["attr.NOTE"] = "line one\nline two"
     with pytest.raises(XvecError, match="cannot be represented"):
         dumps(v)
+
+
+@pytest.mark.parametrize("ctrl", ["\r", "\x00", "\x07", "\x1f", "\x7f"])
+def test_dumps_raises_on_other_control_chars_in_header_value(ctrl):
+    """Not just newline: any control character the parser cannot represent in this
+    line-oriented format is refused, never silently mangled (S34.3 narrows I1, it
+    does not remove it)."""
+    v = loads(H + "t=100 sample A\n")
+    v.header["attr.NOTE"] = f"a{ctrl}b"
+    with pytest.raises(XvecError, match="cannot be represented"):
+        dumps(v)
+
+
+@pytest.mark.parametrize("ctrl", ["\n", "\x00", "\x1f", "\x7f"])
+def test_dumps_raises_on_control_char_in_hw_reason(ctrl):
+    v = loads(H + "t=100 sample A\n")
+    v.hw_renderable = False
+    v.hw_reason = f"a{ctrl}b"
+    with pytest.raises(XvecError, match="cannot be represented"):
+        dumps(v)
+
+
+# --- S34.3: the writer escapes '"' and '\' in a header attr.* value exactly as the
+# --- parser accepts them, rather than refusing a quoted string (reverses I1 narrowly).
+# --- Required before the bufg/io units, whose attributes include strings such as
+# --- IOSTANDARD="LVCMOS33".
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "plain",
+        "has spaces",
+        'has a "quote" inside',
+        "has a \\backslash",
+        "a=b",
+        "release #5",
+        "trailing backslash\\",
+        "",
+        '"LVCMOS33"',  # a rendered Verilog string literal (spec §5.1/§5.3, S34.3)
+        'mix "of" \\stuff\\ and spaces = # too',
+        '\\"',  # backslash immediately followed by a quote: an escaping-order trap
+        '""',  # two adjacent quotes
+        "\\\\",  # two literal backslashes
+    ],
+)
+def test_attr_value_round_trips(value):
+    v = _mem(Event(1000, "sample", "A"), header={**BASE, "attr.NOTE": value})
+    text = dumps(v)
+    assert loads(text) == v
+    assert v.attrs == {"NOTE": value}
+
+
+def test_attr_value_iostandard_round_trips():
+    """The concrete case S34.3 names: a string attribute's rendered Verilog literal,
+    quotes included, such as IOSTANDARD="LVCMOS33"."""
+    v = _mem(Event(1000, "sample", "A"), header={**BASE, "attr.IOSTANDARD": '"LVCMOS33"'})
+    text = dumps(v)
+    assert loads(text) == v
+    assert v.attrs == {"IOSTANDARD": '"LVCMOS33"'}
+
+
+def test_attr_value_as_rendered_by_wrap_render_attr_round_trips():
+    """The exact literal the wrapper/stimulus pipeline puts in the header: attrs flow
+    from ``xut.wrap.render_attr`` (a string kind is rendered with surrounding quotes,
+    Verilog-literal style) into ``VecBuilder.build``'s ``attr.<NAME>`` header keys
+    (``tools/xut/stimgen.py``), unchanged."""
+    from xut.wrap import render_attr
+
+    lit = render_attr({"kind": "string", "name": "IOSTANDARD"}, "LVCMOS33")
+    assert lit == '"LVCMOS33"'
+    v = _mem(Event(1000, "sample", "A"), header={**BASE, "attr.IOSTANDARD": lit})
+    text = dumps(v)
+    assert loads(text) == v
+    assert v.attrs["IOSTANDARD"] == lit
 
 
 # --- co-timed events (I2): disjoint 'set' ranges commute without 'simultaneous';
