@@ -108,12 +108,14 @@ def _reach(k: FlopKind, port: str, *events: str) -> list[str]:
 
 
 def _reach_all(k: FlopKind, port: str) -> list[str]:
-    """Every class bin of `port`, in the catalog's own order: the clock only ever has
-    one (``:edge``), and the control's two are always driven together by every test
-    that names it, whether they are ``0``/``1`` (FDRE/FDSE, a ``data`` port) or
-    ``assert``/``release`` (FDCE/FDPE, an ``async`` port with a declared ``active``
-    level, ruling S19) -- so, unlike ``_reach``, no event name needs to be spelled out
-    per kind."""
+    """Every class bin of `port`, in the catalog's own order: ``["port:C:edge"]`` for
+    the clock, ``["port:R:0", "port:R:1"]`` for a ``data`` control (FDRE/FDSE), or
+    ``["port:CLR:assert", "port:CLR:release"]`` for an ``async`` one with a declared
+    ``active`` level (FDCE/FDPE, ruling S19) -- so, unlike ``_reach``, no event name
+    needs to be spelled out per kind. This is only correct where a test's own recipe
+    is checked to actually drive *both* events of `port`: a `Flop.__init__`-only touch
+    (the control's initial, inactive value) is not enough -- see ruling S33's I1/M2:
+    smoke never calls `.ctrl()`, so it must not use this helper for the control."""
     return list(_class_bins(k.prim, port).values())
 
 
@@ -179,10 +181,15 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
             "the fabric harness uses SLICE flops"
         }
     }
-    # Ruling S33: l0_smoke sweeps all 16 attribute combinations, so both R polarities get
-    # an explicit R init(), and both D:1/CE:1 (D:0 never occurs: 1-INIT XOR IS_D_INVERTED
-    # only ever differs from the builder's own 0 default when it lands on 1) -- verified
-    # against `xut run --runner python`'s bins_reached for 7series.FDRE.L0.smoke.
+    # Ruling S33 (I1/M2): l0_smoke sweeps all 16 attribute combinations, so both D:1/CE:1
+    # occur (D:0 never occurs: 1-INIT XOR IS_D_INVERTED only ever differs from the
+    # builder's own 0 default when it lands on 1) -- verified against `xut run --runner
+    # python`'s bins_reached for 7series.FDRE.L0.smoke. smoke never calls `.ctrl()`
+    # (its own gaps say so), so no control class bin is named here: `Flop.__init__`'s
+    # initial, inactive control value is not an intending test, and for an async
+    # control (FDCE/FDPE) the "assert" bin is not even reachable that way (only
+    # "release", from the inverted case's 0->1 init line) -- reset_over_ce,
+    # is_{ctrl}_inverted and the L2 tests are what intend R/CLR/S/PRE's class bins.
     add(
         "L0",
         "smoke",
@@ -192,7 +199,6 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         + _reach_all(k, "C")
         + _reach(k, "CE", "1")
         + _reach(k, "D", "1")
-        + _reach_all(k, c)
         + _attrs(attr_names(k))
         + _claims(k, 1, 4),
         "Every one of the 16 attribute combinations elaborates, powers up to INIT and "
@@ -287,12 +293,15 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         ],
     )
     if k.is_async:
+        # Ruling S33 (I1): both call `.ctrl(True)` and `.ctrl(False)` for real (unlike
+        # smoke, which only ever sets the control's initial, inactive value), so both
+        # assert/release class bins are genuinely reached here.
         add(
             "L1",
             f"{w}_async",
             "vector",
             f"vectors/gen.py:l1_{w}_async",
-            _ports(k, c, "Q") + _claims(k, 3),
+            _ports(k, c, "Q") + _reach_all(k, c) + _claims(k, 3),
             f"{c} acts without any clock edge, repeatedly, from both Q values.",
             sampling=init_s,
             gaps=[
@@ -306,7 +315,7 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
             f"{w}_recovery",
             "vector",
             f"vectors/gen.py:l1_{w}_recovery",
-            _ports(k, c, "C", "D", "Q") + _claims(k, 1, 3),
+            _ports(k, c, "C", "D", "Q") + _reach_all(k, c) + _claims(k, 1, 3),
             f"After {c} is released, the next active edge captures D. The edge is at least "
             "async_sep_ps after the release, so recovery timing is not tested (spec §2).",
             sampling=init_s,
@@ -490,6 +499,16 @@ HEADER = (
 )
 
 
+class _NoAliasDumper(yaml.SafeDumper):
+    """M4: the shared `ALL_FLOWS`/`init_s`/`d1` objects would otherwise dump as YAML
+    anchors and aliases (`flows: &id001`, `*id001`, ...): fragile for a reader of one
+    test's entry, and for any consumer that mutates one test's list in place. Every
+    test's fields are written out in full instead."""
+
+    def ignore_aliases(self, data: object) -> bool:
+        return True
+
+
 def render_test_yaml(k: FlopKind) -> str:
     p, _ = PAGES[k.prim]
     doc = {
@@ -501,7 +520,9 @@ def render_test_yaml(k: FlopKind) -> str:
     }
     # safe_dump quotes the strings "yes"/"no" ('yes'), so they reload as strings, as the
     # step-1 schema requires; test_flop_tests.py validates the output against that schema.
-    return HEADER + yaml.safe_dump(doc, sort_keys=False, width=100, allow_unicode=True)
+    return HEADER + yaml.dump(
+        doc, Dumper=_NoAliasDumper, sort_keys=False, width=100, allow_unicode=True
+    )
 
 
 def _cell(e: dict, runner: str) -> str:
