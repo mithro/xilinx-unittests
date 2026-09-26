@@ -474,8 +474,9 @@ def verilatorize_cmd(models: tuple[str, ...], model_source: str, jobs: int, chec
     committed). Incremental: a model is redone only when its source changed. MODEL
     restricts the run (default: every model of the source). --check then runs the
     mandatory equivalence stimulus on the original and the transformed model of every
-    transformed model, under its default and every generate configuration; it exits 1
-    when any check is not a pass.
+    transformed model, under its default and every generate configuration, and of every
+    model over a transformed dependency (its original hierarchy against the vz hierarchy,
+    ruling S45); it exits 1 when any check is not a pass.
     """
     from xut import modelsrc
     from xut.verilatorize.driver import STATUSES, verilatorize, vz_dir
@@ -499,11 +500,16 @@ def verilatorize_cmd(models: tuple[str, ...], model_source: str, jobs: int, chec
         if e.status == "unsupported":
             why = e.reason.splitlines()[0]
             click.echo(f"unsupported: {m}: {why.removeprefix(f'{m}: ')}")
+    for m, e in sorted(shown.items()):
+        if e.status != "unsupported" and e.depends_on_unsupported:
+            click.echo(f"blocked: {m}: its hierarchy holds {','.join(e.depends_on_unsupported)}")
+        elif e.status == "unchanged" and e.depends_on_transformed:
+            click.echo(f"gated: {m}: over {','.join(e.depends_on_transformed)}")
     if not check:
         return
     results: Counter[str] = Counter()
     for m, e in sorted(shown.items()):
-        if e.status != "transformed":
+        if not e.gated:
             continue
         for key, status in sorted(e.equiv.items()):
             results[status] += 1
