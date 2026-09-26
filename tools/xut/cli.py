@@ -584,7 +584,8 @@ def crosscheck_cmd(
       0  clean: every compared result agrees, or disagrees only as listed
       3  a finding not listed in the test's expected_divergence (wins over 4)
       4  incomplete: an error, a fail no disagreement explains, results measured at
-         mixed or dirty trees, or no two traces to compare
+         mixed or dirty trees, traces sharing no configuration, or no two traces
+         to compare
       1  a user error (e.g. a selector matching no test); 2  a usage error
     """
     from xut import crosscheck as xc

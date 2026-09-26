@@ -9,7 +9,10 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
   status ``pass`` or ``fail``) are compared, and only where both sides ran them. Every
   missing, skipped or erroring result stays visible: in the matrix (a declared runner
   without a result is ``not-run``), and as an *issue* when it is an ``error`` or a
-  ``fail`` that no disagreement explains.
+  ``fail`` that no disagreement explains. A test is ``compared`` only when some pair
+  of results shared at least one configuration both ran; two or more traces with no
+  such pair are an issue, and a configuration only one simulator ran is a coverage
+  note (ruling S23).
 - **A result must carry its evidence.** A pass/fail that ran a configuration but
   wrote no trace.xtr, a trace.xtr without result.json, and a configuration the golden
   model ran that a result omits are issues; one a runner skipped (``config_exclusions``)
@@ -215,11 +218,21 @@ def _restrict(t: Trace, cfgs: set[str] | None) -> Trace:
     return out
 
 
-def _pair(a: View, b: View) -> tuple[Trace, Trace]:
-    """Both traces, restricted to the configurations both runners ran."""
+#: A comparison ``classify`` made: ``(a, b, shared)``, ``a``/``b`` as ``<flow>/<runner>``,
+#: ``shared`` False when the two ran no configuration in common (nothing compared).
+Pair = tuple[str, str, bool]
+
+
+def _pair(a: View, b: View, pairs: list[Pair] | None = None) -> tuple[Trace, Trace]:
+    """Both traces, restricted to the configurations both runners ran; the comparison
+    is appended to ``pairs``."""
     ra, rb = a.ran, b.ran
     common = ra if rb is None else rb if ra is None else ra & rb
     assert a.trace is not None and b.trace is not None
+    if pairs is not None:
+        pairs.append(
+            (f"{a.flow}/{a.runner}", f"{b.flow}/{b.runner}", common is None or bool(common))
+        )
     return _restrict(a.trace, common), _restrict(b.trace, common)
 
 
@@ -261,10 +274,11 @@ def _golden_vs_sims(
     diverged: set[tuple],
     sim_points: list[str],
     issues: list[str],
+    pairs: list[Pair],
 ) -> list[Finding]:
     per_point: dict[tuple, dict[str, Mismatch]] = defaultdict(dict)
     for r, v in group.items():
-        e, a = _pair(exp, v)
+        e, a = _pair(exp, v, pairs)
         for m in compare(e, a, x_observable=X_OBSERVABLE.get(r, True)):
             per_point[(m.label, m.port, m.bit, m.kind)][r] = m
     doc: list[str] = []
@@ -311,11 +325,13 @@ def classify(
     views: dict[tuple[str, str], View],
     expected_divergence: tuple[dict, ...] | list[dict] = (),
     issues: list[str] | None = None,
+    pairs: list[Pair] | None = None,
 ) -> list[Finding]:
     """The findings among one model source's views. Disagreements that are no finding
     class (structural golden-vs-simulator differences, an unknown provenance) are
-    appended to ``issues`` when given."""
+    appended to ``issues`` when given; every comparison made to ``pairs``."""
     issues = [] if issues is None else issues
+    pairs = [] if pairs is None else pairs
     out: list[Finding] = []
     exp = views.get(("rtl", "python"))
     sims: dict[str, dict[str, View]] = defaultdict(dict)
@@ -327,13 +343,13 @@ def classify(
         diverged: set[tuple] = set()
         points: list[str] = []
         for a, b in combinations(sorted(group), 2):
-            ta, tb = _pair(group[a], group[b])
+            ta, tb = _pair(group[a], group[b], pairs)
             for m in diff(ta, tb, a_x=X_OBSERVABLE[a], b_x=X_OBSERVABLE[b]):
                 diverged.add((m.label, m.port, m.bit))
                 points.append(f"{a} vs {b}: {m}")
         doc_findings = []
         if flow == "rtl" and exp is not None and _has_trace(exp):
-            doc_findings = _golden_vs_sims(test_id, ms, exp, group, diverged, points, issues)
+            doc_findings = _golden_vs_sims(test_id, ms, exp, group, diverged, points, issues, pairs)
         if points:
             out.append(_f("sim-divergence", test_id, flow, ms, group, points))
         out += doc_findings
@@ -356,7 +372,7 @@ def classify(
             and _has_trace(iv := views.get((flow, "iverilog")))
         ):
             assert iv is not None
-            pts = [str(m) for m in diff(*_pair(iv, v))]
+            pts = [str(m) for m in diff(*_pair(iv, v, pairs))]
             if pts:
                 out.append(
                     _f(
@@ -373,7 +389,7 @@ def classify(
             if _has_trace(ref):
                 assert ref is not None
                 x = X_OBSERVABLE[runner]
-                pts = [str(m) for m in diff(*_pair(ref, v), a_x=x, b_x=x)]
+                pts = [str(m) for m in diff(*_pair(ref, v, pairs), a_x=x, b_x=x)]
                 if pts:
                     out.append(_f("flow-mismatch", test_id, flow, v.model_source, [runner], pts))
         if runner == "hw":
@@ -393,7 +409,7 @@ def classify(
                     )
                 )
             if exp is not None and _has_trace(exp) and _has_trace(v):
-                pts = [_point(m) for m in compare(*_pair(exp, v), x_observable=False)]
+                pts = [_point(m) for m in compare(*_pair(exp, v, pairs), x_observable=False)]
                 if pts:
                     out.append(_f("silicon-mismatch", test_id, flow, None, ["hw"], pts))
     return [_mark(f, tuple(expected_divergence), issues) for f in out]
@@ -700,6 +716,36 @@ def _result_issues(ms: str, v: View, findings: list[Finding], classified: bool =
     return []
 
 
+def _evidence(
+    ms: str, views: dict[tuple[str, str], View], pairs: list[Pair]
+) -> tuple[bool, list[str], list[str]]:
+    """``(compared, notes, issues)``: whether ``classify`` compared two results on at
+    least one configuration both ran (never agreement by omission). With two or more
+    traces, every configuration only one simulator ran is a note (one only the golden
+    model ran is ``_config_coverage``'s, per runner), and no shared comparison at all
+    is an issue."""
+    traced = {k: v for k, v in sorted(views.items()) if _has_trace(v)}
+    compared = any(s for _, _, s in pairs)
+    notes: list[str] = []
+    issues: list[str] = []
+    if len(traced) < 2:
+        return compared, notes, issues
+    ran = {k: v.ran for k, v in traced.items()}
+    for (flow, runner), cfgs in ran.items():
+        others = [c for k, c in ran.items() if k != (flow, runner)]
+        if runner == "python" or cfgs is None or any(c is None for c in others):
+            continue
+        for c in sorted(cfgs - set().union(*others)):
+            notes.append(f"{ms} {flow}/{runner}: cfg {c} ran only here: compared with nothing")
+    if not compared:
+        listing = "; ".join(
+            f"{f}/{r} ran {', '.join(sorted(c or ())) or 'nothing'}" for (f, r), c in ran.items()
+        )
+        why = "share no configuration" if pairs else "are not comparable (no rule pairs them)"
+        issues.append(f"{ms}: the results with traces {why} ({listing}): nothing was compared")
+    return compared, notes, issues
+
+
 def _provenance_issues(ms: str, views: dict[tuple[str, str], View]) -> list[str]:
     """Why ``views`` (one model source) were not all measured at one clean tree: a
     result without a tree hash or not stamped ``dirty: false``, or results at
@@ -749,10 +795,14 @@ def check(root: Path, case: TestCase, model_source: str | None = None) -> Report
             rep.provenance_ok = False
             rep.issues += [i for v in views.values() for i in _result_issues(ms, v, [], False)]
             continue
-        found = classify(case.id, views, case.expected_divergence, rep.issues)
+        pairs: list[Pair] = []
+        found = classify(case.id, views, case.expected_divergence, rep.issues, pairs)
         rep.findings += found
         matched |= {f.finding for f in found if f.finding}
-        rep.compared |= sum(_has_trace(v) for v in views.values()) >= 2
+        shared, notes, issues = _evidence(ms, views, pairs)
+        rep.compared |= shared
+        rep.coverage_gaps += notes
+        rep.issues += issues
         notes, cfg_issues = _config_coverage(ms, views)
         rep.coverage_gaps += _coverage_gaps(ms, views) + notes
         rep.issues += cfg_issues
