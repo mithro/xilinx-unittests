@@ -174,6 +174,13 @@ def l1_recovery(ctx, k):
     """Async kinds only: after release, the next active edge (>= async_sep_ps later) captures D."""
     for init in (0, 1):
         f = _init_only(ctx, k, init)
+        # N2: prime D to k.forced first. A builder starts every port at its own 0
+        # default, so when 1 - k.forced is 0 too (FDPE, forced=1) the later set below
+        # would otherwise be a no-op the builder never emits (VecBuilder.set skips an
+        # unchanged value) -- port:D would then never actually be reached, even though
+        # it is declared. k.forced and 1 - k.forced always differ, so this always
+        # forces one real transition, whichever kind's forced value is 0 or 1.
+        f.data(d=k.forced, ce=1)
         f.ctrl(True)
         f.data(d=1 - k.forced, ce=1)
         f.clock()
