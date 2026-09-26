@@ -72,8 +72,10 @@ def ctx(work):
 
 @pytest.fixture(autouse=True)
 def _fresh_entries(monkeypatch):
-    """ensure_model's per-process cache must not leak between tests."""
+    """ensure_model's per-process caches must not leak between tests."""
     monkeypatch.setattr(driver, "_ENTRIES", {})
+    monkeypatch.setattr(driver, "_TOOLS", {})
+    monkeypatch.setattr(driver, "_CHECKED", set())
 
 
 # --- no container needed ---------------------------------------------------------------
@@ -288,9 +290,10 @@ def vzsrc(tmp_path):
     return ModelSource("vz-src", tmp_path / "src")
 
 
-def _fake_check(monkeypatch, status: str = "pass", reason: str = "") -> list:
+def _fake_check(monkeypatch, status: str = "pass", reason: str = "", tools: str = "T1") -> list:
     calls = []
     lock = threading.Lock()
+    monkeypatch.setattr(driver, "sim_tools", lambda ms, work: tools)
 
     def fake(an, ms, out_dir, attrs=None, *, lib=None, seed=1, force_xsim=False):
         from xut.verilatorize.equiv import config_key
@@ -331,7 +334,8 @@ def test_ensure_model_checks_each_configuration_once_and_records_it(vzsrc, tmp_p
     man = driver.Manifest.load(out / "manifest.json").models["VZGEN"]
     assert man.equiv == {"IS_C_INVERTED=1'b1": "fail", "default": "fail"}
     assert man.equiv_reason["default"].startswith("1 mismatch(es)")
-    assert man.equiv_oracle["default"] == "iverilog" and man.equiv_tools == {}
+    assert man.equiv_oracle["default"] == "iverilog"
+    assert man.equiv_tools == {"IS_C_INVERTED=1'b1": "T1", "default": "T1"}
     assert blocked(man, "VZGEN", "default").startswith("transform-bug: ")
 
 
@@ -526,11 +530,34 @@ endmodule
 
 
 @pytest.mark.container
-def test_input_compared_with_z_is_the_inherent_tristate_error(work, toy):
-    """Ruling S35.3: Verilator cannot build a non-top module comparing an input with z."""
+def test_input_compared_with_z_passes_after_the_z_compare_rewrite(work, toy):
+    """Ruling S38: the input's z-compare is rewritten, so Verilator builds the model
+    (S35.3 found it could not) and the result is a pass, as on Icarus."""
     ms = make_model_source(work / "ms")
     (ms.unisims / "TOYFF.v").write_text(ZCMP)
     ctx = RunContext(work, "rtl", ms)
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    for runner in (VerilatorRunner, IverilogVzRunner, IverilogRunner):
+        res = runner().run(case, ctx)
+        assert res.status == "pass", (runner.name, res.reason, _log(ctx, runner.name, case))
+    e = driver.Manifest.load(vz_dir(ms, work) / "manifest.json").models["TOYFF"]
+    assert (e.rewrites, e.equiv) == (["zcmp"], {"INIT=1'b0": "pass", "INIT=1'b1": "pass"})
+    assert "1'bz" not in (vz_dir(ms, work) / "TOYFF.v").read_text()
+
+
+@pytest.mark.container
+def test_z_compare_in_enabled_disabled_code_is_the_inherent_tristate_error(work, toy):
+    """A z-compare the syntax tree cannot see (preprocessor-disabled code, here enabled by
+    a define) still reaches Verilator: the runner explains the inherent error (S35.3)."""
+    ms = make_model_source(work / "ms")
+    (ms.unisims / "TOYFF.v").write_text(
+        ZCMP.replace(
+            "    else if (D !== 1'bz) q <= D;",
+            "`ifdef XUT_ZDEMO\n    else if (D !== 1'bz) q <= D;\n`else\n    else q <= D;\n`endif",
+        )
+    )
+    ctx = RunContext(work, "rtl", ms, defines={"XUT_ZDEMO": ""})
     case = _case("7series.TOYFF.L1.capture")
     _python(ctx, case)
     res = VerilatorRunner().run(case, ctx)
@@ -702,3 +729,108 @@ def test_vpi_release_coincident_with_an_edge_matches_the_vector_testbench(work, 
         k.removeprefix("default/"): v["Q"] for k, v in xtr.load(vd / "trace.xtr").samples.items()
     }
     assert vgot == expected
+
+
+def test_ensure_model_rechecks_stale_verdicts_as_check_does(vzsrc, tmp_path, monkeypatch):
+    """Concern 2 / ruling S38: a kept pass/fail is rechecked when the simulators changed; an
+    error is rechecked (once per process); a current pass is kept."""
+    calls = _fake_check(monkeypatch, "error", "DRC")
+    ensure_model(vzsrc, "VZGEN", {}, root=tmp_path, log=print)
+    ensure_model(vzsrc, "VZGEN", {}, root=tmp_path, log=print)  # once per process
+    assert len(calls) == 1
+    for name, value in (("_ENTRIES", {}), ("_CHECKED", set()), ("_TOOLS", {})):
+        monkeypatch.setattr(driver, name, value)
+    calls = _fake_check(monkeypatch, "pass")
+    ensure_model(vzsrc, "VZGEN", {}, root=tmp_path, log=print)  # the error is rechecked
+    assert len(calls) == 1
+    for name, value in (("_ENTRIES", {}), ("_CHECKED", set()), ("_TOOLS", {})):
+        monkeypatch.setattr(driver, name, value)
+    calls = _fake_check(monkeypatch, "pass")
+    ensure_model(vzsrc, "VZGEN", {}, root=tmp_path, log=print)  # current pass: kept
+    assert calls == []
+    for name, value in (("_ENTRIES", {}), ("_CHECKED", set()), ("_TOOLS", {})):
+        monkeypatch.setattr(driver, name, value)
+    calls = _fake_check(monkeypatch, "pass", tools="T2")
+    e = ensure_model(vzsrc, "VZGEN", {}, root=tmp_path, log=print)  # other simulators
+    assert len(calls) == 1 and e.equiv_tools["default"] == "T2"
+    man = driver.Manifest.load(vz_dir(vzsrc, tmp_path) / "manifest.json").models["VZGEN"]
+    assert (man.equiv["default"], man.equiv_tools["default"]) == ("pass", "T2")
+
+
+ZTOY = """\
+// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+module TOYFF #(parameter [0:0] INIT = 1'b0) (output wire Q, input wire C, input wire D,
+                                             input wire E);
+  reg q;
+  always @(posedge C or posedge glbl.GSR)
+    if (glbl.GSR) q <= INIT;
+    else if (E || (E === 1'bz)) q <= D;  // E defaults to enabled when unconnected
+  assign Q = q;
+endmodule
+"""
+
+
+def test_an_unconnected_input_of_a_z_compare_model_is_an_error(
+    work, toy, no_container, monkeypatch
+):
+    """TOY_ENTRY has no port E, so the wrapper leaves it unconnected: the z-compare
+    rewrite would turn the floating-input default into "disabled" (ruling S38 guard)."""
+    ms = make_model_source(work / "ms")
+    (ms.unisims / "TOYFF.v").write_text(ZTOY)
+    ctx = RunContext(work, "rtl", ms)
+    _fake_check(monkeypatch)
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ctx)
+        assert res.status == "error", runner.name
+        assert all("input port(s) E of TOYFF left unconnected" in c.reason for c in res.configs)
+    e = driver.Manifest.load(vz_dir(ms, work) / "manifest.json").models["TOYFF"]
+    assert e.rewrites == ["zcmp"]
+
+
+Z_GEN = """
+def gen(ctx):
+    b = ctx.dut("zd", INIT=0)
+    b.set(D="z")
+    b.cycle("C")
+    yield b.build()
+"""
+
+
+def test_a_z_stimulus_into_a_z_compare_model_is_an_error_on_iverilog_vz(
+    work, toy, no_container, monkeypatch
+):
+    from test_runner_base import _tmp_toy
+
+    ms = make_model_source(work / "ms")
+    (ms.unisims / "TOYFF.v").write_text(ZCMP)
+    ctx = RunContext(work, "rtl", ms)
+    _fake_check(monkeypatch)
+    case = _tmp_toy(work, Z_GEN)
+    PythonRunner().run(case, ctx)
+    res = IverilogVzRunner().run(case, ctx)
+    assert [c.reason for c in res.configs] == [
+        "stimulus drives z into a model with the z-compare rewrite (ruling S38)"
+    ]
+    assert VerilatorRunner().run(case, ctx).configs[0].reason == X_STIMULUS
+
+
+def test_sv_undriven(tmp_path):
+    from xut.runners.verilator import sv_undriven
+
+    n = iter(range(100))
+
+    def sv(inst: str) -> Path:
+        f = tmp_path / f"tb{next(n)}.sv"  # pyslang caches a file's text by its path
+        f.write_text(f"module tb; wire q; reg c, d, e; {inst} endmodule\n")
+        return f
+
+    ins = ["C", "D", "E"]
+    assert sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E(e));"), "TOYFF", ins) is None
+    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d));"), "TOYFF", ins)
+    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E());"), "TOYFF", ins)
+    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E(1'bz));"), "TOYFF", ins)
+    assert "by position" in sv_undriven(sv("TOYFF u (q, c, d, e);"), "TOYFF", ins)
+    assert sv_undriven(sv("OTHER u (.Q(q));"), "TOYFF", ins) is None
