@@ -193,9 +193,9 @@ def test_record_results_tree_hash_and_coverage(repo):
         "L1/iverilog/rtl": "fail",
         "L1/iverilog/vivado": "not-run",  # declared flow, not run in step 2
         "L1/python/rtl": "pass",
-        "L1/verilator/rtl": "pass",  # capture: unsupported; ce_hold: pass
+        "L1/verilator/rtl": "pass",  # capture: unsupported; ce_hold: pass (pass > unsupported)
         "L1/verilator/vivado": "not-run",
-        "L1/xsim/rtl": "pass",  # unavailable is not-run, which pass beats
+        "L1/xsim/rtl": "not-run",  # ce_hold unavailable: not-run outranks pass (S22)
         "L1/xsim/vivado": "not-run",
         "L2/iverilog/rtl": "pass",
         "L2/python/rtl": "n/a",
@@ -534,3 +534,21 @@ def test_xut_run_stamps_tree_provenance(repo, monkeypatch):
     (repo / FAMILY_DIR / "_shared/flops/recipes.py").write_text(SPDX + "X = 3\n")
     CliRunner().invoke(main, args)
     assert json.loads(res.read_text())["dirty"] is True
+
+
+@pytest.mark.parametrize(
+    ("values", "worst"),
+    [
+        (["pass", "not-run"], "not-run"),  # S22: an unrun declared test is never hidden
+        (["pass", "skip"], "pass"),  # a skip is deliberate and reasoned
+        (["skip", "unsupported", "n/a"], "skip"),
+        (["not-run", "error"], "error"),
+        (["error", "fail"], "fail"),
+        (["unsupported", "n/a"], "unsupported"),
+    ],
+)
+def test_worst_result_precedence(values, worst):
+    from xut.status import RECORD_PRECEDENCE, worst_result
+
+    assert RECORD_PRECEDENCE == ("fail", "error", "not-run", "pass", "skip", "unsupported", "n/a")
+    assert worst_result(values) == worst

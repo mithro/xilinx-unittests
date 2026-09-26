@@ -73,7 +73,10 @@ _SOURCE_LEGEND = (
     f"`{_PARTIAL_MARK}` partial: a pass on some flows, not-run or skip on others (fail "
     "and error still win). Marks are for unisim-2025.2; `+gh` flags a level where "
     "unisim-gh-2020.1 passes what 2025.2 fails (or errors), or the reverse; `~gh` means "
-    "the unisim-gh-2020.1 results were recorded at another tree hash (stale, not compared)."
+    "the unisim-gh-2020.1 results were recorded at another tree hash (stale, not compared). "
+    "Within one level/runner/flow, the primitive's tests aggregate as fail > error > "
+    "not-run > pass > skip > unsupported > n/a: a declared test not run is never hidden "
+    "by another test's pass."
 )
 
 
@@ -436,10 +439,11 @@ RECORDED_RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
 #: The UNISIM simulators: an sv/cocotb test's bins count as covered once it passed on one.
 SIMULATORS = ("xsim", "iverilog", "verilator")
 
-#: Worst-first precedence for aggregating one ``<level>/<runner>/<flow>`` cell over a
-#: primitive's tests (Task 18 brief). A deliberate ``skip`` (every configuration
-#: excluded) ranks last: it says nothing about the primitive.
-RECORD_PRECEDENCE = ("fail", "error", "pass", "not-run", "unsupported", "n/a", "skip")
+#: Worst-first precedence for aggregating one ``<level>/<runner>/<flow>`` key over a
+#: primitive's tests (ruling S22). ``not-run`` (a declared test with no evidence)
+#: outranks ``pass``: another test's pass never hides an unrun one. A ``skip`` is
+#: deliberate and carries its reason, so it ranks below ``pass``.
+RECORD_PRECEDENCE = ("fail", "error", "not-run", "pass", "skip", "unsupported", "n/a")
 
 _STATUS_LINE = re.compile(r"^\s*(?:[-*]\s*)?Status:\s*(\S+)", re.IGNORECASE)
 
