@@ -21,8 +21,8 @@ coverage:
   - port:D:0
   - port:D:1
   - port:PRE
-  - port:PRE:rise
-  - port:PRE:fall
+  - port:PRE:assert
+  - port:PRE:release
   - attr:INIT=1'b1
   - attr:INIT=1'b0
   - attr:IS_C_INVERTED=1'b0
@@ -31,4 +31,12 @@ coverage:
   - attr:IS_D_INVERTED=1'b1
   - attr:IS_PRE_INVERTED=1'b0
   - attr:IS_PRE_INVERTED=1'b1
+  - claim:FDPE.C1
+  - claim:FDPE.C2
+  - claim:FDPE.C3
+  - claim:FDPE.C4
+  - claim:FDPE.C5
+  - claim:FDPE.C6
+  - claim:FDPE.C7
+  - claim:FDPE.C8
 notes: ''

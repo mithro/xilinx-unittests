@@ -18,8 +18,8 @@ coverage:
   - port:CE:0
   - port:CE:1
   - port:CLR
-  - port:CLR:rise
-  - port:CLR:fall
+  - port:CLR:assert
+  - port:CLR:release
   - port:D
   - port:D:0
   - port:D:1
@@ -31,4 +31,12 @@ coverage:
   - attr:IS_C_INVERTED=1'b1
   - attr:IS_D_INVERTED=1'b0
   - attr:IS_D_INVERTED=1'b1
+  - claim:FDCE.C1
+  - claim:FDCE.C2
+  - claim:FDCE.C3
+  - claim:FDCE.C4
+  - claim:FDCE.C5
+  - claim:FDCE.C6
+  - claim:FDCE.C7
+  - claim:FDCE.C8
 notes: ''

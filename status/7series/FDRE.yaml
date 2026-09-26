@@ -31,4 +31,12 @@ coverage:
   - attr:IS_D_INVERTED=1'b1
   - attr:IS_R_INVERTED=1'b0
   - attr:IS_R_INVERTED=1'b1
+  - claim:FDRE.C1
+  - claim:FDRE.C2
+  - claim:FDRE.C3
+  - claim:FDRE.C4
+  - claim:FDRE.C5
+  - claim:FDRE.C6
+  - claim:FDRE.C7
+  - claim:FDRE.C8
 notes: ''
