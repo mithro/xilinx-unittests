@@ -15,7 +15,7 @@ from click.testing import CliRunner
 from xut.cli import main
 from xut.errors import XutError
 from xut.paths import repo_root
-from xut.runners.base import RunResult
+from xut.runners.base import ConfigResult, RunResult
 from xut.status import (
     REFERENCE_MODEL_SOURCE,
     load_status,
@@ -89,6 +89,7 @@ def _result(
     reason: str | None = None,
     bins=None,
     style: str = "vector",
+    configs=(),
 ) -> None:
     d = root / "build/rtl" / runner / ms / tid
     d.mkdir(parents=True, exist_ok=True)
@@ -103,6 +104,7 @@ def _result(
         tools={"iverilog": "12.0"} if runner == "iverilog" else {},
         container={"image": "xut-sim:1", "digest": "sha256:abc"} if runner == "iverilog" else None,
         bins_reached=bins,
+        configs=[ConfigResult(c, st, None if st == "pass" else "r") for c, st in configs],
     ).write(d)
 
 
@@ -339,3 +341,38 @@ def test_cli_status_record(repo, monkeypatch):
     r = CliRunner().invoke(main, ["status", "record", "FDRE"])
     assert r.exit_code == 1 and "Error: refusing to record" in r.output
     assert "recipes.py" in r.output
+
+
+def test_record_covers_declared_crosses_from_passing_configurations(repo):
+    """Ruling S19: a cross bin is covered when a configuration that ran and passed (on
+    the golden model for a vector test, on a simulator for sv) has those values; an
+    attribute a configuration does not set takes its catalog default."""
+    (repo / "catalog/7series/FDRE.overrides.yaml").write_text(
+        SPDX + "claims: []\ncrosses: [[INIT, IS_C_INVERTED]]\n"
+    )
+    doc = yaml.safe_load((repo / FAMILY_DIR / "FDRE/test.yaml").read_text())
+    cap, _, sv = doc["tests"]
+    cap["exercises"] += ["cross:INIT=1'b1,IS_C_INVERTED=1'b0", "cross:INIT=1'b1,IS_C_INVERTED=1'b1"]
+    sv["exercises"] += ["cross:INIT=1'b0,IS_C_INVERTED=1'b1"]
+    sv["configs"] = [{"cfg": "inv", "attrs": {"IS_C_INVERTED": 1}}, {"cfg": "bad", "attrs": {}}]
+    (repo / FAMILY_DIR / "FDRE/test.yaml").write_text(SPDX + yaml.safe_dump(doc, sort_keys=False))
+    _commit(repo)
+    _results(repo)
+    for cfg, attrs in (("a", "attr.INIT=1'b1"), ("b", "attr.INIT=1'b1 attr.IS_C_INVERTED=1'b1")):
+        d = repo / "build/rtl/python" / REFERENCE_MODEL_SOURCE / cap["id"] / f"cfg-{cfg}"
+        d.mkdir(parents=True)
+        (d / "stim.xvec").write_text(
+            f"# xut-vec 2  prim=FDRE cfg={cfg} nin=3 nout=1 nclk=1 settle_ps=1 seed=0 {attrs}\n"
+        )
+    _result(
+        repo, cap["id"], "python", "pass", bins=["port:C"], configs=[("a", "pass"), ("b", "error")]
+    )
+    _result(
+        repo, sv["id"], "iverilog", "fail", style="sv", configs=[("inv", "pass"), ("bad", "fail")]
+    )
+    warnings: list[str] = []
+    s = record(repo, "FDRE", warn=warnings.append)
+    crosses = [b for b in s["coverage"]["covered"] if b.startswith("cross:")]
+    assert crosses == ["cross:INIT=1'b0,IS_C_INVERTED=1'b1", "cross:INIT=1'b1,IS_C_INVERTED=1'b0"]
+    assert "cross:INIT=1'b1,IS_C_INVERTED=1'b1" in s["coverage"]["uncovered"]  # cfg b errored
+    assert any("cross:INIT=1'b1,IS_C_INVERTED=1'b1" in w for w in warnings)

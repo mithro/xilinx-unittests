@@ -42,7 +42,11 @@
           "direction": {"enum": ["input", "output", "inout"]},
           "width": {"type": "integer", "minimum": 1},
           "cls": {"enum": ["clock", "async", "gate", "data", "inout", "clock_out", "pad", "drp"]},
-          "doc_function": {"type": "string", "maxLength": 120}
+          "doc_function": {"type": "string", "maxLength": 120},
+          "active": {
+            "description": "Optional (overrides only; async/gate inputs). The level at which the primitive sees the input active, before any IS_<P>_INVERTED. Gives port:<P>:assert/release coverage bins; absent: port:<P>:rise/fall.",
+            "enum": ["high", "low"]
+          }
         }
       }
     },
@@ -78,6 +82,16 @@
       }
     },
     "status_undocumented": {"type": "boolean"},
+    "crosses": {
+      "description": "Optional (overrides only; spec §4.2). Declared attribute crosses, each covered pairwise: a cross:<A>=<a>,<B>=<b> bin for every pair of attributes in it and every pair of their enumerated values. Every attribute must exist and be enumerated (xut lint rule crosses-enumerated).",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+        "minItems": 2,
+        "uniqueItems": true
+      }
+    },
     "min_event_gap_ps": {
       "description": "Optional (overrides only). The minimum gap between distinct event times for stepped hardware rendering to preserve behaviour: must exceed every model-internal delay of the primitive. Absent: xut.validate.MIN_SEP_PS.",
       "type": "integer",

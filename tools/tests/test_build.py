@@ -359,3 +359,33 @@ def test_min_event_gap_override(tmp_path):
         ov.write_text(yaml.safe_dump({"min_event_gap_ps": bad}))
         with pytest.raises(jsonschema.ValidationError):
             load_entry("7series", "TOYFF", tmp_path)
+
+
+def test_crosses_override(tmp_path):
+    """Ruling S19: optional `crosses` (overrides only) naming existing attributes."""
+    import jsonschema
+
+    from xut.errors import OverrideError
+
+    out = tmp_path / "catalog" / "7series"
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
+    e = load_entry("7series", "TOYFF", tmp_path)
+    assert e.crosses == [] and "crosses" not in e.to_dict()  # never generated
+    names = [a["name"] for a in e.attributes]
+    ov = out / "TOYFF.overrides.yaml"
+    ov.write_text(yaml.safe_dump({"crosses": [[names[0], "NOSUCH"]]}))
+    with pytest.raises(OverrideError, match="NOSUCH"):
+        load_entry("7series", "TOYFF", tmp_path)
+    for bad in ([[names[0]]], [[names[0], names[0]]], [names[0]]):
+        ov.write_text(yaml.safe_dump({"crosses": bad}))
+        with pytest.raises(jsonschema.ValidationError):
+            load_entry("7series", "TOYFF", tmp_path)
+
+
+def test_port_active_override(tmp_path):
+    out = tmp_path / "catalog" / "7series"
+    build_all(FIX / "ug953_toy.txt", ["TOYFF"], out, _toy_models(tmp_path), family="7series")
+    port = load_entry("7series", "TOYFF", tmp_path).ports[0]["name"]
+    ov = out / "TOYFF.overrides.yaml"
+    ov.write_text(yaml.safe_dump({"ports": {port: {"active": "low"}}}))
+    assert load_entry("7series", "TOYFF", tmp_path).ports[0]["active"] == "low"
