@@ -191,8 +191,8 @@ def no_container(monkeypatch):
 def _fake_ensure(monkeypatch, entry: ModelEntry) -> list:
     calls = []
 
-    def fake(ms, prim, attrs=None, *, root=None, log=print):
-        calls.append((prim, dict(attrs or {}), root))
+    def fake(ms, prim, attrs=None, *, root=None, log=print, check=True):
+        calls.append((prim, dict(attrs or {}), root, check))
         return entry
 
     monkeypatch.setattr(vl, "ensure_model", fake)
@@ -204,12 +204,18 @@ def _fake_ensure(monkeypatch, entry: ModelEntry) -> list:
     [
         (_entry("unsupported", reason="TOYFF: nested generate"),
          "verilatorize cannot transform TOYFF: TOYFF: nested generate"),
-        (_entry("transformed", equiv={"INIT=1'b0": "fail", "INIT=1'b1": "fail"},
-                equiv_reason={"INIT=1'b0": "2 mismatch(es)", "INIT=1'b1": "2 mismatch(es)"}),
+        (_entry("transformed", equiv={"default": "fail", "INIT=1'b1": "fail"},
+                equiv_reason={"default": "2 mismatch(es)", "INIT=1'b1": "2 mismatch(es)"}),
          "transform-bug: "),
-        (_entry("transformed", equiv={"INIT=1'b0": "error", "INIT=1'b1": "error"},
-                equiv_reason={"INIT=1'b0": "xsim unavailable", "INIT=1'b1": "xsim unavailable"}),
-         "equivalence check error for TOYFF INIT=1'b"),
+        (_entry("transformed", equiv={"default": "error", "INIT=1'b1": "error"},
+                equiv_reason={"default": "xsim unavailable", "INIT=1'b1": "xsim unavailable"}),
+         "equivalence check error for TOYFF "),
+        # an unchanged model over a transformed dependency is gated like a transformed one
+        (_entry("unchanged", depends_on_transformed=["TOYSUB"],
+                equiv={"default": "fail", "INIT=1'b1": "fail"}),
+         "transform-bug: "),
+        (_entry("unchanged", depends_on_unsupported=["TOYSUB"]),
+         "verilatorize cannot transform TOYSUB in the hierarchy of TOYFF"),
     ],
 )  # fmt: skip
 def test_a_blocking_model_is_an_error_never_a_pass_or_skip(
@@ -222,7 +228,13 @@ def test_a_blocking_model_is_an_error_never_a_pass_or_skip(
     assert res.status == "error"
     assert [c.status for c in res.configs] == ["error", "error"]
     assert all(c.reason.startswith(reason) for c in res.configs), res.configs
-    assert calls == [("TOYFF", {"INIT": f"1'b{i}"}, ctx.root) for i in (0, 1)]
+    first = [("TOYFF", {}, ctx.root, False)]  # transform the hierarchy, then check
+    if entry.gated and not (entry.status == "unsupported" or entry.depends_on_unsupported):
+        assert calls == [
+            c for i in (0, 1) for c in (*first, ("TOYFF", {"INIT": f"1'b{i}"}, ctx.root, True))
+        ]
+    else:
+        assert calls == first * 2
     assert not list(workdir(ctx, "verilator", case.id).glob("cfg-*/obj"))  # never built
 
 
@@ -366,15 +378,19 @@ def test_ensure_model_is_safe_from_many_threads(vzsrc, tmp_path, monkeypatch):
         t.join()
     assert errors == []
     assert sorted(map(tuple, transforms)) == [("PLAIN",), ("VZGEN",)]
-    assert sorted(c[1].get("IS_C_INVERTED", "-") for c in calls) == ["1'b0", "1'b1"]
+    # IS_C_INVERTED=0 is the default configuration (canonical keys, review M5)
+    assert sorted(c[1].get("IS_C_INVERTED", "-") for c in calls) == ["-", "1'b1"]
     man = driver.Manifest.load(vz_dir(vzsrc, tmp_path) / "manifest.json")
-    assert man.models["VZGEN"].equiv == {"IS_C_INVERTED=1'b0": "pass", "IS_C_INVERTED=1'b1": "pass"}
+    assert man.models["VZGEN"].equiv == {"default": "pass", "IS_C_INVERTED=1'b1": "pass"}
 
 
 def test_model_attrs_keeps_declared_parameters_as_literals(vzsrc):
-    assert model_attrs(vzsrc, "VZGEN", {"IS_C_INVERTED": 0, "OTHER": "x"}) == {
-        "IS_C_INVERTED": "1'b0"
+    assert model_attrs(vzsrc, "VZGEN", {"IS_C_INVERTED": 1, "OTHER": "x"}) == {
+        "IS_C_INVERTED": "1'b1"
     }
+    # a value equal to the default is the default configuration (review M5)
+    assert model_attrs(vzsrc, "VZGEN", {"IS_C_INVERTED": 0}) == {}
+    assert model_attrs(vzsrc, "VZGEN", {"IS_C_INVERTED": "1'b0"}) == {}
     assert model_attrs(vzsrc, "VZGEN", None) == {}
 
 
@@ -504,16 +520,18 @@ def test_sv_toyff_passes_on_verilator(ctx):
 
 @pytest.mark.container
 def test_reject_config_on_verilator(ctx, toy):
-    """TOYFF's L0 reject drives INIT=1'bx: whatever Verilator does with the x literal, the
-    shared reject rule decides, and the X-seed comparison is skipped."""
+    """TOYFF's L0 reject drives INIT=1'bx. Verilator keeps the x literal of the parameter,
+    the model's own check fires at run time, and the shared reject rule passes it on that
+    evidence (review M6: the observed outcome is pinned); no X-seed comparison."""
     case = _case("7series.TOYFF.L0.reject")
     _python(ctx, case)
     res = VerilatorRunner().run(case, ctx)
     d = workdir(ctx, "verilator", case.id)
     log = _log(ctx, "verilator", case)
-    assert res.status in ("pass", "fail"), (res.reason, log)
+    assert res.status == "pass", (res.reason, log)
+    [c] = res.configs
+    assert c.reason.startswith("rejected at runtime: Attribute Syntax Error: INIT"), c.reason
     assert not list(d.glob("cfg-*/xdep.json")) and _result(d)["x_dependence"] is None
-    print(f"verilator reject outcome: {res.status}: {res.reason}")
 
 
 ZCMP = """\
@@ -542,7 +560,7 @@ def test_input_compared_with_z_passes_after_the_z_compare_rewrite(work, toy):
         res = runner().run(case, ctx)
         assert res.status == "pass", (runner.name, res.reason, _log(ctx, runner.name, case))
     e = driver.Manifest.load(vz_dir(ms, work) / "manifest.json").models["TOYFF"]
-    assert (e.rewrites, e.equiv) == (["zcmp"], {"INIT=1'b0": "pass", "INIT=1'b1": "pass"})
+    assert (e.rewrites, e.equiv) == (["zcmp"], {"default": "pass", "INIT=1'b1": "pass"})
     assert "1'bz" not in (vz_dir(ms, work) / "TOYFF.v").read_text()
 
 
@@ -817,20 +835,162 @@ def test_a_z_stimulus_into_a_z_compare_model_is_an_error_on_iverilog_vz(
     assert VerilatorRunner().run(case, ctx).configs[0].reason == X_STIMULUS
 
 
-def test_sv_undriven(tmp_path):
-    from xut.runners.verilator import sv_undriven
+# --- review I1/I2: the sv guard and gate on the elaborated testbench -----------------------
 
-    n = iter(range(100))
+SV_BODY = """\
+// SPDX-License-Identifier: Apache-2.0
+// included by tb_toy_inc.sv, which defines PRIM (the flops testbench layout)
+`include "xut_trace.svh"
+reg c = 1'b0, d = 1'b0, e = 1'b1;
+wire q0, q1;
+`PRIM #(.INIT(1'b0)) u0 (.Q(q0), .C(c), .D(d), .E(e));
+`PRIM #(.INIT(1'b1)) u1 (.Q(q1), .C(c), .D(d), .E(e));
+initial begin
+  #120000;
+  `XUT_CHECK("gsr", q1, 1'b1)
+  `XUT_POINT1("after_gsr", "Q", q1)
+  xut_finish;
+end
+"""
 
-    def sv(inst: str) -> Path:
-        f = tmp_path / f"tb{next(n)}.sv"  # pyslang caches a file's text by its path
-        f.write_text(f"module tb; wire q; reg c, d, e; {inst} endmodule\n")
-        return f
 
-    ins = ["C", "D", "E"]
-    assert sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E(e));"), "TOYFF", ins) is None
-    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d));"), "TOYFF", ins)
-    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E());"), "TOYFF", ins)
-    assert "E of TOYFF" in sv_undriven(sv("TOYFF u (.Q(q), .C(c), .D(d), .E(1'bz));"), "TOYFF", ins)
-    assert "by position" in sv_undriven(sv("TOYFF u (q, c, d, e);"), "TOYFF", ins)
-    assert sv_undriven(sv("OTHER u (.Q(q));"), "TOYFF", ins) is None
+def _sv_tree(work: Path, body: str = SV_BODY) -> TestCase:
+    """TOYFF's sv test as the flops layout: the testbench defines PRIM and includes its
+    body from the unit's _shared dir (found through TestCase.shared_dirs)."""
+    d = _copy_toy(work)
+    (d / "sv/tb_toy_inc.sv").write_text(
+        "// SPDX-License-Identifier: Apache-2.0\n`timescale 1ps / 1ps\n"
+        '`define PRIM TOYFF\nmodule tb_toy_inc;\n`include "toy_body.svh"\nendmodule\n'
+    )
+    shared = work / "tests/7series/register/_shared/toy"
+    shared.mkdir(parents=True, exist_ok=True)
+    (shared / "toy_body.svh").write_text(body)
+    sv = next(c for c in discover(work) if c.id == "7series.TOYFF.L1.sv_basic")
+    return dataclasses.replace(sv, source="sv/tb_toy_inc.sv")
+
+
+@pytest.fixture
+def ztoy(work, monkeypatch):
+    """A gated TOYFF (its E input defaults through a z-compare) and the Task 18 shared dirs."""
+    from test_runner_cocotb import _shared_dirs
+
+    monkeypatch.setattr(TestCase, "shared_dirs", property(_shared_dirs))
+    ms = make_model_source(work / "ms")
+    (ms.unisims / "TOYFF.v").write_text(ZTOY)
+    return RunContext(work, "rtl", ms)
+
+
+def test_sv_instances_are_found_through_includes_and_macros(work, ztoy):
+    from xut.runners.verilator import sv_instances
+
+    insts = sv_instances(_sv_tree(work), ztoy, "TOYFF", 5)
+    assert [(i.path, i.attrs, i.undriven, i.zdriven) for i in insts] == [
+        ("tb_toy_inc.u0", {"INIT": 0}, [], []),
+        ("tb_toy_inc.u1", {"INIT": 1}, [], []),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "why"),
+    [
+        (", .E(e));\n`PRIM #(.INIT(1'b1))", ");\n`PRIM #(.INIT(1'b1))",
+         "tb_toy_inc.u0: input port(s) E of TOYFF not driven"),
+        (".E(e));\ninitial", ".E());\ninitial", "tb_toy_inc.u1: input port(s) E of TOYFF"),
+        (".E(e));\ninitial", ".E(1'bz));\ninitial", "E (tied to z)"),
+        ("reg c", "localparam ZP = 1'bz;\nreg c", None),
+    ],
+)  # fmt: skip
+def test_sv_guard_sees_an_input_left_open_in_an_included_file(
+    work, ztoy, no_container, monkeypatch, old, new, why
+):
+    """Review I1: the mutant leaves E (defaulted by a z-compare) open inside the included
+    .svh; the S38 guard must refuse it on both runners."""
+    body = SV_BODY.replace(old, new)
+    if why is None:  # a z-valued parameter tied to the port
+        body = body.replace(".E(e));\ninitial", ".E(ZP));\ninitial")
+        why = "E (tied to z)"
+    case = _sv_tree(work, body)
+    _fake_check(monkeypatch)
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ztoy)
+        assert res.status == "error", (runner.name, res.reason)
+        assert why in res.configs[0].reason, res.configs[0].reason
+
+
+def test_sv_gate_checks_every_instantiated_parameterisation(work, ztoy, no_container, monkeypatch):
+    """Review I2: the testbench instantiates INIT=0 and INIT=1; test.yaml's configuration
+    has no attributes. Both are checked, and a failing INIT=1 verdict blocks Verilator."""
+    case = _sv_tree(work)
+    calls = _fake_check(monkeypatch, "pass")
+    import xut.verilatorize.equiv as equiv
+
+    passing = equiv.check_model
+
+    def split(an, ms, out_dir, attrs=None, **kw):
+        r = passing(an, ms, out_dir, attrs, **kw)
+        if attrs:
+            r.status, r.reason = "fail", "3 mismatch(es) against the original on iverilog"
+        return r
+
+    monkeypatch.setattr(equiv, "check_model", split)
+    res = VerilatorRunner().run(case, ztoy)
+    assert res.status == "error"
+    assert res.configs[0].reason.startswith(
+        "transform-bug: Icarus equivalence fail for TOYFF INIT=1'b1"
+    ), res.configs[0].reason
+    assert sorted(str(c[1]) for c in calls) == ["{'INIT': \"1'b1\"}", "{}"]
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        (
+            "".join(ln for ln in SV_BODY.splitlines(True) if "`PRIM" not in ln),
+            "no instance of TOYFF found",
+        ),
+        (SV_BODY.replace(".E(e)", ".NOPE(e)"), "does not elaborate"),
+        (SV_BODY.replace("`PRIM", "OTHER"), "unknown module 'OTHER'"),
+    ],
+)
+def test_sv_guard_fails_closed(work, ztoy, no_container, monkeypatch, body, why):
+    _fake_check(monkeypatch)
+    res = VerilatorRunner().run(_sv_tree(work, body), ztoy)
+    assert res.status == "error" and why in res.configs[0].reason, res.configs[0].reason
+
+
+def test_sv_on_an_ungated_model_needs_no_instances(ctx, no_container, monkeypatch):
+    """TOYFF's own sv fixture instantiates its own flop, not TOYFF: an ungated model needs
+    neither verdicts nor the guard, so nothing fails closed (the run then builds)."""
+    from xut.runners.verilator import gate_config
+
+    case = _case("7series.TOYFF.L1.sv_basic")
+    assert gate_config(case, "default", ctx, 1, lambda _l: None, verdicts=True) is None
+
+
+TOYSUB_PARENT = """\
+// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+module TOYFF #(parameter [0:0] INIT = 1'b0) (output wire Q, input wire C, input wire D);
+  TOYSUB #(.INIT(INIT)) u (.Q(Q), .C(C), .D(D));
+endmodule
+"""
+
+
+@pytest.mark.container
+def test_parent_over_a_transformed_child_on_the_runners(work, toy):
+    """Review C1 end to end: TOYFF itself needs no rewrite, but its TOYSUB compares D with
+    z. The runners gate TOYFF on the hierarchy's equivalence and build it over the vz
+    TOYSUB, whatever ran before."""
+    ms = make_model_source(work / "ms")
+    (ms.unisims / "TOYFF.v").write_text(TOYSUB_PARENT)
+    (ms.unisims / "TOYSUB.v").write_text(ZCMP.replace("module TOYFF", "module TOYSUB"))
+    ctx = RunContext(work, "rtl", ms)
+    case = _case("7series.TOYFF.L1.capture")
+    _python(ctx, case)
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ctx)
+        assert res.status == "pass", (runner.name, res.reason, _log(ctx, runner.name, case))
+    e = driver.Manifest.load(vz_dir(ms, work) / "manifest.json").models
+    assert (e["TOYFF"].status, e["TOYFF"].depends_on_transformed) == ("unchanged", ["TOYSUB"])
+    assert e["TOYFF"].equiv == {"default": "pass", "INIT=1'b1": "pass"}
+    assert sorted(f.name for f in vz_dir(ms, work).glob("*.v")) == ["TOYSUB.v"]

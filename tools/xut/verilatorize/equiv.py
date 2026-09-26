@@ -144,10 +144,19 @@ class Checked:
     enablers: list[str]
     nonconstant_overrides: bool
     rewrites: tuple[str, ...] = ("shadow",)
+    #: the models whose transformed copy the vz side compiles explicitly: the model itself
+    #: when it is transformed, then its transformed dependencies (ruling S45); None: the
+    #: model alone (an ``Analysis``)
+    lib_models: tuple[str, ...] | None = None
 
 
 def _rewrites(an: Subject) -> tuple[str, ...]:
     return tuple(getattr(an, "rewrites", ("shadow",)))
+
+
+def _lib_models(an: Subject) -> tuple[str, ...]:
+    got = getattr(an, "lib_models", None)
+    return (an.model,) if got is None else tuple(got)
 
 
 @dataclass
@@ -375,8 +384,8 @@ def equiv_stimulus(an: Subject, m: DutMap, seed: int = 1) -> Vec:
     s = _Stim(an, m, seed)
     s.activity(2)
     phases = [_independent, _coincident, _pairs, _with_async]
-    if "zcmp" in _rewrites(an):
-        phases.append(_inputs)
+    if "zcmp" in _rewrites(an) or an.model not in _lib_models(an):
+        phases.append(_inputs)  # a z-compare rewrite, or a model gated by its hierarchy
     for phase in phases:
         phase(s)
     vec = s.b.build()
@@ -419,10 +428,12 @@ def _icarus(
     libs: Sequence[Path],
     ms: ModelSource,
     timeout: int,
+    extra: Sequence[Path] = (),
 ) -> _Run:
     """Compile and run the vector testbench on Icarus in ``d``. ``model_file`` (the
     original or the transformed copy) is compiled explicitly, so the model under test can
-    never be resolved from another directory; ``libs`` (``-y``) serve only the models it
+    never be resolved from another directory; so is every file of ``extra`` (the transformed
+    copies of its dependencies, ruling S45); ``libs`` (``-y``) serve the other models it
     instantiates."""
     d.mkdir()
     shutil.copy(out / "stim.memh", d / "stim.memh")
@@ -432,7 +443,7 @@ def _icarus(
         "-I", ex.guest(out), "-I", ex.guest(out / "dut"),
         *(a for lib in libs for a in ("-y", ex.guest(lib))), "-Y", ".v",
         ex.guest(TB), ex.guest(out / "dut" / "xut_dut.v"), ex.guest(model_file),
-        ex.guest(ms.glbl),
+        *(ex.guest(f) for f in extra), ex.guest(ms.glbl),
     ]  # fmt: skip
     rc, ctext = IverilogRunner.step(ex, argv, d, log, timeout)
     bad = [ln for ln in ctext.splitlines() if _UNCLEAN.search(ln)]
@@ -561,10 +572,11 @@ def _check(
     m = replace(write_dut(spec, out / "dut"), attrs={})
     vec = equiv_stimulus(an, m, seed)
     if "zcmp" in _rewrites(an):  # the rewrite's validity condition (ruling S38)
+        have = zcmp.connected(m)
         missing = sorted(
             p.name
             for p in parse_module(an.path, an.model).ports
-            if p.direction == "input" and p.name not in zcmp.connected(m)
+            if p.direction == "input" and have.get(p.name, 0) < p.width
         )
         if missing:
             res.reason = zcmp.undriven_reason(an.model, missing)
@@ -580,16 +592,21 @@ def _check(
     if need_xsim and not xsim.settings_available():
         res.reason = f"xsim oracle needed ({need_xsim}) but Vivado 2025.2 is unavailable"
         return
-    copy = Path(lib) / f"{an.model}.v"
-    if not copy.is_file():
-        res.reason = f"no transformed copy of {an.model} at {copy}"
+    own = an.model in _lib_models(an)
+    copies = [Path(lib) / f"{m}.v" for m in _lib_models(an)]
+    missing = [c for c in copies if not c.is_file()]
+    if missing or not copies:
+        res.reason = f"no transformed copy of {an.model}'s hierarchy at {missing or lib}"
         return
-    if copy.read_bytes() == Path(an.path).read_bytes():
+    copy = copies[0] if own else Path(an.path)
+    if own and copy.read_bytes() == Path(an.path).read_bytes():
         res.reason = f"the transformed copy {copy} is identical to the original {an.path}"
         return
+    info["vz_models"] = list(_lib_models(an))
     ex = executor_for(ms, lib)
     tools = {"iverilog": sim_tool_versions(ex, out)["iverilog"]}
-    vz = _icarus(ex, out / "vz", out, copy, [lib, *ms.search], ms, _TIMEOUT_S)
+    extra = copies[1:] if own else copies
+    vz = _icarus(ex, out / "vz", out, copy, [lib, *ms.search], ms, _TIMEOUT_S, extra)
     if not need_xsim:
         orig = _icarus(ex, out / "orig", out, Path(an.path), ms.search, ms, _TIMEOUT_S)
         res.oracle = "iverilog"

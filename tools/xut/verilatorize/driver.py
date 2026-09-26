@@ -25,6 +25,17 @@ oracle in ``equiv_oracle[config_key]``; the work goes in
 is re-transformed or the simulators change (``sim_tools``: the Icarus version and image,
 the xsim version); a missing result or an ``error`` is (re)checked.
 
+**Hierarchies** (ruling S45). Each entry records the models its file ``instantiates``.
+``verilatorize`` of some models also transforms every model their hierarchy reaches, so a
+copy in ``vz_dir`` is never used stale or missing, and its contents never depend on which
+models were asked for first (the union of closures). ``_link`` then records, per model,
+the models of its hierarchy that are ``transformed`` (``depends_on_transformed``) or
+``unsupported`` (``depends_on_unsupported``), the union of the rewrites it runs under
+(``effective_rewrites``) and a hash of its transformed dependencies (``deps_sha256``); a
+change of that hash discards the model's equivalence verdicts. A model with a transformed
+dependency is *gated* like a transformed one: its equivalence check runs the original
+hierarchy against the vz hierarchy (``checked``), and ``--check`` checks it too.
+
 ``ensure_model`` is the runners' entry point (the ``verilator`` runner and its
 ``iverilog-vz`` companion, Task 15): it transforms one model on demand and runs the
 equivalence check for one configuration when the manifest has no result for it.
@@ -33,6 +44,7 @@ equivalence check for one configuration when the manifest has no result for it.
 from __future__ import annotations
 
 import ast
+import functools
 import hashlib
 import json
 import multiprocessing
@@ -80,6 +92,15 @@ class ModelEntry:
     equiv_reason: dict[str, str] = field(default_factory=dict)
     #: the rewrites applied: "shadow" and/or "zcmp" (ruling S38); empty unless transformed
     rewrites: list[str] = field(default_factory=list)
+    #: models of this source the file instantiates (its own helper modules excluded)
+    instantiates: list[str] = field(default_factory=list)
+    #: models of its hierarchy (transitively) that are transformed / unsupported (S45)
+    depends_on_transformed: list[str] = field(default_factory=list)
+    depends_on_unsupported: list[str] = field(default_factory=list)
+    #: its own rewrites and those of depends_on_transformed
+    effective_rewrites: list[str] = field(default_factory=list)
+    #: hash of depends_on_transformed and their keys: a change discards the verdicts
+    deps_sha256: str = ""
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
@@ -88,6 +109,12 @@ class ModelEntry:
     glbl_sha256: str = ""
     tool_sha256: str = ""  # tool_sources() + xut.__version__
     choices_sha256: str = ""  # the catalog-derived generate choices
+
+    @property
+    def gated(self) -> bool:
+        """Verilator results need an equivalence verdict: the model is transformed, or its
+        hierarchy holds a transformed model (ruling S45)."""
+        return self.status == "transformed" or bool(self.depends_on_transformed)
 
     @classmethod
     def from_dict(cls, d: dict) -> ModelEntry:
@@ -262,8 +289,48 @@ def _key(model: str, path: Path, glbl_sha: str, tool_sha: str) -> dict[str, str]
     }
 
 
+def instantiated(path: Path) -> list[str]:
+    """The modules ``path`` instantiates that it does not define (syntax only, every
+    generate branch), ``glbl`` excluded."""
+    import pyslang
+
+    from xut.verilatorize.analyze import _walk_syntax
+
+    kind = pyslang.syntax.SyntaxKind
+    tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
+    defined: set[str] = set()
+    used: set[str] = set()
+    for n in _walk_syntax(tree.root):
+        if n.kind == kind.ModuleDeclaration:
+            defined.add(n.header.name.valueText)
+        elif n.kind == kind.HierarchyInstantiation:
+            used.add(n.type.valueText)
+    return sorted(used - defined - {"glbl"})
+
+
+def hierarchy(ms: ModelSource, models: list[str]) -> list[str]:
+    """``models`` and every model of ``ms`` their files reach by instantiation."""
+    files = model_files(ms)
+    seen: list[str] = []
+    todo = list(models)
+    while todo:
+        m = todo.pop(0)
+        if m in seen or m not in files:
+            continue
+        seen.append(m)
+        todo += instantiated(files[m])
+    return seen
+
+
 def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
-    """Classify, and if forced, transform one model file (runs in a worker process)."""
+    """Classify, and if needed, transform one model file (runs in a worker process); the
+    entry records what the file instantiates."""
+    entry = _transform_one(Path(path), glbl, out_dir)
+    entry.instantiates = instantiated(Path(path))
+    return entry
+
+
+def _transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
     path = Path(path)
     sha = _sha256(path)
     out = Path(out_dir) / path.name
@@ -361,7 +428,7 @@ def verilatorize(
         unknown = sorted(set(models) - set(files))
         if unknown:
             raise XutError(f"no such model(s) in {ms.name}: {unknown}")
-        files = {m: files[m] for m in sorted(set(models))}
+        files = {m: files[m] for m in sorted(hierarchy(ms, sorted(set(models))))}
     out_dir = Path(out_dir) if out_dir is not None else vz_dir(ms)
     out_dir.mkdir(parents=True, exist_ok=True)
     mpath = out_dir / "manifest.json"
@@ -400,6 +467,7 @@ def verilatorize(
                 progress(
                     f"progress: done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
                 )
+        _link(man)
     finally:
         man.save(mpath)
     if crash is not None:
@@ -410,6 +478,56 @@ def verilatorize(
         finally:
             man.save(mpath)
     return man
+
+
+def _link(man: Manifest) -> None:
+    """Record every entry's hierarchy facts (module docstring): ``depends_on_transformed``,
+    ``depends_on_unsupported``, ``effective_rewrites`` and ``deps_sha256``; a changed
+    ``deps_sha256`` discards the entry's verdicts."""
+    for e in man.models.values():
+        seen: set[str] = set()
+        todo = list(e.instantiates)
+        while todo:
+            d = todo.pop()
+            if d in seen or d not in man.models:  # not a model of this source (secureip)
+                continue
+            seen.add(d)
+            todo += man.models[d].instantiates
+        dt = sorted(d for d in seen if man.models[d].status == "transformed")
+        e.depends_on_transformed = dt
+        e.depends_on_unsupported = sorted(d for d in seen if man.models[d].status == "unsupported")
+        e.effective_rewrites = sorted(set(e.rewrites).union(*(man.models[d].rewrites for d in dt)))
+        key = [[d, *(getattr(man.models[d], k) for k in _DEP_KEY)] for d in dt]
+        sha = hashlib.sha256(json.dumps(key).encode()).hexdigest()
+        if e.deps_sha256 != sha:
+            e.deps_sha256 = sha
+            for verdicts in (e.equiv, e.equiv_oracle, e.equiv_reason, e.equiv_tools):
+                verdicts.clear()
+
+
+_DEP_KEY = ("source_sha256", "glbl_sha256", "tool_sha256", "choices_sha256", "xut_version")
+
+
+def checked(man: Manifest, model: str, files: dict[str, Path]) -> object:
+    """The equivalence subject (``equiv.Checked``) of a gated ``model``: its original file
+    against its vz hierarchy, whose copies (its own when it is transformed, and every
+    transformed dependency's) are compiled explicitly (``lib_models``). Its triggers add the
+    dependencies' ``glbl.*`` triggers (their port triggers are not the model's ports)."""
+    from xut.verilatorize.equiv import Checked
+
+    e = man.models[model]
+    deps = [man.models[d] for d in e.depends_on_transformed]
+    glbl = sorted({t for d in deps for t in d.triggers if t.startswith("glbl.")} - set(e.triggers))
+    own = (model,) if e.status == "transformed" else ()
+    return Checked(
+        model,
+        files[model],
+        [*e.triggers, *glbl],
+        list(e.enablers),
+        e.nonconstant_overrides or any(d.nonconstant_overrides for d in deps),
+        tuple(e.effective_rewrites or e.rewrites),
+        own + tuple(e.depends_on_transformed),
+    )
 
 
 def sim_tools(ms: ModelSource, work: Path) -> str:
@@ -446,17 +564,19 @@ def _check_all(
     jobs: int,
     progress: Callable[[str], None],
 ) -> None:
-    """Equivalence-check every configuration of ``models`` that has no pass/fail yet."""
-    from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
+    """Equivalence-check every configuration of the gated ``models`` (a model with an
+    unsupported dependency is not: its results are refused anyway) that has no current
+    pass/fail yet. Configurations are keyed canonically (``model_attrs``)."""
+    from xut.verilatorize.equiv import check_model, config_dir, config_key
 
     tools = sim_tools(ms, out_dir / "equiv")
     todo: list[tuple[str, dict[str, str]]] = []
     for m in models:
         e = man.models.get(m)
-        if e is None or e.status != "transformed":
+        if e is None or not e.gated or e.depends_on_unsupported:
             continue
-        for cfg in e.generate_configs or [{}]:
-            k = config_key(cfg)
+        cfgs = {config_key(c): c for c in (model_attrs(ms, m, c) for c in e.generate_configs)}
+        for k, cfg in ({"default": {}} | cfgs).items():
             if e.equiv.get(k) not in ("pass", "fail") or e.equiv_tools.get(k) != tools:
                 todo.append((m, cfg))
     files = model_files(ms)
@@ -466,10 +586,7 @@ def _check_all(
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         futs = {}
         for m, cfg in todo:
-            e = man.models[m]
-            subject = Checked(
-                m, files[m], e.triggers, e.enablers, e.nonconstant_overrides, tuple(e.rewrites)
-            )
+            subject = checked(man, m, files)
             work = out_dir / "equiv" / m / config_dir(config_key(cfg))
             futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
         for fut in as_completed(futs):
@@ -513,28 +630,55 @@ def _sim_tools(ms: ModelSource, out: Path) -> str:
         return _TOOLS[str(out)]
 
 
-def undriven_inputs(ms: ModelSource, model: str, connected: set[str]) -> list[str]:
-    """The input ports of ``model`` (its HDL) that are not in ``connected``: a wrapper that
-    leaves one unconnected breaks the z-compare rewrite's validity condition (ruling S38)."""
+def undriven_inputs(ms: ModelSource, model: str, connected: dict[str, int]) -> list[str]:
+    """The input ports of ``model`` (its HDL) not fully driven: absent from ``connected``
+    (port -> bits driven), or with fewer bits driven than the port has (review M3). A
+    wrapper leaving one undriven breaks the z-compare rewrite's validity condition (S38)."""
+    out = []
+    for p in parsed(ms, model).ports:
+        n = connected.get(p.name, 0)
+        if p.direction == "input" and n < p.width:
+            out.append(p.name if n == 0 else f"{p.name} ({n} of {p.width} bits)")
+    return sorted(out)
+
+
+@functools.lru_cache(maxsize=256)
+def _module(path: str, mtime_ns: int, model: str) -> object:
     from xut.catalog.unisim import parse_module
 
-    mod = parse_module(model_files(ms)[model], model)
-    return sorted(p.name for p in mod.ports if p.direction == "input" and p.name not in connected)
+    return parse_module(Path(path), model)
+
+
+def parsed(ms: ModelSource, model: str) -> object:
+    """``parse_module`` of ``model``'s file, cached while the file is unchanged."""
+    f = model_files(ms)[model]
+    return _module(str(f), f.stat().st_mtime_ns, model)
 
 
 def model_attrs(ms: ModelSource, model: str, attrs: dict | None) -> dict[str, str]:
-    """``attrs`` as the equivalence check keys them: only the parameters ``model`` declares
-    (an sv configuration may also set testbench parameters), each rendered as the Verilog
-    literal of its kind (``0`` and ``"1'b0"`` are one configuration of a 1-bit attribute)."""
-    from xut.catalog.unisim import parse_module
-    from xut.wrap import spec_from_hdl
+    """``attrs`` as the equivalence check keys them (canonical): only the parameters
+    ``model`` declares (an sv configuration may also set testbench parameters), each
+    rendered as the Verilog literal of its kind (``0`` and ``"1'b0"`` are one configuration
+    of a 1-bit attribute), without those equal to the parameter's default (FDRE's
+    ``INIT=1'b0`` is the ``default`` configuration: review M5)."""
+    from xut.wrap import WrapError, render_attr, spec_from_hdl
 
     if not attrs:
         return {}
-    mod = parse_module(model_files(ms)[model], model)
-    declared = {p.name for p in mod.params}
-    mine = {k: v for k, v in attrs.items() if k in declared}
-    return dict(spec_from_hdl(mod, "default", mine, raw_clock_out=True).attrs)
+    mod = parsed(ms, model)
+    decl = {p.name: {"name": p.name, "kind": p.kind, "width": p.width} for p in mod.params}
+    mine = {k: v for k, v in attrs.items() if k in decl}
+    out = dict(spec_from_hdl(mod, "default", mine, raw_clock_out=True).attrs)
+    for p in mod.params:
+        if p.name not in out:
+            continue
+        try:
+            default = render_attr(decl[p.name], p.default, allow_x=True)
+        except WrapError:
+            continue  # a default that is not a plain literal: keep the attribute
+        if default == out[p.name]:
+            del out[p.name]
+    return out
 
 
 def ensure_model(
@@ -544,6 +688,7 @@ def ensure_model(
     *,
     root: Path | None = None,
     log: Callable[[str], None] = print,
+    check: bool = True,
 ) -> ModelEntry:
     """``model``'s manifest entry, transformed (on demand) into ``vz_dir(ms, root)`` and, if it
     is ``transformed``, equivalence-checked under ``attrs`` (``model_attrs``) when
@@ -554,8 +699,11 @@ def ensure_model(
     rule of ``--check``: when it is missing, an ``error``, or was computed with other
     simulators (``equiv_tools`` differs from ``sim_tools``), at most once per process and
     configuration; the verdict is recorded with the ``sim_tools`` fingerprint. ``log``
-    receives the driver's progress lines."""
-    from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
+    receives the driver's progress lines. The first call per process transforms the model's
+    whole hierarchy (``verilatorize`` follows it), re-transforming any stale copy; a gated
+    model (``ModelEntry.gated``: transformed, or over a transformed dependency) is checked,
+    one with an unsupported dependency is not. ``check=False`` only transforms."""
+    from xut.verilatorize.equiv import check_model, config_dir, config_key
 
     out = vz_dir(ms, root)
     key = (str(out), model)
@@ -565,7 +713,7 @@ def ensure_model(
             with _MANIFEST_LOCK:
                 man = verilatorize(ms, [model], progress=log, out_dir=out)
             e = _ENTRIES[key] = man.models[model]
-        if e.status != "transformed":
+        if not check or not e.gated or e.status == "unsupported" or e.depends_on_unsupported:
             return e
         cfg = model_attrs(ms, model, attrs)
         k = config_key(cfg)
@@ -574,14 +722,8 @@ def ensure_model(
         tools = _sim_tools(ms, out)
         if e.equiv.get(k) in ("pass", "fail") and e.equiv_tools.get(k) == tools:
             return e
-        subject = Checked(
-            model,
-            model_files(ms)[model],
-            e.triggers,
-            e.enablers,
-            e.nonconstant_overrides,
-            tuple(e.rewrites),
-        )
+        with _MANIFEST_LOCK:
+            subject = checked(Manifest.load(out / "manifest.json"), model, model_files(ms))
         why = "no verdict" if k not in e.equiv else f"was {e.equiv[k]}, or other simulators"
         log(f"equiv: checking {model} [{k}] ({why})")
         r = check_model(subject, ms, out / "equiv" / model / config_dir(k), cfg, lib=out)
@@ -593,8 +735,16 @@ def ensure_model(
             mpath = out / "manifest.json"
             man = Manifest.load(mpath)
             cur = man.models.get(model)
-            if cur is not None and cur.source_sha256 == e.source_sha256:
+            if cur is not None and (cur.source_sha256, cur.deps_sha256) == (
+                e.source_sha256,
+                e.deps_sha256,
+            ):
                 cur.equiv[k], cur.equiv_oracle[k] = r.status, r.oracle
                 cur.equiv_reason[k], cur.equiv_tools[k] = r.reason, tools
                 man.save(mpath)
+            else:  # the manifest moved on (another process re-transformed): say so
+                log(
+                    f"equiv: {model} [{k}] {r.status} not recorded in {mpath}: its entry "
+                    "changed since this process read it (review M5)"
+                )
         return e
