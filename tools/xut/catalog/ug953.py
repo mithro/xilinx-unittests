@@ -453,6 +453,16 @@ def _split_values(text: str) -> list[str]:
     return out
 
 
+def _allowed_values(text: str) -> list[str]:
+    """The values of an allowed-values cell. Values are facts, so a list of them is
+    kept whole, however long (ICAPE2 ``DEVICE_ID`` lists 51); only a prose cell
+    ("String representing file name and location") is capped at ``MAX_FRAGMENT``
+    characters, as every other fragment of AMD's text is."""
+    if _is_prose(text):
+        return _split_values(text[:MAX_FRAGMENT])
+    return [v[:MAX_FRAGMENT] for v in _split_values(text)]
+
+
 def _closed(text: str) -> bool:
     """A value cell fragment that does not continue (quotes balanced, no trailing , / to)."""
     return text.count('"') % 2 == 0 and not text.endswith((",", " to"))
@@ -511,7 +521,7 @@ class _AttrTable:
                     allowed, default = m.group("allowed"), m.group("default")
             entry = {
                 "type": self.anchors[i].group("type"),
-                "allowed": _split_values(allowed[:MAX_FRAGMENT]),
+                "allowed": _allowed_values(allowed),
                 "default": default[:MAX_FRAGMENT],
             }
             for name in _attr_names(_join_name([t for _, t in chain_of[i]])):
