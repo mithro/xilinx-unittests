@@ -414,6 +414,20 @@ def _generate_constructs(tree: SyntaxTree, module: str) -> tuple[list[_GenConstr
     return constructs, nested
 
 
+def _all_arms(tree: SyntaxTree, module: str) -> list[SyntaxNode]:
+    """Every generate if/case arm of ``module``, at any nesting depth."""
+    arms: list[SyntaxNode] = []
+    for n in _walk_syntax(_module_decl(tree, module)):
+        if n.kind == _SX.IfGenerate:
+            arms.append(n.block)
+            ec = n.elseClause
+            if ec is not None and ec.clause.kind != _SX.IfGenerate:
+                arms.append(ec.clause)
+        elif n.kind == _SX.CaseGenerate:
+            arms += [item.clause for item in n.items]
+    return arms
+
+
 def _expand_localparams(nodes: list[SyntaxNode], local: dict[str, SyntaxNode]) -> list[SyntaxNode]:
     """The condition nodes plus the initializers of every localparam they name, transitively."""
     out, seen, work = list(nodes), set(), list(nodes)
@@ -581,7 +595,13 @@ class _Walker:
         if k == _EK.NamedValue:
             return [e]
         if k == _EK.HierarchicalValue:
-            return []
+            if e.symbol.hierarchicalPath.startswith("glbl."):
+                return []  # into the simulator's glbl (PLL_LOCKG): outside the model
+            raise self.err(
+                f"hierarchical write to {e.symbol.hierarchicalPath} at line "
+                f"{self.src.line(e.sourceRange.start.offset)} is not supported (its driver "
+                "would be invisible to the trigger trace)"
+            )
         if k in (_EK.ElementSelect, _EK.RangeSelect, _EK.MemberAccess):
             return self.lvalues(e.value)
         if k == _EK.Concatenation:
@@ -639,6 +659,11 @@ class _Walker:
             if n.kind == _SK.ProceduralAssign:
                 if n.isForce:
                     raise self.err("force/release is not supported by the transform")
+                if n.assignment.left.kind == _EK.HierarchicalValue:
+                    raise self.err(
+                        f"procedural assign to a hierarchical reference at line "
+                        f"{self.src.line(n.sourceRange.start.offset)}"
+                    )
                 if n.assignment.left.kind != _EK.NamedValue:
                     raise self.err(
                         f"procedural assign to a select or concatenation at line "
@@ -793,12 +818,14 @@ class _Walker:
 
     def gate(self, prim: ast.PrimitiveInstanceSymbol) -> None:
         """buf/not/and/or/nand/nor/xor/xnor/bufif*/notif* and UDPs: outputs <- inputs."""
-        terms = [e for e in prim.portConnections if e is not None]
+        terms = list(prim.portConnections)
         n_out = len(terms) - 1 if prim.primitiveType.name in _MULTI_OUT else 1
+        outs = [e for e in terms[:n_out] if e is not None]
         reads: set[str] = set()
         for e in terms[n_out:]:
-            self.reads(e, reads)
-        for e in terms[:n_out]:
+            if e is not None:
+                self.reads(e, reads)
+        for e in outs:
             for nv in self.lvalues(e):
                 if self.key(nv.symbol) in self.forced_names:
                     raise self.err(f"forced reg {self.key(nv.symbol)} driven by a primitive")
@@ -870,7 +897,20 @@ class _Walker:
             levels |= self.reads(stmt, set())
         self._proc = pb.procedureKind
         self.stmt(stmt, frozenset(), _Ctx(frozenset(edges), frozenset(levels)))
-        self.track(stmt, {})
+        start: dict[str, Span | None] = {}
+        if pb.procedureKind == ast.ProceduralBlockKind.Always and body.kind != _SK.Timed:
+            # the body loops back to its start without suspending: a read at the top sees
+            # the state left by the previous iteration (and none on the first)
+            dry, self._dry = self._dry, True
+            try:
+                while True:
+                    nxt = _merge({}, self.track(stmt, start))
+                    if nxt == start:
+                        break
+                    start = nxt
+            finally:
+                self._dry = dry
+        self.track(stmt, start)
 
     def inner_waits(self, body: ast.Statement, edges: set[str], levels: set[str]) -> bool:
         implicit = False
@@ -1099,6 +1139,12 @@ class _Walker:
         read of such a reg. Returns the state after ``s``."""
         k = s.kind
         if k == _SK.Block:
+            if s.blockKind != ast.StatementBlockKind.Sequential and (st or self.forced_in(s)):
+                line = self.src.line(s.sourceRange.start.offset)
+                raise self.err(
+                    f"fork/join (parallel block) at line {line} next to a procedural "
+                    "assign/deassign: execution order is not static"
+                )
             return self.track(s.body, st, in_task)
         if k == _SK.List:
             for x in s.list:
@@ -1134,8 +1180,6 @@ class _Walker:
         if k == _SK.ExpressionStatement:
             return self.track_expr(s.expr, st, in_task)
         if k in _LOOPS:
-            if not st and not self.forced_in(s.body):
-                return st
             dry, self._dry = self._dry, True
             try:  # fixpoint: the body may run any number of times, including zero
                 cur = st
@@ -1260,6 +1304,12 @@ class _Walker:
         not an assignment lvalue, not incremented, not passed to a task/function or port,
         not procedurally assigned. Its value is then its type default, a constant."""
         decl = self.body.definition.syntax
+        root = decl
+        while root.parent is not None:
+            root = root.parent
+        for n in _walk_syntax(root):  # `M.name` anywhere in the file may write it
+            if n.kind == _SX.ScopedName and _plain(n).split(".")[-1].strip() == name:
+                return False
         for n in _walk_syntax(decl):
             if n.kind != _SX.IdentifierName or n.identifier.valueText != name:
                 continue
@@ -1355,6 +1405,7 @@ def _check_coverage(
     src: _Source,
     forced: dict[str, dict[str, ForcedReg]],
     elaborated: set[int],
+    instantiated: set[str],
 ) -> None:
     """Backstops: every procedural assign/deassign in the file was analysed (in the model or
     a helper module it instantiates), and no generate branch that never elaborated mentions
@@ -1393,26 +1444,17 @@ def _check_coverage(
             f"procedural assign/deassign at line {line} (module {other}) was never "
             "elaborated (an untaken generate branch or an uncalled task)",
         )
-    for name, regs_of in forced.items():
-        constructs, nested = _generate_constructs(tree, name)
-        if name != module and nested:
-            raise TransformError(
-                module,
-                f"nested generate conditions are not supported (in helper module {name}): "
-                f"`{nested[0]}`",
-            )
-        for c in constructs:
-            for arm in c.arms:
-                if arm.sourceRange.start.offset in elaborated:
-                    continue
-                hit = _identifiers(arm) & set(regs_of)
-                if hit:
-                    line = src.line(arm.sourceRange.start.offset)
-                    raise TransformError(
-                        module,
-                        f"generate branch at line {line} mentions forced reg "
-                        f"{sorted(hit)[0]} but no generate configuration elaborates it",
-                    )
+    # Every generate branch of the model and of every same-file module it instantiates must
+    # be elaborated by some configuration: an unelaborated branch may hold a write, a forcing
+    # statement or a driver in a trigger cone (review fix round 1).
+    for name in sorted(instantiated):
+        for arm in _all_arms(tree, name):
+            if arm.sourceRange.start.offset not in elaborated:
+                raise TransformError(
+                    module,
+                    f"generate branch at line {src.line(arm.sourceRange.start.offset)} (module "
+                    f"{name}): no generate configuration elaborates it",
+                )
 
 
 def _copy(x: ForcedReg) -> ForcedReg:
@@ -1448,6 +1490,7 @@ def analyze(
     ends: dict[str, int] = {}
     notes: list[str] = []
     elaborated: set[int] = set()
+    instantiated: set[str] = set()
     for overrides in generate_configs(path, module, choices):
         _, inst = _compile(path, module, glbl, overrides)
         top = _Walker(module, inst, src)
@@ -1455,6 +1498,7 @@ def analyze(
         top.walk()
         for w in top.all():
             elaborated |= w.generate_blocks
+            instantiated.add(w.defname)
             ends[w.defname] = src.char(w.body.definition.syntax.endmodule.location.offset)
             for x in w.regs.values():
                 if not x.overrides:  # deassign-only here; see noop_deassigns below
@@ -1480,7 +1524,9 @@ def analyze(
         for w in top.all():  # notes are added while tracing, including the lifts above
             notes += [n for n in w.notes if n not in notes]
     subs = {n: r for n, r in merged.items() if n != module and r}
-    _check_coverage(Path(path), module, src, {module: merged[module], **subs}, elaborated)
+    _check_coverage(
+        Path(path), module, src, {module: merged[module], **subs}, elaborated, instantiated
+    )
 
     def build(name: str, regs: dict[str, ForcedReg]) -> Analysis:
         noop = sorted(d for x in regs.values() if not x.overrides for d in x.deassigns)
