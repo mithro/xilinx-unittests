@@ -8,6 +8,7 @@ gaps and valid status files.
 from __future__ import annotations
 
 import fnmatch
+import re
 import subprocess
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -369,12 +370,16 @@ def _valid_test_files(root: Path) -> list[tuple[str, dict]]:
     return out
 
 
+def gap_bin(gap: str) -> str:
+    """The bin a ``gaps`` entry accounts for: its leading token, up to the first
+    whitespace or ``—`` (``"claim:FDRE.C8 — why"`` -> ``claim:FDRE.C8``; ruling S21)."""
+    return re.split(r"\s|—", gap.strip(), maxsplit=1)[0]
+
+
 def _gap_names(gap: str, b: str) -> bool:
-    """True if ``gap`` starts with bin ``b`` as a whole word (``"claim:FDRE.C8 — why"``)."""
-    if not gap.startswith(b):
-        return False
-    rest = gap[len(b) :]
-    return not rest or not (rest[0].isalnum() or rest[0] in "_.='")
+    """True if ``gap``'s leading token is exactly bin ``b``: ``port:D:0 …`` accounts for
+    ``port:D:0`` only, never for ``port:D``."""
+    return gap_bin(gap) == b
 
 
 def check_bins_accounted(root: Path) -> list[LintIssue]:
@@ -448,12 +453,19 @@ def check_crosses(root: Path) -> list[LintIssue]:
 
 def check_gaps_present(root: Path) -> list[LintIssue]:
     """Every test says what it misses (spec §1.6, controller ruling on review (b) #3): a
-    test whose ``gaps`` is missing or empty is an error (rule ``gaps-present``)."""
+    test whose ``gaps`` is missing or empty, or has a blank entry, is an error (rule
+    ``gaps-present``)."""
     return [
-        LintIssue(rel, "gaps-present", f"{t['id']}: gaps is missing or empty", "error")
+        LintIssue(rel, "gaps-present", f"{t['id']}: {why}", "error")
         for rel, data in _valid_test_files(root)
         for t in data["tests"]
-        if not t.get("gaps")
+        for why in (
+            ["gaps is missing or empty"]
+            if not t.get("gaps")
+            else ["gaps has a blank entry"]
+            if any(not g.strip() for g in t["gaps"])
+            else []
+        )
     ]
 
 

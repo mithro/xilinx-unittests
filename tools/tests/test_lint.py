@@ -996,3 +996,46 @@ def test_crosses_need_enumerated_attributes(tmp_path):
     ov.write_text(yaml.safe_dump({"crosses": [["INIT", "NOSUCH"]]}))
     (issue,) = check_crosses(tmp_path)
     assert issue.rule == "crosses-enumerated" and "NOSUCH" in issue.message
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "port:R:0 — only the value bin",  # not port:R
+        "port:R[0]:1 — a bit bin",
+        "port:Rx is not a bin",
+        "port:R: colon is part of the token",
+        "see port:R elsewhere",
+    ],
+)
+def test_bins_accounted_needs_the_exact_leading_token(tmp_path, gap):
+    """Ruling S21: a gap accounts for bin b only if its leading token (up to whitespace or
+    —) is exactly b."""
+    _bins_tree(tmp_path, [gap])
+    assert [i.message.split()[1] for i in check_bins_accounted(tmp_path)] == ["port:R"]
+
+
+@pytest.mark.parametrize("gap", ["port:R — why", "port:R—why", "port:R", "  port:R  why"])
+def test_bins_accounted_token_forms(tmp_path, gap):
+    _bins_tree(tmp_path, [gap])
+    assert check_bins_accounted(tmp_path) == []
+
+
+def test_gap_bin_token():
+    from xut.lint import gap_bin
+
+    assert gap_bin("claim:FDRE.C8 — why") == "claim:FDRE.C8"
+    assert gap_bin("port:D[0]:1\tx") == "port:D[0]:1"
+
+
+def test_gaps_present_rejects_a_blank_entry(tmp_path):
+    text = _VALID_TEST_YAML.replace('gaps: ["fixture"]', 'gaps: ["fixture", "   "]')
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    (issue,) = check_gaps_present(tmp_path)
+    assert issue.rule == "gaps-present" and "blank entry" in issue.message
+
+
+def test_empty_gap_string_is_a_schema_error(tmp_path):
+    text = _VALID_TEST_YAML.replace('gaps: ["fixture"]', 'gaps: [""]')
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    assert [i.rule for i in check_tests_documented(tmp_path)] == ["test-schema"]

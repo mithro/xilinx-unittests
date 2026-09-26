@@ -69,7 +69,11 @@
           },
           "flows": {"type": "array", "items": {"type": "string"}},
           "related": {"type": "array", "items": {"type": "string"}},
-          "gaps": {"type": "array", "items": {"type": "string"}},
+          "gaps": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "$comment": "What the test does not cover (lint rule gaps-present: non-empty, no blank entry). An entry whose leading token (up to whitespace or —) is a coverage bin accounts for that bin (lint rule bins-accounted)."
+          },
           "configs": {
             "type": "array",
             "$comment": "sv and cocotb styles only: a vector test's configurations come from its generator.",
