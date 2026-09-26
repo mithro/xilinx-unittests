@@ -4,10 +4,10 @@
 import pytest
 from flop_recipes import KINDS
 
-from xut_models.base import ModelContractError, ModelUnsupported
+from xut_models.base import ModelContractError, ModelUnsupported, Out
 from xut_models.registry import get
 
-PRIMS = ["FDRE", "FDSE"]  # FDCE/FDPE in Task 26
+PRIMS = ["FDRE", "FDSE", "FDCE", "FDPE"]
 
 # UG953 v2026.1 (Introduction/Logic-Table page, Attributes page), pinned here as literals
 # -- independently of the model class under test -- so a wrong PAGE/ATTR_PAGE constant is
@@ -24,11 +24,20 @@ def forced(prim):
     return KINDS[prim].forced
 
 
+def idle(prim, attrs):
+    """The control pin's inactive level: 1 under IS_<ctrl>_INVERTED=1, else 0."""
+    return int(str(attrs.get(f"IS_{KINDS[prim].ctrl}_INVERTED", "1'b0"))[-1])
+
+
 def fresh(prim, **attrs):
+    """Powered on and released from GSR, with every input Low except the control, which
+    is held at its inactive level (as the vector recipes and the cocotb session hold it):
+    for an async kind under IS_<ctrl>_INVERTED=1, a Low pin would force Q at release."""
     m = get("7series", prim)(attrs)
     m.power_on()
+    ctrl = KINDS[prim].ctrl
     for p in m.inputs():
-        m.set_input(p, 0)
+        m.set_input(p, idle(prim, attrs) if p == ctrl else 0)
     m.glbl("GSR", 0)
     return m
 
@@ -246,20 +255,73 @@ def test_gsr_midrun_and_inferred_edge(prim):
     assert q(m).bits == "0"
 
 
-@pytest.mark.parametrize("prim", [p for p in PRIMS if KINDS[p].is_async])
-def test_gsr_versus_async_control_inferred_control_wins(prim):
+ASYNC_PRIMS = [p for p in PRIMS if KINDS[p].is_async]
+
+
+@pytest.mark.parametrize("prim", ASYNC_PRIMS)
+@pytest.mark.parametrize("inv_ctrl", [0, 1])
+def test_gsr_versus_async_control_inferred_control_wins(prim, inv_ctrl):
+    """Ruling S30/S41(1): GSR and an active async control that disagree with INIT give
+    the control value, tagged inferred: (never a don't-care), and still hit C3."""
     k, f = KINDS[prim], forced(prim)
-    same = fresh(prim, INIT=f"1'b{f}")
+    inv = {f"IS_{k.ctrl}_INVERTED": f"1'b{inv_ctrl}"}
+    same = fresh(prim, INIT=f"1'b{f}", **inv)
     same.glbl("GSR", 1)
-    same.set_input(k.ctrl, 1)
+    same.set_input(k.ctrl, 1 ^ inv_ctrl)
     assert q(same).bits == str(f) and q(same).prov.startswith("doc:")  # both rules agree
-    m = fresh(prim, INIT=f"1'b{1 - f}")
+    m = fresh(prim, INIT=f"1'b{1 - f}", **inv)
     m.glbl("GSR", 1)
-    m.set_input(k.ctrl, 1)
+    m.set_input(k.ctrl, 1 ^ inv_ctrl)
     assert q(m).bits == str(f) and q(m).prov.startswith("inferred:")
+    assert "control_is_taken_to_win" in q(m).prov  # the S30 reason, not another one
     assert f"{prim}.C3" in m.claims_hit  # ruling S30: the control claim still hits
     m.glbl("GSR", 0)  # control still active: it wins
     assert q(m).bits == str(f) and q(m).prov.startswith("doc:")
+
+
+@pytest.mark.parametrize("prim", ASYNC_PRIMS)
+@pytest.mark.parametrize("ce", [0, 1])
+@pytest.mark.parametrize("agree", [True, False])
+def test_edge_under_gsr_with_async_control_keeps_provenance(prim, ce, agree):
+    """R1 (Task 20 re-review) / S41(3): under GSR with an active async control, the clock
+    is a don't-care (logic tables p369/p372: CLR/PRE=1, CE=X, C=X), so an edge must not
+    re-tag Q with the GSR-edge inference -- neither the doc: value when INIT agrees with
+    the control, nor the S30 inferred: reason when it does not. CE High is included: the
+    edge is a don't-care whatever CE is."""
+    k, f = KINDS[prim], forced(prim)
+    m = fresh(prim, INIT=f"1'b{f if agree else 1 - f}")
+    m.glbl("GSR", 1)
+    m.set_input(k.ctrl, 1)
+    m.set_input("CE", ce)
+    m.set_input("D", 1 - f)
+    before = q(m)
+    assert before.prov.startswith("doc:" if agree else "inferred:")
+    for rising in (True, False, True, False):
+        m.clock_edge("C", rising)
+    assert q(m) == before
+
+
+@pytest.mark.parametrize("prim", ASYNC_PRIMS)
+@pytest.mark.parametrize("ce", [0, 1])
+@pytest.mark.parametrize("inv_c", [0, 1])
+def test_edge_while_async_control_forces_rehits_nothing(prim, ce, inv_c):
+    """S41(4) / Task 20 fix-round concern: an async control that already forces Q makes a
+    later active edge decide nothing -- Q and its provenance stay, and the edge credits
+    no claim (not C1/C2 for the edge, not C3/C6 again, not C5 under IS_C_INVERTED=1)."""
+    k, f = KINDS[prim], forced(prim)
+    m = fresh(prim, IS_C_INVERTED=f"1'b{inv_c}")
+    load(m, 1 - f)  # Q != the forced value, so the force below is a real change
+    m.set_input(k.ctrl, 1)
+    m.set_input("CE", ce)
+    m.set_input("D", 1 - f)
+    before, hits = q(m), set(m.claims_hit)
+    assert before == Out(str(f), f"doc:{_PAGES[prim][0]}")
+    m.claims_hit.clear()
+    for rising in (True, False, True, False):
+        m.clock_edge("C", rising)
+    assert q(m) == before
+    assert m.claims_hit == set(), f"an edge under an active {k.ctrl} hit {m.claims_hit}"
+    assert f"{prim}.C3" in hits
 
 
 @pytest.mark.parametrize("prim", PRIMS)
