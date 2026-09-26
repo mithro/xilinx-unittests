@@ -32,7 +32,7 @@ from xut.errors import XutError
 from xut.formats import xtr, xvec
 from xut.formats.common import is_cfg
 from xut.formats.xvec import Vec
-from xut.golden import InvalidStimulus, replay
+from xut.golden import InvalidStimulus, polarity_bins, replay
 from xut.runners.base import (
     ConfigResult,
     RunContext,
@@ -147,6 +147,17 @@ def generate(case: TestCase, ctx: RunContext) -> list[tuple[Vec, DutSpec]]:
     return out
 
 
+def _polarity_context(case: TestCase, ctx: RunContext) -> tuple[dict[str, str], dict]:
+    """The catalog's declared port ``active`` levels and attribute defaults, for naming
+    async/gate bins ``assert``/``release`` (``xut.golden.polarity_bins``). Without a
+    declared level the bins stay ``rise``/``fall``."""
+    from xut.catalog import model as catalog_model
+
+    entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
+    active = {p["name"]: p["active"] for p in entry.ports if p.get("active")}
+    return active, {a["name"]: a["default"] for a in entry.attributes}
+
+
 class PythonRunner(Runner):
     name: ClassVar[str] = "python"
     x_observable: ClassVar[bool] = True
@@ -155,6 +166,9 @@ class PythonRunner(Runner):
     def __init__(self) -> None:
         self._gen: dict[str, tuple[Vec, DutSpec]] = {}
         self._bins: set[str] = set()
+        #: port -> declared active level, and attribute defaults (catalog; polarity_bins)
+        self._active: dict[str, str] = {}
+        self._defaults: dict[str, object] = {}
         self._seed: int | None = None
         self._deadline = float("inf")
         self._limit_s = 0
@@ -179,6 +193,7 @@ class PythonRunner(Runner):
             raise SourceError(f"{case.id}: bad configuration names {bad} / duplicates {dups}")
         self._gen = {v.cfg: (v, s) for v, s in gen}
         self._bins = set()
+        self._active, self._defaults = _polarity_context(case, ctx)
         d = workdir(ctx, self.name, case.id)
         (d / "configs.json").write_text(json.dumps(names, indent=1) + "\n")
         return names
@@ -236,7 +251,10 @@ class PythonRunner(Runner):
                 if not trace.samples:  # validate refuses this; zero evidence never passes
                     return ConfigResult(cfg, "error", "golden replay has no samples", stim_sha)
                 trace.header["flow"] = ctx.flow
-                self._bins |= reach.bins()
+                bins = reach.bins()
+                if self._active:
+                    bins = polarity_bins(bins, self._active, {**self._defaults, **vec.attrs})
+                self._bins |= bins
             xtr.dump(trace, cfgdir / "expected.xtr")
             shutil.copyfile(cfgdir / "expected.xtr", cfgdir / "trace.xtr")
             log.append(f"expected.xtr: {len(trace.samples)} sample(s)\n")

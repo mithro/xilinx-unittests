@@ -537,3 +537,69 @@ def test_replay_model_contract_errors_are_named():
 
     with pytest.raises(ModelContractError):
         replay(Wrong, loads(VEC), MAP)
+
+
+# --- port x class events (ruling S19) --------------------------------------------------
+
+
+def _map(*ports):
+    from xut.wrap import DutSpec, PortSpec
+
+    return build_map(DutSpec("TOYX", "7series", "c", tuple(PortSpec(*p) for p in ports), ()))
+
+
+def test_replay_reports_data_and_clock_events():
+    _, reach = replay(ToyDff, loads(VEC), MAP)
+    assert {"port:C:edge", "port:D:1"} <= reach.bins()
+    assert "port:D:0" not in reach.bins()  # never written by a set
+
+
+def test_data_events_per_bit_of_a_multi_bit_port():
+    from xut.formats.xvec import Event
+    from xut.golden import _data_events
+
+    m = _map(("D", "input", 2, "data"), ("E", "input", 1, "data"), ("R", "input", 1, "async"))
+    ev = Event(t=1, op="set", target="in", lsb=0, value="101")
+    assert _data_events(m, ev) == {"D[0]:1", "D[1]:0", "E:1"}  # R is not data
+
+
+def test_stimulus_events_async_and_inout():
+    from xut.golden import _stimulus_events
+
+    m = _map(("R", "input", 1, "async"), ("IO", "inout", 1, "inout"))
+    pos = {(b.port, b.role): b.bit for b in m.of("in")}
+    r, en, val = pos[("R", "")], pos[("IO", "drive_en")], pos[("IO", "drive_val")]
+
+    def bits(**v):
+        out = ["0"] * m.nin
+        for k, x in v.items():
+            out[{"r": r, "en": en, "val": val}[k]] = x
+        return out
+
+    assert _stimulus_events(m, bits(), bits(r="1")) == {"R:rise"}
+    assert _stimulus_events(m, bits(r="1"), bits()) == {"R:fall"}
+    assert _stimulus_events(m, bits(), bits(en="1", val="1")) == {"IO:drive1"}
+    assert _stimulus_events(m, bits(en="1", val="1"), bits(en="1")) == {"IO:drive0"}
+    assert _stimulus_events(m, bits(en="1"), bits()) == {"IO:release"}
+    assert _stimulus_events(m, bits(), bits(val="1")) == set()  # not driven
+
+
+def test_polarity_bins():
+    from xut.golden import polarity_bins
+
+    bins = {"port:CLR:rise", "port:CLR:fall", "port:G[1]:rise", "port:X:rise", "port:D:1"}
+    active = {"CLR": "high", "G": "low"}
+    assert polarity_bins(bins, active, {}) == {
+        "port:CLR:assert",
+        "port:CLR:release",
+        "port:G[1]:release",
+        "port:X:rise",
+        "port:D:1",
+    }
+    # IS_CLR_INVERTED=1: the primitive sees a falling pin as its (high) active edge
+    assert polarity_bins({"port:CLR:fall"}, active, {"IS_CLR_INVERTED": "1'b1"}) == {
+        "port:CLR:assert"
+    }
+    assert polarity_bins({"port:CLR:fall"}, active, {"IS_CLR_INVERTED": "1'b0"}) == {
+        "port:CLR:release"
+    }
