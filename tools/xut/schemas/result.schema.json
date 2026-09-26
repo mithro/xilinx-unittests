@@ -32,7 +32,12 @@
           "reason": {"type": ["string", "null"]},
           "stimulus_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
           "trace_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
-          "mismatches": {"type": "integer", "minimum": 0}
+          "mismatches": {"type": "integer", "minimum": 0},
+          "bins_reached": {
+            "$comment": "python only: the bins this configuration reached (ruling S23: coverage is credited per configuration); the result's bins_reached is their union",
+            "type": ["array", "null"],
+            "items": {"type": "string"}
+          }
         },
         "if": {"properties": {"status": {"enum": ["fail", "error", "skip"]}}},
         "then": {"properties": {"reason": {"type": "string", "minLength": 1}}}

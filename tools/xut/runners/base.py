@@ -68,6 +68,9 @@ class ConfigResult:
     stimulus_sha256: str | None = None
     trace_sha256: str | None = None
     mismatches: int = 0
+    #: The python run's reach for this configuration (spec §9; ``None`` for every other
+    #: runner): coverage is credited per configuration (ruling S23).
+    bins_reached: list[str] | None = None
 
 
 @dataclass

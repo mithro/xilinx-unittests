@@ -215,6 +215,7 @@ class PythonRunner(Runner):
             xvec.dump(vec, cfgdir / "stim.xvec")
             stim_sha = sha256_file(cfgdir / "stim.xvec")
             log.append(f"stim.xvec: hw_renderable={vec.hw_renderable} {vec.hw_reason}\n")
+            bins: set[str] = set()  # a reject configuration reaches nothing
             if vec.expect == "reject":
                 # No behaviour to model: a header-only expectation, so the other runners
                 # find the configuration and apply the reject rule (Task 9).
@@ -259,7 +260,13 @@ class PythonRunner(Runner):
             shutil.copyfile(cfgdir / "expected.xtr", cfgdir / "trace.xtr")
             log.append(f"expected.xtr: {len(trace.samples)} sample(s)\n")
             return ConfigResult(
-                cfg, "pass", None, stim_sha, sha256_file(cfgdir / "expected.xtr"), 0
+                cfg,
+                "pass",
+                None,
+                stim_sha,
+                sha256_file(cfgdir / "expected.xtr"),
+                0,
+                sorted(bins),
             )
         finally:
             with (cfgdir / "run.log").open("a") as f:
