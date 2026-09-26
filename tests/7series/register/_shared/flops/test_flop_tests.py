@@ -11,7 +11,7 @@ PRESENT = [p for p in KINDS if (ROOT / "tests/7series/register" / p / "test.yaml
 #: primitive falling out of PRESENT (the file deleted or renamed) must fail here, not
 #: silently degrade test_committed_files_are_current and friends to an empty
 #: parametrize (which pytest reports as passing).
-EXPECTED_PRESENT = ("FDRE",)
+EXPECTED_PRESENT = ("FDRE", "FDSE")
 
 
 def test_expected_files_are_present():
