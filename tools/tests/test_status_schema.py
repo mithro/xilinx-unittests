@@ -6,7 +6,7 @@ import jsonschema
 import pytest
 import yaml
 
-from xut.catalog.model import load_entry
+from xut.catalog.model import CatalogEntry, load_entry
 from xut.paths import repo_root
 from xut.schemas import load_schema
 from xut.status import (
@@ -165,12 +165,19 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
         if data["measured"]["tree_hash"] is not None:
             continue  # recorded: its coverage is `xut status record`'s
         assert data["coverage"]["covered"] == []
+        # `entry` is `load_entry`'s merge of the generated catalog with that primitive's
+        # overrides (crosses, claims, port/attribute corrections): a work unit owns its
+        # own stub and is expected to refresh it (`xut status init --refresh-bins`) when
+        # its overrides add claims or otherwise change `coverage_bins`, so a refreshed
+        # stub's `uncovered` is exactly `new` below.
         new = coverage_bins(entry)
         # TEMPORARY (ruling S20): the committed stubs predate ruling S19's port-class
         # and cross bins, and an infra branch may not modify a status file. Once the
         # orchestrator runs `xut status init --refresh-bins` on main, drop `pre_s19`:
-        # every never-recorded stub then has exactly `new`.
-        pre_s19 = [b for b in new if not b.startswith("cross:") and b.count(":") == 1]
+        # every never-recorded stub then has exactly `new`. `claim:` bins are excluded
+        # too: a work unit's overrides may add claims (or a cross) before that unit gets
+        # around to refreshing its own stub, and an unrefreshed stub never has those.
+        pre_s19 = [b for b in new if not b.startswith(("cross:", "claim:")) and b.count(":") == 1]
         got = data["coverage"]["uncovered"]
         # TEMPORARY (PR D fix wave): the catalog of a primitive in REGENERATED_ON_BRANCH
         # was regenerated on this infra branch (ICAPE2: DEVICE_ID had been truncated);
@@ -223,10 +230,68 @@ FDRE_BINS = [
 ]
 
 
+def _fdre_fixture() -> CatalogEntry:
+    """A self-contained snapshot of FDRE's generated catalog shape (no overrides layered
+    on): pins ruling S19's bin-list semantics independent of the live catalog/overrides,
+    which a work unit is free to extend with claims and port corrections of its own."""
+    return CatalogEntry(
+        name="FDRE",
+        family="7series",
+        group="REGISTER",
+        subgroup="SDR",
+        description="D Flip-Flop with Clock Enable and Synchronous Reset",
+        doc={"guide": "UG953", "edition": "2026.1", "page": 375},
+        model={"library": "unisims", "file": "FDRE.v"},
+        ports=[
+            _port("Q", "data", direction="output", doc_function="Data output"),
+            _port("C", "clock", doc_function="Clock input."),
+            _port("CE", "data", doc_function="Active-High register clock enable."),
+            _port("D", "data", doc_function="Data input"),
+            _port("R", "data", doc_function="Synchronous reset."),
+        ],
+        attributes=[
+            {
+                "name": n,
+                "kind": "bits",
+                "width": 1,
+                "default": "1'b0",
+                "allowed": ["1'b0", "1'b1"],
+                "doc_type": "BINARY",
+            }
+            for n in ("INIT", "IS_C_INVERTED", "IS_D_INVERTED", "IS_R_INVERTED")
+        ],
+    )
+
+
 def test_fdre_bins_are_the_ruling_s19_set():
-    """The live FDRE entry (no claims yet): 20 bins. The pilot plan's 21 (13 + 8 claims)
-    is superseded: with its 8 claims FDRE has 28."""
-    assert coverage_bins(_fdre()) == FDRE_BINS
+    """The fixture FDRE entry (no overrides, no claims): 20 bins. The pilot plan's 21
+    (13 + 8 claims) is superseded: with its 8 claims a work unit's FDRE has 28 (see
+    ``test_fdre_fixture_with_claims_and_active_high_port_bins`` below)."""
+    assert coverage_bins(_fdre_fixture()) == FDRE_BINS
+
+
+def test_fdre_fixture_with_claims_and_active_high_port_bins():
+    """A work unit's overrides may add claims and declare a port's active level (ruling
+    S19): claim bins append after the attribute bins, and a declared ``active: high``
+    async port gets ``assert``/``release`` bins instead of the undeclared ``rise``/
+    ``fall`` pair (``port_class_bins``)."""
+    e = _fdre_fixture()
+    e.ports = [*e.ports, _port("CLR", "async", active="high", doc_function="Async clear.")]
+    e.claims = [
+        {
+            "id": "FDRE.C1",
+            "page": 375,
+            "provenance": "doc:375",
+            "text": "Q takes D at the active clock edge.",
+        },
+        {"id": "FDRE.C2", "page": 375, "provenance": "doc:375", "text": "CE Low holds Q."},
+    ]
+    assert coverage_bins(e) == (
+        FDRE_BINS[:12]
+        + ["port:CLR", "port:CLR:assert", "port:CLR:release"]
+        + FDRE_BINS[12:]
+        + ["claim:FDRE.C1", "claim:FDRE.C2"]
+    )
 
 
 def _port(name, cls, width=1, direction="input", **extra):
