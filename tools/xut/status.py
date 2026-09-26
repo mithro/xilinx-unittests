@@ -295,3 +295,12 @@ def render_log(log_dir: Path) -> str:
         title = entry_lines[0].lstrip("#").strip() if entry_lines else f.stem
         lines.append(f"- [{title}](../log/{f.name})")
     return "\n".join(lines) + "\n"
+
+
+def render_portability(root: Path) -> str | None:
+    """``status/PORTABILITY.md`` from the full smoke runs in ``build/portability/*.json``
+    (``xut portability``), or None when there is none."""
+    from xut.portability import load_results, render
+
+    rows, meta = load_results(root)
+    return render(rows, meta) if rows else None

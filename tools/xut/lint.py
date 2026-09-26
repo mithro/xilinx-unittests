@@ -343,6 +343,105 @@ def check_status_files(root: Path) -> list[LintIssue]:
     return issues
 
 
+# --- portability-agreement, verilatorize-equiv ----------------------------------------
+
+PORTABILITY = "status/PORTABILITY.md"
+#: The runners the portability table measures (`xut.portability.TOOLS`).
+_PORTABILITY_RUNNERS = ("iverilog", "verilator")
+
+
+def _declared_tests(root: Path) -> list[tuple[str, str, dict]]:
+    """``(test.yaml path, primitive, test)`` for every test of every valid test.yaml (an
+    invalid one is `check_tests_documented`'s to report)."""
+    out = []
+    for f in sorted(root.glob("tests/**/test.yaml")):
+        try:
+            data = yaml.safe_load(f.read_text())
+            validate_schema(data, "test")
+        except (yaml.YAMLError, jsonschema.ValidationError):
+            continue
+        rel = str(f.relative_to(root))
+        out += [(rel, data["primitive"], t) for t in data["tests"]]
+    return out
+
+
+def check_portability(root: Path) -> list[LintIssue]:
+    """The tests agree with `status/PORTABILITY.md` (spec §6.2: "Test declarations of
+    `unsupported` must match this table"):
+
+    * `portability-agreement` (error): a test declares `iverilog` or `verilator` `"yes"`
+      for a primitive whose row, in any model-source section, says `no`;
+    * `verilatorize-equiv` (error): a gated row (verilatorize `transformed`, or `(gated:
+      ...)`: a transformed model in its hierarchy, ruling S45/S47) has no equivalence
+      verdict (`—`), whatever the tests say (spec §6.2: "`xut lint` fails if a transformed
+      model has no equivalence stimulus"); or its verdict is `fail` or `error` while a test
+      of that primitive declares `verilator: "yes"`. `blocked` (a refused dependency) is
+      not missing: the Verilator results are refused anyway.
+
+    A missing table is one warning (it is generated on main only)."""
+    from xut.portability import NONE, PortabilityError, parse
+
+    root = Path(root)
+    path = root / PORTABILITY
+    if not path.is_file():
+        return [
+            LintIssue(
+                PORTABILITY,
+                "portability-agreement",
+                "portability table not generated yet (run on main: uv run xut portability --write)",
+                "warning",
+            )
+        ]
+    try:
+        table = parse(path.read_text())
+    except PortabilityError as e:
+        return [LintIssue(PORTABILITY, "portability-agreement", str(e), "error")]
+    issues: list[LintIssue] = []
+    by_prim: dict[str, list[tuple[str, object]]] = {}
+    for section, rows in table.items():
+        for model, row in rows.items():
+            by_prim.setdefault(model, []).append((section, row))
+            if row.gated and row.equiv == NONE:
+                issues.append(
+                    LintIssue(
+                        PORTABILITY,
+                        "verilatorize-equiv",
+                        f"{section}: {model} is {row.verilatorize} but has no equivalence "
+                        "verdict (spec §6.2: every transformed model needs its equivalence "
+                        "stimulus; run uv run xut verilatorize --check, then regenerate)",
+                        "error",
+                    )
+                )
+    for rel, prim, t in _declared_tests(root):
+        tid, runners = t["id"], t.get("runners", {})
+        for section, row in by_prim.get(prim, []):
+            for runner in _PORTABILITY_RUNNERS:
+                if runners.get(runner) == "yes" and not row.ok(runner):
+                    issues.append(
+                        LintIssue(
+                            rel,
+                            "portability-agreement",
+                            f'{tid}: declares {runner}: "yes", but {PORTABILITY} ({section}) '
+                            f"says {prim} does not run on {runner}: {row.why(runner)}; declare "
+                            f'runners.{runner}: "unsupported" with that reason in '
+                            f"unsupported_reasons.{runner}",
+                            "error",
+                        )
+                    )
+            if runners.get("verilator") == "yes" and row.equiv in ("fail", "error"):
+                issues.append(
+                    LintIssue(
+                        rel,
+                        "verilatorize-equiv",
+                        f'{tid}: declares verilator: "yes", but the equivalence check of '
+                        f"{prim} is {row.equiv} in {PORTABILITY} ({section}), which blocks "
+                        f"its Verilator results (spec §6.2): {row.why('equiv') or row.reason}",
+                        "error",
+                    )
+                )
+    return issues
+
+
 # --- orchestration ---------------------------------------------------------------
 
 
@@ -415,11 +514,12 @@ def _added_files(root: Path, base: str) -> set[str]:
 def lint(
     root: Path, branch_mode: bool, base: str = "origin/main"
 ) -> tuple[list[LintIssue], list[str]]:
-    """Run every lint rule. Always runs spdx, tests-documented and status-schema over the
-    whole tree; `branch_mode` additionally runs branch-paths and generated-files against
-    the current branch's diff from `<base>...HEAD` (those two rules are meaningless
-    without a diff — every file under `tools/**` is "on" a unit branch merely because it
-    was inherited from `main`, not because that branch touched it). The current branch is
+    """Run every lint rule. Always runs spdx, tests-documented, status-schema and the
+    portability rules (`check_portability`) over the whole tree; `branch_mode` additionally
+    runs branch-paths and generated-files against the current branch's diff from
+    `<base>...HEAD` (those two rules are meaningless without a diff — every file under
+    `tools/**` is "on" a unit branch merely because it was inherited from `main`, not
+    because that branch touched it). The current branch is
     `xut.status.current_branch()`, which honours the `XUT_BRANCH` env override CI needs
     for a pull_request event's detached-HEAD checkout.
 
@@ -438,6 +538,7 @@ def lint(
     issues += check_spdx(root, tracked)
     issues += check_tests_documented(root)
     issues += check_status_files(root)
+    issues += check_portability(root)
 
     if branch_mode:
         branch = current_branch()

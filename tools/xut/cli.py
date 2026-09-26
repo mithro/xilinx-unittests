@@ -148,13 +148,21 @@ def _generated_header(root: Path, branch: str) -> str:
 @status_grp.command("generate")
 @click.option("--force", is_flag=True, help="Write even when not on main.")
 def status_generate_cmd(force: bool) -> None:
-    """Regenerate status/PROGRESS.md, TODO.md and LOG.md (spec §11).
+    """Regenerate status/PROGRESS.md, TODO.md and LOG.md (spec §11), and PORTABILITY.md
+    when build/portability/*.json holds a full smoke run (`xut portability`).
 
     Refuses unless the current branch is `main`, since branches never commit these
     generated files (spec §11, global constraints Review Focus item 5).
     """
     from xut.paths import repo_root
-    from xut.status import current_branch, load_status, render_log, render_progress, render_todo
+    from xut.status import (
+        current_branch,
+        load_status,
+        render_log,
+        render_portability,
+        render_progress,
+        render_todo,
+    )
     from xut.workunits import load_family, load_units
 
     branch = current_branch()
@@ -179,7 +187,12 @@ def status_generate_cmd(force: bool) -> None:
     (out_dir / "PROGRESS.md").write_text(header + render_progress(statuses, units))
     (out_dir / "TODO.md").write_text(header + render_todo(statuses, units))
     (out_dir / "LOG.md").write_text(header + render_log(root / "log"))
-    click.echo(f"wrote PROGRESS.md, TODO.md, LOG.md to {out_dir} ({len(statuses)} statuses)")
+    written = ["PROGRESS.md", "TODO.md", "LOG.md"]
+    portability = render_portability(root)
+    if portability is not None:  # only when a smoke run left build/portability/*.json
+        (out_dir / "PORTABILITY.md").write_text(portability)
+        written.append("PORTABILITY.md")
+    click.echo(f"wrote {', '.join(written)} to {out_dir} ({len(statuses)} statuses)")
 
 
 @main.command("lint")
@@ -456,6 +469,78 @@ def run_cmd(
         click.echo(f"skip: {why} ({n} result{'s' if n > 1 else ''})")
     if bad:
         raise SystemExit(1)
+
+
+@main.command("portability")
+@click.option(
+    "--model-source",
+    "model_sources",
+    multiple=True,
+    help="repeatable (default: auto)",
+)
+@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--models", "models_glob", help="only the models matching this glob (a partial run)")
+@click.option("--write", is_flag=True, help="write status/PORTABILITY.md (main only)")
+@click.option("--force", is_flag=True, help="--write even when not on main")
+@click.option(
+    "--no-check",
+    is_flag=True,
+    help="use the manifest's equivalence verdicts as they are (no xut verilatorize --check)",
+)
+def portability_cmd(
+    model_sources: tuple[str, ...],
+    jobs: int,
+    models_glob: str | None,
+    write: bool,
+    force: bool,
+    no_check: bool,
+) -> None:
+    """Smoke-run every UNISIM model on Icarus and Verilator (spec §6.2 portability table).
+
+    Writes build/portability/<model-source>.json per model source, and renders every full
+    run there into build/portability/PORTABILITY.md, or with --write into
+    status/PORTABILITY.md (refused unless on main or --force; never with --models). Prints
+    `progress: done=N total=M elapsed_s=E` every 10 s while the smoke scripts run.
+    """
+    from xut import modelsrc, portability
+    from xut.paths import repo_root
+    from xut.status import current_branch
+
+    if write and models_glob:
+        raise XutError("--write needs a full run: --models makes a partial one")
+    if write and not force and (branch := current_branch()) != "main":
+        raise click.ClickException(
+            f"refusing to write status/PORTABILITY.md on branch {branch!r}: only main "
+            "regenerates it (pass --force to override)"
+        )
+    root = repo_root()
+    runs = {}
+    for name in model_sources or ("auto",):
+        ms = modelsrc.resolve(name)
+        rows = portability.run_smoke(
+            ms, jobs=jobs, models=models_glob, root=root, check=not no_check, progress=click.echo
+        )
+        runs[ms.name] = rows
+        for tool in portability.TOOLS:
+            yes = sum(r.ok(tool) for r in rows)
+            click.echo(f"{ms.name}: {tool}: {yes} yes, {len(rows) - yes} no")
+    if models_glob:  # partial: render only what ran, next to its partial results
+        rows_by_source, meta = (
+            runs,
+            {
+                "generated": datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ"),
+                "head": portability.git_head(root),
+                "image": "-",
+                "digest": "-",
+            },
+        )
+        dest = root / "build" / "portability" / "partial" / "PORTABILITY.md"
+    else:
+        rows_by_source, meta = portability.load_results(root)
+        dest = root / ("status" if write else "build/portability") / "PORTABILITY.md"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(portability.render(rows_by_source, meta))
+    click.echo(f"wrote {dest}")
 
 
 @main.command("verilatorize")

@@ -728,7 +728,9 @@ def test_lint_cli_branch_flag_runs_end_to_end(tmp_path, monkeypatch):
     monkeypatch.delenv("XUT_BRANCH", raising=False)
     result = CliRunner().invoke(main, ["lint", "--branch", "--base", "main"])
     assert result.exit_code == 0, result.output
-    assert "0 issue(s)" in result.output
+    # the one issue: the portability table is generated on main only (a warning)
+    assert "1 issue(s): 0 error(s), 1 warning(s)" in result.output
+    assert "warning portability-agreement status/PORTABILITY.md" in result.output
 
 
 def test_lint_cli_exit_code_nonzero_on_error(tmp_path, monkeypatch):
@@ -840,3 +842,133 @@ def test_exclusion_glob_matching_no_sv_config_is_warning(tmp_path):
     issues = check_tests_documented(tmp_path)
     assert [(i.rule, i.severity) for i in issues] == [("config-exclusions", "warning")]
     assert "nomatch*" in issues[0].message
+
+
+# --- check_portability (Task 16) -------------------------------------------------------
+
+
+def _table(tmp_path: Path, *rows) -> None:
+    from xut.portability import Row, render
+
+    meta = {"generated": "t", "head": "h", "image": "xut-sim:1", "digest": "d"}
+    (tmp_path / "status").mkdir(exist_ok=True)
+    (tmp_path / "status" / "PORTABILITY.md").write_text(
+        render({"unisim-2025.2": [Row(*r) for r in rows]}, meta)
+    )
+
+
+def test_portability_missing_table_is_one_warning(tmp_path):
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    issues = check_portability(tmp_path)
+    assert [(i.path, i.rule, i.severity) for i in issues] == [
+        ("status/PORTABILITY.md", "portability-agreement", "warning")
+    ]
+    assert issues[0].message == (
+        "portability table not generated yet (run on main: uv run xut portability --write)"
+    )
+
+
+def test_portability_missing_table_lint_cli_exits_0(tmp_path, monkeypatch):
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
+    monkeypatch.setattr("xut.workunits.load_units", lambda root: {})
+    monkeypatch.setattr("xut.lint._tracked_files", lambda root: [])
+    result = CliRunner().invoke(main, ["lint"])
+    assert result.exit_code == 0, result.output
+    assert "warning portability-agreement status/PORTABILITY.md" in result.output
+
+
+@pytest.mark.parametrize("runner", ["verilator", "iverilog"])
+def test_portability_declared_yes_on_a_no_row_is_an_error(tmp_path, runner):
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    cells = {"iverilog": "yes", "verilator": "yes", runner: "no"}
+    _table(
+        tmp_path,
+        ("FDRE", cells["iverilog"], cells["verilator"], "transformed", "pass", [], [],
+         f"{runner}: real: %Error: x [default]"),
+    )  # fmt: skip
+    issues = check_portability(tmp_path)
+    assert [(i.path, i.rule, i.severity) for i in issues] == [
+        ("tests/7series/register/FDRE/test.yaml", "portability-agreement", "error")
+    ]
+    msg = issues[0].message
+    assert f'7series.FDRE.L1.reset: declares {runner}: "yes"' in msg
+    assert "(unisim-2025.2)" in msg and "real: %Error: x [default]" in msg
+    assert f'runners.{runner}: "unsupported"' in msg and f"unsupported_reasons.{runner}" in msg
+
+
+def test_portability_quotes_a_not_built_cell(tmp_path):
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    _table(tmp_path, ("FDRE", "yes", "no: blocked by refused dependency X", "unchanged", "blocked"))
+    (issue,) = check_portability(tmp_path)
+    assert issue.rule == "portability-agreement"
+    assert "does not run on verilator: blocked by refused dependency X;" in issue.message
+
+
+def test_portability_declared_unsupported_on_a_no_row_is_clean(tmp_path):
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace('verilator: "yes"', 'verilator: "unsupported"').replace(
+            "flows: [rtl]", 'flows: [rtl]\n    unsupported_reasons: {verilator: "real"}'
+        )
+    )
+    _table(tmp_path, ("FDRE", "yes", "no", "unchanged", "—", [], [], "verilator: real: x"))
+    assert check_portability(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("vz", "equiv", "want"),
+    [
+        ("transformed", "—", ["verilatorize-equiv"]),
+        ("unchanged (gated: BUFGCTRL)", "—", ["verilatorize-equiv"]),  # ruling S47.2
+        ("transformed", "pass", []),
+        ("transformed", "blocked", []),
+        ("unchanged", "—", []),
+        ("unsupported", "—", []),
+    ],
+)
+def test_portability_gated_row_without_a_verdict_is_an_error(tmp_path, vz, equiv, want):
+    """Whatever the tests say: no test.yaml at all here."""
+    from xut.lint import check_portability
+
+    _table(tmp_path, ("BUFGMUX", "yes", "yes", vz, equiv))
+    issues = check_portability(tmp_path)
+    assert [i.rule for i in issues] == want
+    if want:
+        assert issues[0].path == "status/PORTABILITY.md" and issues[0].severity == "error"
+        assert "BUFGMUX" in issues[0].message and "no equivalence verdict" in issues[0].message
+
+
+@pytest.mark.parametrize(("equiv", "declared", "want"), [
+    ("fail", "yes", ["verilatorize-equiv"]),
+    ("error", "yes", ["verilatorize-equiv"]),
+    ("fail", "unsupported", []),
+    ("pass", "yes", []),
+])  # fmt: skip
+def test_portability_failing_equivalence_with_verilator_yes_is_an_error(
+    tmp_path, equiv, declared, want
+):
+    from xut.lint import check_portability
+
+    text = _VALID_TEST_YAML.replace('verilator: "yes"', f'verilator: "{declared}"')
+    if declared != "yes":
+        text = text.replace(
+            "flows: [rtl]", 'flows: [rtl]\n    unsupported_reasons: {verilator: "x"}'
+        )
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(text)
+    _table(
+        tmp_path,
+        ("FDRE", "yes", "yes", "transformed", equiv, ["glbl.GSR"], [],
+         f"equiv: {equiv} [INIT=1'b1] (1 of 2): 3 mismatch(es)"),
+    )  # fmt: skip
+    issues = check_portability(tmp_path)
+    assert [i.rule for i in issues] == want
+    if want:
+        assert "3 mismatch(es)" in issues[0].message and "blocks" in issues[0].message
