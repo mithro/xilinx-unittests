@@ -44,13 +44,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import subprocess
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import combinations
 from pathlib import Path
 
+from xut import provenance
 from xut.formats.xtr import Mismatch, Trace, XtrError, compare, diff, load
 from xut.golden import bit_prov
 from xut.results import RAN, read_result
@@ -486,10 +486,7 @@ def matrix(views: dict[tuple[str, str], View]) -> str:
 
 
 def _head(root: Path) -> str:
-    r = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True
-    )
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else "unknown commit"
+    return provenance.head(root) or "unknown commit"
 
 
 def _today() -> str:

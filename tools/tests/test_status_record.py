@@ -628,3 +628,40 @@ def test_worst_result_precedence(values, worst):
 
     assert RECORD_PRECEDENCE == ("fail", "error", "not-run", "pass", "skip", "unsupported", "n/a")
     assert worst_result(values) == worst
+
+
+def test_tree_state_is_three_git_calls_and_cached_per_run(repo, monkeypatch):
+    """Review (a) #7: HEAD, status and one batched object-id lookup per stamp, the same
+    hash recipe as before, and one computation per primitive per run (the cache)."""
+    from xut import provenance
+    from xut.testspec import discover
+
+    calls: list[tuple] = []
+    real = provenance._git
+
+    def counting(root, *args, **kw):
+        calls.append(args)
+        return real(root, *args, **kw)
+
+    monkeypatch.setattr(provenance, "_git", counting)
+    st = tree_state(repo, tree_paths("7series", "register", "FDRE", "flops"))
+    assert len(calls) == 3
+    assert st.tree_hash == _expected_hash(repo) and st.head == _git(repo, "rev-parse", "HEAD")
+    assert st.dirty == []
+    case = next(c for c in discover(repo) if c.prim == "FDRE")
+    cache: dict = {}
+    calls.clear()
+    assert provenance.case_state(case, cache) == provenance.case_state(case, cache) == st
+    assert len(calls) == 3  # computed once
+    sub = repo / FAMILY_DIR  # from below the checkout's top, paths relative to it
+    rel = tree_state(sub, ["FDRE", "_shared/flops", "nosuch"]).tree_hash
+    lines = [
+        f"{p} {_git(repo, 'rev-parse', f'HEAD:{FAMILY_DIR}/{p}')}"
+        for p in ("FDRE", "_shared/flops")
+    ]
+    assert rel == "sha256:" + hashlib.sha256("".join(f"{x}\n" for x in lines).encode()).hexdigest()
+
+
+def test_tree_state_outside_git_is_none(tmp_path):
+    st = tree_state(tmp_path, ["x"])
+    assert (st.tree_hash, st.head, st.dirty) == (None, None, None)
