@@ -20,6 +20,13 @@ GSR's INIT, is not left as a don't-care -- a ``-`` bit needs ``doc:<page>``
 provenance (spec §5.3), and UG953 never declares *this* conflict undefined.
 Instead the control's forced value is taken to win (``inferred:``), and the
 C3 (``control``) claim is still hit.
+
+Ruling S32: a claim is hit only when its behaviour actually decides the
+output at that event (never from a bare probe, and never redundantly from an
+async control an earlier event already forced), and every ``doc:`` output
+cites the page of the rule that produced it -- ``PAGE`` for a capture, a CE
+hold, a control force or a GSR->INIT sample, ``ATTR_PAGE`` for one shaped by
+an inversion attribute (C5/C6/C7).
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import ClassVar
 
-from xut_models.base import Model, ModelUnsupported, Out, bit_attr
+from xut_models.base import Model, ModelContractError, ModelUnsupported, Out, bit_attr
 
 _CLAIM = {
     "capture": 1,
@@ -82,10 +89,9 @@ class SdrFlop(Model):
         return Out(str(bit), f"doc:{page or self.PAGE}")
 
     def _ctrl_active(self) -> bool:
-        active = bool(self.pin[self.CTRL] ^ self.inv_ctrl)
-        if active and self.inv_ctrl:
-            self._hit("inv_ctrl")
-        return active
+        """A pure predicate: no hit. Whether the active-Low inversion (C6) actually
+        decided anything is for the caller to say, at the point it acts on this."""
+        return bool(self.pin[self.CTRL] ^ self.inv_ctrl)
 
     def _under_gsr(self) -> Out:
         if self.CTRL_ASYNC and self._ctrl_active() and self.init != self.CTRL_VALUE:
@@ -94,9 +100,16 @@ class SdrFlop(Model):
         self._hit("gsr_init")  # (when they agree, both documented rules give INIT)
         return self._doc(self.init)
 
-    def _force(self) -> None:
-        self.q = self._doc(self.CTRL_VALUE)
+    def _force(self, *, inverted: bool = False) -> None:
+        """Called only where the control's activity actually decides Q: an async
+        control going active, or a synchronous one at its active edge. ``inverted``
+        is set by the caller when *that* decision also depended on IS_C_INVERTED
+        (an inverted active edge); the control's own inversion is checked here."""
+        attr = inverted or bool(self.inv_ctrl)
+        self.q = self._doc(self.CTRL_VALUE, self.ATTR_PAGE if attr else None)
         self._hit("control")
+        if self.inv_ctrl:
+            self._hit("inv_ctrl")
 
     # -- Model API ------------------------------------------------------------------
     def power_on(self) -> None:
@@ -113,6 +126,8 @@ class SdrFlop(Model):
             self._force()
 
     def set_input(self, port: str, value: int) -> None:
+        if port not in self.pin:
+            raise ModelContractError(f"{self.PRIM}: not an input port: {port!r}")
         self.pin[port] = value
         if port != self.CTRL or not self.CTRL_ASYNC:
             return
@@ -122,23 +137,36 @@ class SdrFlop(Model):
             self._force()
 
     def clock_edge(self, port: str, rising: bool) -> None:
+        if port not in self.CLOCKS:
+            raise ModelContractError(f"{self.PRIM}: not a clock port: {port!r}")
         if rising == bool(self.inv_c):
             return  # not the active edge
-        if self.inv_c:
-            self._hit("inv_c")
         if self.gsr:
-            # Q can never be "-" (see module docstring), so there is nothing to guard.
-            self.q = Out(self.q.bits, _GSR_EDGE)
+            # An edge that would be ignored anyway (CE Low, control inactive) needs no
+            # retag: UG953 already accounts for it without leaning on the GSR inference
+            # (spec §3/§8: keep every disagreement live, never mask it with a needless
+            # ``inferred:``).
+            if self.pin["CE"] or self._ctrl_active():
+                self.q = Out(self.q.bits, _GSR_EDGE)
             return
         if self._ctrl_active():
-            self._force()  # sync: at this edge; async: already forced, stays
+            if not self.CTRL_ASYNC:
+                # Only a synchronous control's force is decided by *this* edge; an
+                # async control was already forced the moment it went active (via
+                # set_input/glbl), so a later edge decides nothing new here.
+                if self.inv_c:
+                    self._hit("inv_c")
+                self._force(inverted=bool(self.inv_c))
             return
         if not self.pin["CE"]:
             self._hit("ce_hold")
             return
+        if self.inv_c:
+            self._hit("inv_c")
         if self.inv_d:
             self._hit("inv_d")
-        self.q = self._doc(self.pin["D"] ^ self.inv_d)
+        attr = self.inv_c or self.inv_d
+        self.q = self._doc(self.pin["D"] ^ self.inv_d, self.ATTR_PAGE if attr else None)
         self._hit("capture")
 
     def outputs(self) -> dict[str, Out]:
