@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from itertools import combinations
 from pathlib import Path
 
 import jsonschema
@@ -23,6 +24,7 @@ import yaml
 from xut import schemas
 from xut.catalog.model import CatalogEntry, is_enumerated
 from xut.errors import ConfigError, GitError, XutError
+from xut.testspec import TestCase
 
 #: Valid values for a `results` entry (spec §11).
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
@@ -81,18 +83,67 @@ def load_status(path: Path) -> dict:
     return data
 
 
+def port_class_bins(port: dict) -> list[str]:
+    """The port × class bins of one catalog port (spec §9, ruling S19), for inputs and
+    inouts only (they come from the applied stimulus, ``xut.golden.Reach``):
+
+    - ``data``: ``port:<P>:0``/``:1``; a multi-bit port per bit, ``port:<P>[i]:0``/``:1``;
+    - ``clock``: ``port:<P>:edge``;
+    - ``async``/``gate``: ``port:<P>:assert``/``:release`` when the port's ``active``
+      level is declared (catalog override), else ``port:<P>:rise``/``:fall``; per bit
+      for a multi-bit port;
+    - ``inout``: ``port:<P>:drive0``/``:drive1``/``:release``;
+    - ``pad``, ``drp``, ``clock_out`` and outputs: none (``port:<P>`` still applies).
+    """
+    name, cls, width = port["name"], port["cls"], port["width"]
+    if port["direction"] == "output":
+        return []
+    names = [name] if width == 1 else [f"{name}[{i}]" for i in range(width)]
+    if cls == "data" and port["direction"] == "input":
+        return [f"port:{n}:{v}" for n in names for v in ("0", "1")]
+    if cls == "clock":
+        return [f"port:{name}:edge"]
+    if cls in ("async", "gate"):
+        events = ("assert", "release") if port.get("active") else ("rise", "fall")
+        return [f"port:{n}:{e}" for n in names for e in events]
+    if cls == "inout":
+        return [f"port:{name}:{e}" for e in ("drive0", "drive1", "release")]
+    return []
+
+
+def cross_bins(entry: CatalogEntry) -> list[str]:
+    """``cross:<A>=<a>,<B>=<b>`` for every declared cross (catalog override ``crosses``),
+    every pair of its attributes and every pair of their enumerated values (spec §4.2:
+    crosses are covered pairwise). A non-enumerated attribute contributes nothing
+    (``xut lint`` rule ``crosses-enumerated`` refuses it)."""
+    allowed = {a["name"]: a.get("allowed") or [] for a in entry.attributes}
+    out: list[str] = []
+    for cross in entry.crosses:
+        for a, b in combinations(cross, 2):
+            if not (is_enumerated(allowed.get(a, [])) and is_enumerated(allowed.get(b, []))):
+                continue
+            out.extend(f"cross:{a}={va},{b}={vb}" for va in allowed[a] for vb in allowed[b])
+    return list(dict.fromkeys(out))
+
+
 def coverage_bins(entry: CatalogEntry) -> list[str]:
-    """Functional coverage bins for `entry` (spec §9): ``port:<P>`` for every port,
+    """Functional coverage bins for `entry` (spec §9): ``port:<P>`` for every port (the
+    port is exercised at all) followed by its port × class bins (``port_class_bins``),
     ``attr:<A>=<v>`` for every allowed enumerated value of an attribute, ``attr:<A>``
     for a non-enumerated or undeclared (``allowed`` is advisory and may be empty)
-    attribute, and ``claim:<id>`` for every behavioural claim."""
-    bins: list[str] = [f"port:{p['name']}" for p in entry.ports]
+    attribute, the declared-cross bins (``cross_bins``), and ``claim:<id>`` for every
+    behavioural claim."""
+    bins: list[str] = []
+    for p in entry.ports:
+        bins.append(f"port:{p['name']}")
+        bins.extend(port_class_bins(p))
     for a in entry.attributes:
         allowed = a.get("allowed") or []
         if is_enumerated(allowed):
             bins.extend(f"attr:{a['name']}={v}" for v in allowed)
         else:
             bins.append(f"attr:{a['name']}")
+    bins.extend(cross_bins(entry))
     bins.extend(f"claim:{c['id']}" for c in entry.claims)
     return bins
 
@@ -490,8 +541,80 @@ def _merge_tools(into: dict[str, set[str]], res: dict) -> None:
         into.setdefault("container", set()).add(c.get("digest") or c["image"])
 
 
+def _lit_int(v: str) -> int | None:
+    m = re.fullmatch(r"\s*(?:\d*'([bodh]))?([0-9a-fA-F_]+)\s*", v)
+    if not m:
+        return None
+    base = {"b": 2, "o": 8, "d": 10, "h": 16}[(m.group(1) or "d").lower()]
+    try:
+        return int(m.group(2).replace("_", ""), base)
+    except ValueError:
+        return None
+
+
+def enum_value(value: object, allowed: list[str]) -> str | None:
+    """``value`` (a Verilog literal, a string with or without quotes, or an int) as the
+    matching ``allowed`` literal, or ``None``."""
+    s = str(value)
+    for cand in (s, f'"{s}"', s.strip('"')):
+        if cand in allowed:
+            return cand
+    n = _lit_int(s)
+    if n is not None:
+        return next((a for a in allowed if _lit_int(a) == n), None)
+    return None
+
+
+def _config_attrs(
+    root: Path, ms: str, case: TestCase, warn: Callable[[str], None]
+) -> list[dict[str, object]]:
+    """The explicitly-set attributes of every configuration of ``case`` that ran and
+    passed against ``ms``: for a vector test, on the golden model (python, its
+    ``cfg-<cfg>/stim.xvec``); for sv/cocotb, on at least one simulator (test.yaml
+    ``configs``)."""
+    from xut.formats import xvec
+
+    out: list[dict[str, object]] = []
+    if case.style == "vector":
+        py = _load_result(root, "rtl", "python", ms, case.id, warn)
+        d = Path(root) / "build/rtl/python" / ms / case.id
+        for c in (py or {}).get("configs", []):
+            if c.get("status") != "pass":
+                continue
+            try:
+                out.append(dict(xvec.load(d / f"cfg-{c['cfg']}" / "stim.xvec").attrs))
+            except (OSError, xvec.XvecError) as e:
+                warn(f"{case.id}: cfg {c['cfg']}: unreadable stim.xvec ({e})")
+        return out
+    passed: set[str] = set()
+    for sim in SIMULATORS:
+        for flow in flows_for(sim, case.flows):
+            r = _load_result(root, flow, sim, ms, case.id, warn)
+            passed |= {c["cfg"] for c in (r or {}).get("configs", []) if c["status"] == "pass"}
+    cfgs = case.configs or [{"cfg": "default", "attrs": {}}]
+    return [dict(c.get("attrs", {})) for c in cfgs if c["cfg"] in passed]
+
+
+def _crosses_reached(
+    root: Path, ms: str, entry: CatalogEntry, case: TestCase, warn: Callable[[str], None]
+) -> set[str]:
+    """The ``cross:`` bins the passing configurations of ``case`` realise: attribute
+    values are the configuration's, else the catalog default (ruling S19)."""
+    allowed = {a["name"]: a.get("allowed") or [] for a in entry.attributes}
+    defaults = {a["name"]: a["default"] for a in entry.attributes}
+    out: set[str] = set()
+    for attrs in _config_attrs(root, ms, case, warn):
+        vals = {**defaults, **attrs}
+        for cross in entry.crosses:
+            for a, b in combinations(cross, 2):
+                va, vb = enum_value(vals.get(a), allowed[a]), enum_value(vals.get(b), allowed[b])
+                if va is not None and vb is not None:
+                    out.add(f"cross:{a}={va},{b}={vb}")
+    return out
+
+
 def _coverage(
-    root: Path, ms: str, entry: CatalogEntry, cases: list, warn: Callable[[str], None]
+    root: Path, ms: str, entry: CatalogEntry, cases: list[TestCase], warn: Callable[[str], None]
 ) -> dict:
     """``covered`` = (vector ``exercises`` ∩ the python run's ``bins_reached``) ∪ (sv/cocotb
     ``exercises`` of tests that passed on a simulator); ``uncovered`` = the rest of
@@ -503,6 +626,12 @@ def _coverage(
         for b in c.exercises:
             if b not in known:
                 warn(f"{c.id}: exercises {b}, which is not a coverage bin of {c.prim}")
+        crosses = {b for b in c.exercises if b.startswith("cross:")}
+        if crosses:
+            reached_x = _crosses_reached(root, ms, entry, c, warn)
+            covered |= crosses & reached_x
+            for b in sorted(crosses - reached_x):
+                warn(f"{c.id}: declares {b} but no passing configuration has those values")
         if c.style == "vector":
             py = _load_result(root, "rtl", "python", ms, c.id, warn)
             reached = py.get("bins_reached") if py else None
@@ -514,6 +643,8 @@ def _coverage(
                     )
                 continue
             for b in c.exercises:
+                if b.startswith("cross:"):
+                    continue  # from the passing configurations, above
                 if b in reached:
                     covered.add(b)
                 else:
@@ -526,7 +657,7 @@ def _coverage(
                 for flow in flows_for(sim, c.flows)
             )
             if passed:
-                covered |= set(c.exercises)
+                covered |= {b for b in c.exercises if not b.startswith("cross:")}
     return {
         "covered": [b for b in bins if b in covered],
         "uncovered": [b for b in bins if b not in covered],

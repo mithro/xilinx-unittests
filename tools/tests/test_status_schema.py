@@ -150,5 +150,107 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
         entry = load_entry("7series", f.stem, root)
         assert data["primitive"] == entry.name
         assert data["work_unit"] == unit_of[entry.name]
-        assert set(data["coverage"]["uncovered"]) == set(coverage_bins(entry))
+        # The stubs predate ruling S19's port-class and cross bins, and infra may not
+        # modify a status file: they gain those bins when their unit first records.
+        new = set(coverage_bins(entry))
+        pre_s19 = {b for b in new if not b.startswith("cross:") and b.count(":") == 1}
+        assert set(data["coverage"]["uncovered"]) in (new, pre_s19)
         assert data["coverage"]["covered"] == []
+
+
+# --- port x class and declared-cross bins (ruling S19) -------------------------------------
+
+FDRE_BINS = [
+    "port:Q",
+    "port:C",
+    "port:C:edge",
+    "port:CE",
+    "port:CE:0",
+    "port:CE:1",
+    "port:D",
+    "port:D:0",
+    "port:D:1",
+    "port:R",
+    "port:R:0",
+    "port:R:1",
+    "attr:INIT=1'b0",
+    "attr:INIT=1'b1",
+    "attr:IS_C_INVERTED=1'b0",
+    "attr:IS_C_INVERTED=1'b1",
+    "attr:IS_D_INVERTED=1'b0",
+    "attr:IS_D_INVERTED=1'b1",
+    "attr:IS_R_INVERTED=1'b0",
+    "attr:IS_R_INVERTED=1'b1",
+]
+
+
+def test_fdre_bins_are_the_ruling_s19_set():
+    """The live FDRE entry (no claims yet): 20 bins. The pilot plan's 21 (13 + 8 claims)
+    is superseded: with its 8 claims FDRE has 28."""
+    assert coverage_bins(_fdre()) == FDRE_BINS
+
+
+def _port(name, cls, width=1, direction="input", **extra):
+    return {
+        "name": name,
+        "direction": direction,
+        "width": width,
+        "cls": cls,
+        "doc_function": "",
+        **extra,
+    }
+
+
+def test_port_class_bins_by_class():
+    from xut.status import port_class_bins
+
+    assert port_class_bins(_port("D", "data", 3)) == [
+        "port:D[0]:0",
+        "port:D[0]:1",
+        "port:D[1]:0",
+        "port:D[1]:1",
+        "port:D[2]:0",
+        "port:D[2]:1",
+    ]
+    assert port_class_bins(_port("C", "clock")) == ["port:C:edge"]
+    assert port_class_bins(_port("CLR", "async")) == ["port:CLR:rise", "port:CLR:fall"]
+    assert port_class_bins(_port("CLR", "async", active="high")) == [
+        "port:CLR:assert",
+        "port:CLR:release",
+    ]
+    assert port_class_bins(_port("G", "gate", 2, active="low")) == [
+        "port:G[0]:assert",
+        "port:G[0]:release",
+        "port:G[1]:assert",
+        "port:G[1]:release",
+    ]
+    assert port_class_bins(_port("IO", "inout", 1, "inout")) == [
+        "port:IO:drive0",
+        "port:IO:drive1",
+        "port:IO:release",
+    ]
+    for p in (
+        _port("P", "pad"),
+        _port("A", "drp", 7),
+        _port("O", "clock_out", 1, "output"),
+        _port("Q", "data", 1, "output"),
+    ):
+        assert port_class_bins(p) == []
+
+
+def test_cross_bins_are_pairwise_over_enumerated_values():
+    e = _fdre()
+    e.attributes = [
+        {"name": "A", "allowed": ["0", "1"]},
+        {"name": "B", "allowed": ['"X"', '"Y"']},
+        {"name": "C", "allowed": ["1", "2"]},
+        {"name": "R", "allowed": ["1 to 128"]},
+    ]
+    e.crosses = [["A", "B", "C"], ["A", "R"], ["B", "A"]]
+    bins = coverage_bins(e)
+    cross = [b for b in bins if b.startswith("cross:")]
+    assert cross[:4] == ['cross:A=0,B="X"', 'cross:A=0,B="Y"', 'cross:A=1,B="X"', 'cross:A=1,B="Y"']
+    assert "cross:A=0,C=2" in cross and 'cross:B="Y",C=1' in cross
+    assert 'cross:B="X",A=0' in cross  # a second declared order is its own cross
+    assert len(cross) == 16 and not any("R=" in b for b in cross)  # R is not enumerated
+    assert bins.index(cross[0]) > bins.index("attr:R")  # after attributes, before claims

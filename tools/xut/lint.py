@@ -411,6 +411,41 @@ def check_bins_accounted(root: Path) -> list[LintIssue]:
     return issues
 
 
+def check_crosses(root: Path) -> list[LintIssue]:
+    """Every attribute of a declared cross (catalog override ``crosses``, spec §4.2) is
+    enumerated: a cross is covered pairwise over enumerated values (rule
+    ``crosses-enumerated``, error). An override whose entry does not load (e.g. a cross
+    naming an unknown attribute) is an error under the same rule."""
+    from xut.catalog.model import is_enumerated, load_entry
+
+    root = Path(root)
+    issues = []
+    for f in sorted(root.glob("catalog/*/*.overrides.yaml")):
+        rel = str(f.relative_to(root))
+        try:
+            if "crosses" not in (yaml.safe_load(f.read_text()) or {}):
+                continue
+            entry = load_entry(f.parent.name, f.name.removesuffix(".overrides.yaml"), root)
+        except (OSError, yaml.YAMLError, jsonschema.ValidationError, XutError) as e:
+            msg = f"cannot load the entry: {str(e).splitlines()[0]}"
+            issues.append(LintIssue(rel, "crosses-enumerated", msg, "error"))
+            continue
+        allowed = {a["name"]: a.get("allowed") or [] for a in entry.attributes}
+        for cross in entry.crosses:
+            for a in cross:
+                if not is_enumerated(allowed[a]):
+                    issues.append(
+                        LintIssue(
+                            rel,
+                            "crosses-enumerated",
+                            f"cross {cross}: {a} is not enumerated (allowed: {allowed[a]}); "
+                            "crosses need enumerated values",
+                            "error",
+                        )
+                    )
+    return issues
+
+
 def check_gaps_present(root: Path) -> list[LintIssue]:
     """Every test says what it misses (spec §1.6, controller ruling on review (b) #3): a
     test whose ``gaps`` is missing or empty is an error (rule ``gaps-present``)."""
@@ -511,8 +546,8 @@ def lint(
     root: Path, branch_mode: bool, base: str = "origin/main"
 ) -> tuple[list[LintIssue], list[str]]:
     """Run every lint rule. Always runs spdx, tests-documented, bins-accounted,
-    gaps-present and status-schema over the whole tree; `branch_mode` additionally runs
-    branch-paths and generated-files against the current branch's diff from
+    gaps-present, crosses-enumerated and status-schema over the whole tree; `branch_mode`
+    additionally runs branch-paths and generated-files against the current branch's diff from
     `<base>...HEAD` (those two rules are meaningless without a diff — every file under
     `tools/**` is "on" a unit branch merely because it was inherited from `main`, not
     because that branch touched it). The current branch is `xut.status.current_branch()`,
@@ -535,6 +570,7 @@ def lint(
     issues += check_tests_documented(root)
     issues += check_bins_accounted(root)
     issues += check_gaps_present(root)
+    issues += check_crosses(root)
     issues += check_status_files(root)
 
     if branch_mode:

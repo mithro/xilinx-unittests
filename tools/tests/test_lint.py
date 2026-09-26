@@ -14,6 +14,7 @@ from xut.lint import (
     LintIssue,
     check_bins_accounted,
     check_branch_paths,
+    check_crosses,
     check_gaps_present,
     check_generated_not_committed,
     check_spdx,
@@ -891,7 +892,7 @@ def test_expected_divergence_lint(tmp_path, entry, problems):
 
 
 def _bins_tree(tmp_path: Path, gaps: list[str], exercises: list[str] | None = None) -> Path:
-    """FDRE's real catalog entry (13 bins) and one test exercising all but port:R."""
+    """FDRE's real catalog entry (20 bins) and one test exercising all but port:R."""
     import shutil
 
     import yaml
@@ -907,8 +908,15 @@ def _bins_tree(tmp_path: Path, gaps: list[str], exercises: list[str] | None = No
     data["tests"][0]["exercises"] = exercises or [
         "port:Q",
         "port:C",
+        "port:C:edge",
         "port:CE",
+        "port:CE:0",
+        "port:CE:1",
         "port:D",
+        "port:D:0",
+        "port:D:1",
+        "port:R:0",
+        "port:R:1",
         *(f"attr:{a}={v}" for a in attrs for v in bits),
     ]
     data["tests"][0]["gaps"] = gaps
@@ -959,3 +967,32 @@ def test_gaps_present_flags_empty_and_missing_gaps(tmp_path, gaps):
 def test_gaps_present_accepts_a_stated_gap(tmp_path):
     (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
     assert check_gaps_present(tmp_path) == []
+
+
+def test_crosses_need_enumerated_attributes(tmp_path):
+    import shutil
+
+    import yaml
+
+    from xut.paths import repo_root
+
+    cat = tmp_path / "catalog/7series"
+    cat.mkdir(parents=True)
+    shutil.copy(repo_root() / "catalog/7series/FDRE.yaml", cat)
+    ov = cat / "FDRE.overrides.yaml"
+    ov.write_text(yaml.safe_dump({"crosses": [["INIT", "IS_C_INVERTED"]]}))
+    assert check_crosses(tmp_path) == []
+    ov.write_text(
+        yaml.safe_dump(
+            {
+                "attributes": {"INIT": {"allowed": ["0 to 1"]}},
+                "crosses": [["INIT", "IS_C_INVERTED"]],
+            }
+        )
+    )
+    (issue,) = check_crosses(tmp_path)
+    assert (issue.rule, issue.severity) == ("crosses-enumerated", "error")
+    assert "INIT is not enumerated" in issue.message
+    ov.write_text(yaml.safe_dump({"crosses": [["INIT", "NOSUCH"]]}))
+    (issue,) = check_crosses(tmp_path)
+    assert issue.rule == "crosses-enumerated" and "NOSUCH" in issue.message
