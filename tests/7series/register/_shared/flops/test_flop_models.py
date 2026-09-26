@@ -294,6 +294,22 @@ def test_clock_edge_before_power_on_is_rejected(prim):
 
 
 @pytest.mark.parametrize("prim", PRIMS)
+def test_glbl_before_power_on_is_rejected(prim):
+    """M3: the precondition guard extends to glbl(), not only set_input/clock_edge."""
+    m = get("7series", prim)({})
+    with pytest.raises(ModelContractError):
+        m.glbl("GSR", 1)
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_outputs_before_power_on_is_rejected(prim):
+    """M3: outputs() must not hand back the pre-power-on inferred: value silently."""
+    m = get("7series", prim)({})
+    with pytest.raises(ModelContractError):
+        m.outputs()
+
+
+@pytest.mark.parametrize("prim", PRIMS)
 def test_input_value_other_than_0_or_1_is_rejected(prim):
     """R5: ``xut.golden._port_value`` already refuses x/z before it ever calls
     ``set_input`` (x stimulus is covered by sv tests, not the model, spec §5.6), so this

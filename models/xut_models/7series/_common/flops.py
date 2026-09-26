@@ -119,6 +119,8 @@ class SdrFlop(Model):
         self.q = self._under_gsr()
 
     def glbl(self, signal: str, value: int) -> None:
+        if not self._powered_on:
+            raise ModelContractError(f"{self.PRIM}: glbl before power_on")
         if signal != "GSR":
             raise ModelUnsupported(f"{self.PRIM}: UG953 describes only GSR for this primitive")
         self.gsr = value
@@ -178,4 +180,6 @@ class SdrFlop(Model):
         self._hit("capture")
 
     def outputs(self) -> dict[str, Out]:
+        if not self._powered_on:
+            raise ModelContractError(f"{self.PRIM}: outputs before power_on")
         return {"Q": self.q}
