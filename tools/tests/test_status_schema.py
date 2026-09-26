@@ -143,6 +143,11 @@ def test_unquoted_yaml_boolean_runner_value_fails_validation():
         jsonschema.validate(data, TEST_SCHEMA)
 
 
+#: TEMPORARY: primitive -> the attribute whose catalog values were regenerated on this
+#: branch; drop with ``pre_s19`` after the orchestrator's `status init --refresh-bins`.
+REGENERATED_ON_BRANCH = {"ICAPE2": "DEVICE_ID"}
+
+
 def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
     """Repo invariant (reads the live checkout on purpose): every committed status stub
     matches its catalog entry's coverage bins and its docs/work-units.yaml unit."""
@@ -166,7 +171,18 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
         # orchestrator runs `xut status init --refresh-bins` on main, drop `pre_s19`:
         # every never-recorded stub then has exactly `new`.
         pre_s19 = [b for b in new if not b.startswith("cross:") and b.count(":") == 1]
-        assert data["coverage"]["uncovered"] in (new, pre_s19)
+        got = data["coverage"]["uncovered"]
+        # TEMPORARY (PR D fix wave): the catalog of a primitive in REGENERATED_ON_BRANCH
+        # was regenerated on this infra branch (ICAPE2: DEVICE_ID had been truncated);
+        # its stub is refreshed on main with the same --refresh-bins run. Until then the
+        # regenerated attribute's bins are left out of the comparison.
+        attr = REGENERATED_ON_BRANCH.get(entry.name)
+        if attr is not None:
+            got, new, pre_s19 = (
+                [b for b in bins if not b.startswith(f"attr:{attr}=")]
+                for bins in (got, new, pre_s19)
+            )
+        assert got in (new, pre_s19), entry.name
 
 
 def test_every_fresh_stub_has_exactly_the_current_bins():
