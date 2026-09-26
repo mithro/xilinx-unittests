@@ -43,6 +43,7 @@ S18_MODS = {
     "vz_portreg.v": "VZPORTREG",
     "vz_noopdeassign.v": "VZNOOP",
     "vz_constvar.v": "VZCONST",
+    "vz_fresh.v": "VZFRESH",
 }
 ALL = {**MODS, **S18_MODS}
 
@@ -164,6 +165,30 @@ def test_stale_reads_substituted():
     assert "reg r__now;" in out
     out = _rw("vz_rao.v")
     assert "begin r__ovr_sel = 1'd1; r__now = 1'b0; end\n    x = r__now;" in out
+
+
+def test_read_after_blocking_write_reads_fresh_value():
+    out = _rw("vz_fresh.v")
+    fresh = "cnt__rd = (cnt__ovr_sel == 1'd0) ? cnt__base : cnt__active();"
+    assert "reg [3:0] cnt__rd;" in out and "function [3:0] cnt__active();" in out
+    assert "    if (E) cnt__base = cnt + 1;\n" in out  # first read of the block: the net
+    assert f"    begin {fresh} y = cnt__rd; end\n" in out
+    # the refreshed statement stays one statement: its `else` keeps its `if`
+    assert f"    begin {fresh} if (cnt__rd[0]) z = 1'b1;\n    else z = 1'b0; end\n" in out
+
+
+def test_fresh_read_in_a_loop_header_is_refused(tmp_path):
+    src = (FIX / "vz_fresh.v").read_text().replace("    y = cnt;\n", "    while (cnt[3]) y = 0;\n")
+    f = _write(tmp_path, "vz_fl.v", src)
+    with pytest.raises(TransformError, match="cnt is read in a loop header"):
+        rewrite(analyze(f, "VZFRESH", GLBL))
+
+
+def test_fresh_read_in_an_implicit_sensitivity_block_is_refused():
+    # MMCME2_ADV-style: Verilator would re-run the @* block when the override is released
+    an = analyze(FIX / "vz_bad_freshcomb.v", "VZFRESHCOMB", GLBL)
+    with pytest.raises(TransformError, match="rl: .* implicit sensitivity at line 10"):
+        rewrite(an)
 
 
 def test_no_snapshot_without_stale_reads():
@@ -343,10 +368,16 @@ def _lint(ms, model, work):
     return vl == 0, False, bool(new) and new <= _errors(work / "iverilog-orig.log")
 
 
+# Refused, each for a reason the transform cannot prove it handles:
+#   RAMB18E1/RAMB36E1: nested generate conditions (TODO before the bram unit);
+#   MMCME*_ADV: a forced real written then read in an `@*` block (Verilator re-runs it on release).
+REFUSED = ["MMCME2_ADV", "MMCME3_ADV", "MMCME4_ADV", "RAMB18E1", "RAMB36E1"]
+
+
 @pytest.mark.slow
 @pytest.mark.container
 @pytest.mark.skipif(_no_image, reason="xut-sim image not built")
-@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 43), ("unisim-gh-2020.1", 38)])
+@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 40), ("unisim-gh-2020.1", 35)])
 def test_sweep_every_transformed_model_lints(source, n_transformed):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -360,7 +391,8 @@ def test_sweep_every_transformed_model_lints(source, n_transformed):
     done = sorted(m for m, e in man.models.items() if e.status == "transformed")
     refused = {m: e.reason for m, e in man.models.items() if e.status == "unsupported"}
     assert len(done) == n_transformed, refused
-    assert sorted(refused) == ["RAMB18E1", "RAMB36E1"]  # nested generate (TODO before bram)
+    assert sorted(refused) == REFUSED, refused
+    assert all("implicit sensitivity" in refused[m] for m in REFUSED[:3])
     for m in ("FDRE", "FDSE", "FDCE", "FDPE"):
         e = man.models[m]
         assert "glbl.GSR" in e.triggers and len(e.generate_configs) > 1
@@ -379,3 +411,52 @@ def test_sweep_every_transformed_model_lints(source, n_transformed):
     assert not bad, "\n".join(bad)
     # known Icarus 12 limitation of the model itself: a scalar port redeclared [1:0]
     assert iv_orig == (["OSERDESE1"] if "OSERDESE1" in done else [])
+
+
+_FRESH_TB = """`timescale 1ps/1ps
+module tb;
+  reg C = 0, R = 0, E = 0;
+  wire [3:0] Q, Y;
+  wire Z;
+  integer i;
+  VZFRESH dut (.Q(Q), .Y(Y), .Z(Z), .C(C), .R(R), .E(E));
+  initial begin
+    #10;
+    for (i = 0; i < 5; i = i + 1) begin
+      E = (i != 2); #5 C = 1; #5 $display("OUT %0d Q=%h Y=%h Z=%b", i, Q, Y, Z); C = 0;
+    end
+    R = 1; #5 C = 1; #5 $display("OUT forced Q=%h Y=%h Z=%b", Q, Y, Z); C = 0;
+    R = 0; #5 $display("OUT released Q=%h", Q);
+    #5 C = 1; #5 $display("OUT after Q=%h Y=%h Z=%b", Q, Y, Z);
+    $finish;
+  end
+endmodule
+"""
+
+
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+@pytest.mark.parametrize("fname,tb,n", [("vz_fresh.v", _FRESH_TB, 8)])
+def test_fresh_reads_match_the_original_on_icarus_and_verilator(fname, tb, n):
+    work = repo_root() / "build" / "vz-lint" / f"{ALL[fname]}-sim"
+    shutil.rmtree(work, ignore_errors=True)
+    (work / "orig").mkdir(parents=True)
+    (work / "vz").mkdir()
+    shutil.copy(FIX / fname, work / "orig" / "m.v")
+    write_text(work / "vz" / "m.v", _rw(fname))
+    ex = DockerExecutor()
+    out = {}
+    for d in ("orig", "vz"):
+        (work / d / "tb.v").write_text(tb)
+        log = work / d / "run.log"
+        cmd = "iverilog -g2012 -o sim.vvp -s tb tb.v m.v && vvp -n sim.vvp"
+        assert ex.run(["bash", "-c", cmd], cwd=work / d, log=log, timeout_s=120) == 0
+        out[d] = [ln for ln in log.read_text().splitlines() if ln.startswith("OUT ")]
+    assert len(out["orig"]) == n and out["vz"] == out["orig"]
+    log = work / "vz" / "verilator.log"
+    cmd = (
+        "verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style --top-module tb "
+        "tb.v m.v -o vtb && ./obj_dir/vtb"
+    )
+    assert ex.run(["bash", "-c", cmd], cwd=work / "vz", log=log, timeout_s=600) == 0
+    assert [ln for ln in log.read_text().splitlines() if ln.startswith("OUT ")] == out["orig"]
