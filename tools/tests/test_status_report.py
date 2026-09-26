@@ -68,6 +68,24 @@ def test_render_progress_legend_lists_all_seven_marks():
         assert f"`{symbol}` {label}" in legend
 
 
+def test_render_progress_legend_states_the_runner_of_each_position():
+    """Review (b) #10: a reader must be able to tell which runner failed in `✓–✗··`."""
+    out = render_progress([], _unit(primitives=()))
+    legend = next(line for line in out.splitlines() if line.startswith("Marks:"))
+    assert "in the order python · xsim · iverilog · verilator · hw" in legend
+
+
+def test_render_todo_wraps_long_bin_lists():
+    """Review (b) #11: ~130 RAMB bins are wrapped at 100 columns, none lost."""
+    bins = [f"attr:INIT_{i:02X}" for i in range(130)]
+    out = render_todo([_status("FDRE", uncovered=bins)], units=_unit(primitives=("FDRE",)))
+    lines = out.splitlines()
+    assert "  - Uncovered bins (130):" in lines
+    assert all(len(ln) <= 100 for ln in lines)
+    listed = " ".join(ln for ln in lines if ln.startswith("    `"))
+    assert [b.strip("`,") for b in listed.split()] == bins
+
+
 def test_render_progress_skip_mark_is_distinct_from_not_run():
     """A deliberate `skip` (skipped with a reason) and a `not-run` cell (never
     attempted) mean different things and must render distinct marks (controller

@@ -46,14 +46,14 @@ RECORDED_RUNNERS = tuple(r for r in RUNNER_ORDER if r not in DECLARATION_OF)
 #: Test levels, in column order.
 LEVELS = ("L0", "L1", "L2", "L3")
 
-#: Precedence when several flows of one runner disagree (worst/most-informative
-#: first), and the source of truth for the PROGRESS.md legend: "fail beats error
-#: beats pass" (brief), extended to cover every RESULT_VALUES entry (controller
-#: ruling on Task 7 concern 1). A deliberate `skip` (skipped with a reason) and a
-#: `not-run` cell (never attempted) mean different things and get distinct marks;
-#: `skip` outranks `not-run` because a recorded skip is more informative than no
-#: record at all. A runner with no matching `results` entry at all is treated as
-#: `not-run`.
+#: DISPLAY precedence: which mark a PROGRESS.md level cell shows for one runner when
+#: its *flows* (``<level>/<runner>/<flow>`` keys, already aggregated over tests)
+#: disagree, worst/most-informative first: "fail beats error beats pass" (Task 7
+#: brief), extended to every RESULT_VALUES entry. Here a recorded `skip` outranks
+#: `not-run` (no record at all), and a pass mixed with not-run/skip is shown as
+#: partial (``_PARTIAL_MARK``, ruling S21) before this order applies. It is NOT the
+#: across-tests order of ``record`` (``RECORD_PRECEDENCE``, ruling S22). A runner
+#: with no matching `results` entry at all is `not-run`.
 _PRECEDENCE = ("fail", "error", "pass", "skip", "not-run", "unsupported", "n/a")
 
 #: Compact one-character marks for a runner's aggregated result at one level, one
@@ -73,9 +73,15 @@ _MARKS = {
 }
 _NOT_RUN_MARK = _MARKS["not-run"]
 
-#: The PROGRESS.md legend line: every mark, in `_PRECEDENCE` order, labelled with
-#: the `results` value it stands for.
-_LEGEND = "Marks: " + ", ".join(f"`{_MARKS[v]}` {v}" for v in _PRECEDENCE) + "."
+#: The PROGRESS.md legend line: every mark labelled with the `results` value it stands
+#: for (listed, not ranked), then which runner each position of a level cell is.
+_LEGEND = (
+    "Marks: "
+    + ", ".join(f"`{_MARKS[v]}` {v}" for v in RESULT_VALUES)
+    + ". Each level cell has one mark per runner, in the order "
+    + " · ".join(RECORDED_RUNNERS)
+    + " (e.g. `✓✓✗··`: python and xsim pass, iverilog fails)."
+)
 #: The marks are the reference model source's (unisim-2025.2); a suffix flags a cell
 #: another source disagrees on.
 _SOURCE_LEGEND = (
@@ -84,8 +90,9 @@ _SOURCE_LEGEND = (
     "unisim-gh-2020.1 passes what 2025.2 fails (or errors), or the reverse; `~gh` means "
     "the unisim-gh-2020.1 results were recorded at another tree hash (stale, not compared). "
     "Within one level/runner/flow, the primitive's tests aggregate as fail > error > "
-    "not-run > pass > skip > unsupported > n/a: a declared test not run is never hidden "
-    "by another test's pass."
+    "not-run > pass > skip > unsupported > n/a (ruling S22): a declared test not run is "
+    "never hidden by another test's pass. Across one runner's flows the cell shows fail > "
+    "error > pass > skip > not-run > unsupported > n/a, after the partial rule."
 )
 
 
@@ -384,6 +391,27 @@ def render_progress(statuses: list[dict], units: dict) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+#: TODO.md lines are wrapped at this width (a RAMB36E1 lists ~130 bins).
+TODO_WIDTH = 100
+
+
+def _wrapped(items: list[str], indent: str, width: int = TODO_WIDTH) -> list[str]:
+    """``items`` comma-joined into lines of at most ``width`` columns (a longer item gets
+    a line of its own), each starting with ``indent``."""
+    lines: list[str] = []
+    cur = ""
+    for i, item in enumerate(items):
+        tok = item + ("," if i < len(items) - 1 else "")
+        if cur and len(indent) + len(cur) + 1 + len(tok) > width:
+            lines.append(indent + cur)
+            cur = tok
+        else:
+            cur = f"{cur} {tok}" if cur else tok
+    if cur:
+        lines.append(indent + cur)
+    return lines
+
+
 def render_todo(statuses: list[dict], units: dict) -> str:
     """Render TODO.md: per unit, per primitive, its uncovered bins, unsupported
     cells (with the primitive's `notes` as the reason, if any) and open findings.
@@ -401,7 +429,8 @@ def render_todo(statuses: list[dict], units: dict) -> str:
             item_lines: list[str] = []
             uncovered = s["coverage"]["uncovered"]
             if uncovered:
-                item_lines.append("  - Uncovered bins: " + ", ".join(f"`{b}`" for b in uncovered))
+                item_lines.append(f"  - Uncovered bins ({len(uncovered)}):")
+                item_lines.extend(_wrapped([f"`{b}`" for b in uncovered], "    "))
             unsupported = sorted(k for k, v in s["results"].items() if v == "unsupported")
             if unsupported:
                 reason = f" — {s['notes']}" if s["notes"] else ""
@@ -441,10 +470,11 @@ def render_log(log_dir: Path) -> str:
 #: ``results_by_model_source.<source>`` (review (b) round 2, N2).
 REFERENCE_MODEL_SOURCE = "unisim-2025.2"
 
-#: Worst-first precedence for aggregating one ``<level>/<runner>/<flow>`` key over a
-#: primitive's tests (ruling S22). ``not-run`` (a declared test with no evidence)
-#: outranks ``pass``: another test's pass never hides an unrun one. A ``skip`` is
-#: deliberate and carries its reason, so it ranks below ``pass``.
+#: RECORD precedence: worst-first order for aggregating one ``<level>/<runner>/<flow>``
+#: key over a primitive's *tests* (ruling S22). ``not-run`` (a declared test with no
+#: evidence) outranks ``pass``: another test's pass never hides an unrun one. A
+#: ``skip`` is deliberate and carries its reason, so it ranks below ``pass``. The
+#: display order across flows is ``_PRECEDENCE``, a different aggregation.
 RECORD_PRECEDENCE = ("fail", "error", "not-run", "pass", "skip", "unsupported", "n/a")
 
 
