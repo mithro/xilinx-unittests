@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# flops work unit: corrections and claims layered over the generated FDRE.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (FDRE, pp. 375-376).
+#
+# Attributes: no override. The generated INIT/IS_*_INVERTED `allowed` lists are
+# already the 1-bit pair UG953 gives (the "1'b0 to 1'b1" range cells resolve to it).
+#
+# Crosses: none declared. UG953 documents each IS_*_INVERTED and INIT on its own
+# (p376) and describes no interaction between any two attributes, so a pairwise
+# cross would be a bin without a documented behaviour behind it.
+# R (synchronous reset) keeps the generated class `data`: UG953 p375 samples it at the
+# clock edge (logic table: R=1 with C rising gives Q=0), so it has
+# port:R:0/1 bins and no `active` level (that applies to async/gate ports only).
+claims:
+  - {id: FDRE.C1, page: 375, provenance: "doc:375", text: "With CE High and R inactive, Q takes D at the active clock edge."}
+  - {id: FDRE.C2, page: 375, provenance: "doc:375", text: "With CE Low, clock edges are ignored and Q holds."}
+  - {id: FDRE.C3, page: 375, provenance: "doc:375", text: "Active R overrides all other inputs, CE Low included; Q goes Low at the next active clock edge."}
+  - {id: FDRE.C4, page: 375, provenance: "doc:375", text: "While GSR is active (power-up or asserted) Q takes the INIT value."}
+  - {id: FDRE.C5, page: 376, provenance: "doc:376", text: "IS_C_INVERTED=1 makes the register negative-edge triggered."}
+  - {id: FDRE.C6, page: 376, provenance: "doc:376", text: "IS_R_INVERTED=1 makes R active-Low."}
+  - {id: FDRE.C7, page: 376, provenance: "doc:376", text: "IS_D_INVERTED=1 inverts the D input."}
+  - {id: FDRE.C8, page: 376, provenance: "doc:376", text: "IS_D_INVERTED must stay 0 unless the flop is used as an I/O register."}

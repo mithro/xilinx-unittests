@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# flops work unit: corrections and claims layered over the generated FDCE.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (FDCE, pp. 369-370).
+#
+# Attributes: no override. The generated INIT/IS_*_INVERTED `allowed` lists are
+# already the 1-bit pair UG953 gives (the "1'b0 to 1'b1" range cells resolve to it).
+#
+# Crosses: none declared. UG953 documents each IS_*_INVERTED and INIT on its own
+# (p370) and describes no interaction between any two attributes, so a pairwise
+# cross would be a bin without a documented behaviour behind it.
+ports:
+  # doc:370: IS_<pin>_INVERTED=1 makes a non-clock pin active-Low "rather than
+  # active-High", so CLR is active-High before inversion; the p369 logic table
+  # agrees (CLR=1 gives Q=0 with C don't-care).
+  CLR: {active: high}
+claims:
+  - {id: FDCE.C1, page: 369, provenance: "doc:369", text: "With CE High and CLR not asserted, Q takes D at the active clock edge."}
+  - {id: FDCE.C2, page: 369, provenance: "doc:369", text: "With CE Low, clock edges are ignored and Q holds."}
+  - {id: FDCE.C3, page: 369, provenance: "doc:369", text: "Active CLR overrides all other inputs, CE and C included, and drives Q Low asynchronously, without a clock edge."}
+  - {id: FDCE.C4, page: 369, provenance: "doc:369", text: "While GSR is active (power-up or asserted) Q takes the INIT value."}
+  - {id: FDCE.C5, page: 370, provenance: "doc:370", text: "IS_C_INVERTED=1 makes the register negative-edge triggered."}
+  - {id: FDCE.C6, page: 370, provenance: "doc:370", text: "IS_CLR_INVERTED=1 makes CLR active-Low."}
+  - {id: FDCE.C7, page: 370, provenance: "doc:370", text: "IS_D_INVERTED=1 inverts the D input."}
+  - {id: FDCE.C8, page: 370, provenance: "doc:370", text: "IS_D_INVERTED must stay 0 unless the flop is used as an I/O register."}
