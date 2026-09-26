@@ -159,3 +159,55 @@ def test_exclusions_for_iverilog_vz_follows_verilator(tmp_path):
     assert exclusions_for(c, "iverilog-vz") == {"*_x": "x inputs"}
     assert exclusions_for(c, "hw") == {"*": "no"}
     assert exclusions_for(c, "xsim") == {}
+
+
+def test_runner_flows_is_the_one_runner_flow_rule():
+    from xut.testspec import runner_flows
+
+    flows = ["rtl", "vivado", "yosys"]
+    assert runner_flows("python", flows) == ["rtl"]
+    assert runner_flows("hw", flows) == ["vivado", "yosys"]
+    assert runner_flows("xsim", ["vivado"]) == ["rtl", "vivado"]
+    assert runner_flows("iverilog-vz", flows) == ["rtl", "vivado", "yosys"]
+
+
+def test_declared_runners_per_flow_in_display_order():
+    from dataclasses import replace
+
+    from xut.testspec import declared_runners
+
+    c = replace(
+        discover(FIX)[0],
+        runners={"python": "yes", "hw": "yes", "verilator": "yes", "xsim": "no"},
+        flows=["rtl", "vivado"],
+    )
+    assert declared_runners(c, "rtl") == ["python", "iverilog-vz", "verilator"]
+    assert declared_runners(c, "vivado") == ["iverilog-vz", "verilator", "hw"]
+
+
+def test_finding_status(tmp_path):
+    from xut.testspec import finding_status
+
+    f = tmp_path / "F.md"
+    f.write_text("# F\n\n- Class: doc-gap\n- Status: Closed (fixed)\n- Status: open\n")
+    assert finding_status(f) == "closed"  # the first Status: line
+    f.write_text("# F\n\nno status\n")
+    assert finding_status(f) is None
+    assert finding_status(tmp_path / "missing.md") is None
+
+
+@pytest.mark.parametrize(
+    ("lit", "value"),
+    [("1'b1", 1), ("1", 1), ("'h1F", 31), ("16'd9", 9), ("8'B1010_0101", 165), (3, 3)],
+)
+def test_int_literal(lit, value):
+    from xut.formats.common import int_literal
+
+    assert int_literal(lit) == value
+
+
+@pytest.mark.parametrize("lit", ['"TRUE"', "1'bx", "2'b12", ""])
+def test_int_literal_rejects(lit):
+    from xut.formats.common import int_literal
+
+    assert int_literal(lit) is None

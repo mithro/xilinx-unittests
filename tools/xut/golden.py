@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from itertools import groupby
 
 from xut.errors import XutError
+from xut.formats.common import int_literal
 from xut.formats.xtr import Trace, prov_token
 from xut.formats.xvec import Event, Vec, free_clock_edges
 from xut.validate import ROC_WIDTH_PS, validate
@@ -49,14 +50,7 @@ class Reach:
 
 def _is_one(literal: object) -> bool:
     """True if a Verilog literal (``1'b1``, ``1``, ``'h1``) or int is the value 1."""
-    m = re.fullmatch(r"\s*(?:\d*'([bodh]))?([0-9a-fA-F_]+)\s*", str(literal))
-    if not m:
-        return False
-    base = {"b": 2, "o": 8, "d": 10, "h": 16}.get((m.group(1) or "d").lower(), 10)
-    try:
-        return int(m.group(2).replace("_", ""), base) == 1
-    except ValueError:
-        return False
+    return int_literal(literal) == 1
 
 
 def polarity_bins(bins: set[str], active: dict[str, str], attrs: dict[str, object]) -> set[str]:

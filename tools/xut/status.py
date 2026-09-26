@@ -10,7 +10,6 @@ and validates a status file, and builds a fresh stub.
 
 import json
 import os
-import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -23,16 +22,26 @@ import yaml
 from xut import schemas
 from xut.catalog.model import CatalogEntry, is_enumerated
 from xut.errors import ConfigError, GitError, XutError
+from xut.formats.common import int_literal
 from xut.provenance import tree_paths, tree_state
-from xut.testspec import TestCase
+from xut.testspec import (
+    DECLARATION_OF,
+    RUNNER_ORDER,
+    SIMULATORS,
+    TestCase,
+    finding_status,
+    runner_flows,
+)
 
 #: Valid values for a `results` entry (spec §11).
 RESULT_VALUES = ("pass", "fail", "error", "skip", "not-run", "unsupported", "n/a")
 
 HEADER = "# SPDX-License-Identifier: Apache-2.0\n"
 
-#: Runner display order for a PROGRESS.md level cell (spec §11 layout, Task 7 brief).
-RUNNER_ORDER = ("python", "xsim", "iverilog", "verilator", "hw")
+#: The runners ``record`` writes keys for, which is also the order of the marks in a
+#: PROGRESS.md level cell (spec §11): ``xut.testspec.RUNNER_ORDER`` without
+#: ``iverilog-vz``, which only guards the Verilator results (``transform-bug``).
+RECORDED_RUNNERS = tuple(r for r in RUNNER_ORDER if r not in DECLARATION_OF)
 
 #: Test levels, in column order.
 LEVELS = ("L0", "L1", "L2", "L3")
@@ -263,7 +272,7 @@ def _runner_mark(results: dict, level: str, runner: str) -> str:
 
 def _level_cell(results: dict, level: str) -> str:
     """The compact runner-mark string for one level cell (spec §11, Task 7 brief)."""
-    return "".join(_runner_mark(results, level, runner) for runner in RUNNER_ORDER)
+    return "".join(_runner_mark(results, level, runner) for runner in RECORDED_RUNNERS)
 
 
 def _coverage_pct(coverage: dict) -> str:
@@ -432,20 +441,11 @@ def render_log(log_dir: Path) -> str:
 #: ``results_by_model_source.<source>`` (review (b) round 2, N2).
 REFERENCE_MODEL_SOURCE = "unisim-2025.2"
 
-#: The runners ``record`` writes keys for. ``iverilog-vz`` is not recorded: it only
-#: guards the Verilator results and feeds ``transform-bug`` findings.
-RECORDED_RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
-
-#: The UNISIM simulators: an sv/cocotb test's bins count as covered once it passed on one.
-SIMULATORS = ("xsim", "iverilog", "verilator")
-
 #: Worst-first precedence for aggregating one ``<level>/<runner>/<flow>`` key over a
 #: primitive's tests (ruling S22). ``not-run`` (a declared test with no evidence)
 #: outranks ``pass``: another test's pass never hides an unrun one. A ``skip`` is
 #: deliberate and carries its reason, so it ranks below ``pass``.
 RECORD_PRECEDENCE = ("fail", "error", "not-run", "pass", "skip", "unsupported", "n/a")
-
-_STATUS_LINE = re.compile(r"^\s*(?:[-*]\s*)?Status:\s*(\S+)", re.IGNORECASE)
 
 
 class DirtyTreeError(XutError, RuntimeError):
@@ -462,18 +462,6 @@ class StaleResultError(XutError, RuntimeError):
 
 def _warn_stderr(message: str) -> None:
     print(f"warning: {message}", file=sys.stderr)
-
-
-def flows_for(runner: str, flows: list[str]) -> list[str]:
-    """The flows ``runner`` has a result key for, given a test's declared ``flows``:
-    the golden model (``python``) only runs ``rtl``; ``hw`` never runs ``rtl`` (its keys
-    use the declared netlist flows); a simulator runs ``rtl`` plus every declared flow.
-    The same rule as ``xut crosscheck``'s declared runners."""
-    if runner == "python":
-        return ["rtl"]
-    if runner == "hw":
-        return [f for f in dict.fromkeys(flows) if f != "rtl"]
-    return list(dict.fromkeys(["rtl", *flows]))
 
 
 def worst_result(values: list[str]) -> str:
@@ -498,15 +486,11 @@ def tree_hash(root: Path, paths: list[str]) -> str:
 
 def open_findings(root: Path, prim: str) -> list[str]:
     """The stems of ``findings/<PRIM>-*.md`` whose ``Status:`` line is ``open``."""
-    out = []
-    for f in sorted((Path(root) / "findings").glob(f"{prim}-*.md")):
-        for line in f.read_text().splitlines():
-            m = _STATUS_LINE.match(line)
-            if m:
-                if m.group(1).lower() == "open":
-                    out.append(f.stem)
-                break
-    return out
+    return [
+        f.stem
+        for f in sorted((Path(root) / "findings").glob(f"{prim}-*.md"))
+        if finding_status(f) == "open"
+    ]
 
 
 def _load_result(
@@ -558,17 +542,6 @@ def _merge_tools(into: dict[str, set[str]], res: dict) -> None:
         into.setdefault("container", set()).add(c.get("digest") or c["image"])
 
 
-def _lit_int(v: str) -> int | None:
-    m = re.fullmatch(r"\s*(?:\d*'([bodh]))?([0-9a-fA-F_]+)\s*", v)
-    if not m:
-        return None
-    base = {"b": 2, "o": 8, "d": 10, "h": 16}[(m.group(1) or "d").lower()]
-    try:
-        return int(m.group(2).replace("_", ""), base)
-    except ValueError:
-        return None
-
-
 def enum_value(value: object, allowed: list[str]) -> str | None:
     """``value`` (a Verilog literal, a string with or without quotes, or an int) as the
     matching ``allowed`` literal, or ``None``."""
@@ -576,9 +549,9 @@ def enum_value(value: object, allowed: list[str]) -> str | None:
     for cand in (s, f'"{s}"', s.strip('"')):
         if cand in allowed:
             return cand
-    n = _lit_int(s)
+    n = int_literal(s)
     if n is not None:
-        return next((a for a in allowed if _lit_int(a) == n), None)
+        return next((a for a in allowed if int_literal(a) == n), None)
     return None
 
 
@@ -605,7 +578,7 @@ def _config_attrs(
         return out
     passed: set[str] = set()
     for sim in SIMULATORS:
-        for flow in flows_for(sim, case.flows):
+        for flow in runner_flows(sim, case.flows):
             r = _load_result(root, flow, sim, ms, case.id, warn)
             passed |= {c["cfg"] for c in (r or {}).get("configs", []) if c["status"] == "pass"}
     cfgs = case.configs or [{"cfg": "default", "attrs": {}}]
@@ -636,7 +609,7 @@ def _sim_passed(root: Path, ms: str, case: TestCase, warn: Callable[[str], None]
         (r := _load_result(root, flow, sim, ms, case.id, warn)) is not None
         and r["status"] == "pass"
         for sim in SIMULATORS
-        for flow in flows_for(sim, case.flows)
+        for flow in runner_flows(sim, case.flows)
     )
 
 
@@ -752,7 +725,7 @@ def record(
     stale: list[str] = []
     for c in cases:
         for runner in RECORDED_RUNNERS:
-            for flow in flows_for(runner, c.flows):
+            for flow in runner_flows(runner, c.flows):
                 res = _load_result(root, flow, runner, model_source, c.id, warn)
                 if res is not None:
                     found += 1
