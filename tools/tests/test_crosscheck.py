@@ -1055,3 +1055,52 @@ def test_cli_model_source_must_be_known(repo):
     assert "unisim-gh-2020.1" in r.output  # the known ones are listed
     _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
     assert "unknown model source" not in _xc("TOYFF", "--model-source", "ms1").output
+
+
+# --- provenance (gate review (a) #1, brief A1) --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        {"tree_hash": "sha256:" + "b" * 64},  # measured at another tree
+        {"dirty": True},  # measured on a dirty tree
+        {"dirty": None},  # outside git
+        {"tree_hash": None},  # no tree hash
+    ],
+)
+def test_mixed_or_dirty_provenance_is_incomplete_never_compared(repo, stamp):
+    """A python trace of the current model is never diffed against a trace measured at
+    another (or a dirty) tree: an issue, exit 4, no finding, and no stub written."""
+    _test_yaml(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0, "inferred:silent"))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q1), status="fail", **stamp)
+    _result(repo, "rtl", "xsim", "ms1", TID, trace=T(Q1), status="fail")
+    rep = xc.check(repo, _case(repo))
+    assert rep.findings == [] and not rep.compared
+    assert any("provenance" in i and "rtl/iverilog" in i for i in rep.issues), rep.issues
+    assert rep.verdict == "incomplete" and rep.exit_code == 4
+    r = _xc("TOYFF", "--write-findings")
+    assert r.exit_code == 4, r.output
+    assert not (repo / "findings").exists()
+    assert "not writing findings" in r.output
+
+
+def test_consistent_provenance_is_compared(repo):
+    _test_yaml(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0), head="one")
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0), head="two")  # same tree hash
+    rep = xc.check(repo, _case(repo))
+    assert rep.issues == [] and rep.verdict == "agree"
+
+
+def test_stale_model_source_blocks_every_stub_of_the_test(repo):
+    """ms2 is stale; ms1's finding is still reported, but --write-findings writes
+    nothing for the test (its evidence is not all from one tree)."""
+    _diverging(repo)
+    _result(repo, "rtl", "python", "ms2", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms2", TID, trace=T(Q0), dirty=True)
+    r = _xc("TOYFF", "--write-findings")
+    assert r.exit_code == 3, r.output
+    assert "UNLISTED: doc-gap" in r.output and "ms2" in r.output
+    assert not (repo / "findings").exists()
