@@ -917,6 +917,76 @@ def test_sv_guard_sees_an_input_left_open_in_an_included_file(
         assert why in res.configs[0].reason, res.configs[0].reason
 
 
+_U1 = "`PRIM #(.INIT(1'b1)) u1 (.Q(q1), .C(c), .D(d), .E(e));"
+_SUB = "module sub (input a, output y);\n  assign y = a;\nendmodule\n"
+
+
+@pytest.mark.parametrize(
+    ("u1", "why"),
+    [
+        # a declared wire nothing drives (Task 15 re-review N1)
+        (f"wire ef;\n{_U1.replace('.E(e)', '.E(ef)')}", "E (net tb_toy_inc.ef has no driver)"),
+        # the same inside a concatenation
+        (f"wire ef;\n{_U1.replace('.E(e)', '.E({ef})')}", "E (net tb_toy_inc.ef has no driver)"),
+        # an implicit net: never declared, never driven
+        (_U1.replace(".E(e)", ".E(eimp)"), "E (net tb_toy_inc.eimp has no driver)"),
+        # .* binds E to an undriven wire E
+        (
+            "wire Q, E;\nwire C = c, D = d;\n`PRIM #(.INIT(1'b1)) u1 (.*);",
+            "E (net tb_toy_inc.E has no driver)",
+        ),
+        # through a submodule whose input its instance leaves undriven
+        (
+            "wire ef, ey;\nsub s (.a(ef), .y(ey));\n" + _U1.replace(".E(e)", ".E(ey)"),
+            "E (net tb_toy_inc.ef has no driver)",
+        ),
+        # a z-capable gate
+        (
+            f"wire ef;\nbufif1 g (ef, e, c);\n{_U1.replace('.E(e)', '.E(ef)')}",
+            "E (gate bufif1)",
+        ),
+    ],
+)
+def test_sv_guard_refuses_an_input_on_an_undriven_net(
+    work, ztoy, no_container, monkeypatch, u1, why
+):
+    """Task 15 re-review N1 (ruling S47.3): an input connected to a testbench net with no
+    driver floats z into the rewritten comparison, like an open port."""
+    case = _sv_tree(work, SV_BODY.replace(_U1, u1))
+    tb = case.test_dir / "sv/tb_toy_inc.sv"
+    tb.write_text(tb.read_text() + _SUB)
+    _fake_check(monkeypatch)
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ztoy)
+        assert res.status == "error", (runner.name, res.reason)
+        assert why in res.configs[0].reason, res.configs[0].reason
+        assert "tb_toy_inc.u1: input port(s)" in res.configs[0].reason
+
+
+@pytest.mark.parametrize(
+    "u1",
+    [
+        f"wire ef = e;\n{_U1.replace('.E(e)', '.E(ef)')}",
+        f"wire ef;\nassign ef = e;\n{_U1.replace('.E(e)', '.E(ef)')}",
+        f"tri1 ef;\n{_U1.replace('.E(e)', '.E(ef)')}",
+        "wire Q, E = e;\nwire C = c, D = d;\n`PRIM #(.INIT(1'b1)) u1 (.*);",
+        f"wire ef;\nbuf b (ef, e);\n{_U1.replace('.E(e)', '.E(ef)')}",
+        "wire ey;\nsub s (.a(e), .y(ey));\n" + _U1.replace(".E(e)", ".E(ey)"),
+        # one driver that never floats keeps the net out of z
+        f"wire ef;\nassign ef = e;\nbufif1 g (ef, e, c);\n{_U1.replace('.E(e)', '.E(ef)')}",
+        _U1.replace(".E(e)", ".E(e & d)"),  # an operator never yields z
+    ],
+)
+def test_sv_guard_accepts_a_driven_net(work, ztoy, u1):
+    from xut.runners.verilator import sv_instances
+
+    case = _sv_tree(work, SV_BODY.replace(_U1, u1))
+    tb = case.test_dir / "sv/tb_toy_inc.sv"
+    tb.write_text(tb.read_text() + _SUB)
+    insts = sv_instances(case, ztoy, "TOYFF", 5)
+    assert [(i.undriven, i.zdriven, i.floating) for i in insts] == [([], [], [])] * 2
+
+
 def test_sv_gate_checks_every_instantiated_parameterisation(work, ztoy, no_container, monkeypatch):
     """Review I2: the testbench instantiates INIT=0 and INIT=1; test.yaml's configuration
     has no attributes. Both are checked, and a failing INIT=1 verdict blocks Verilator."""
