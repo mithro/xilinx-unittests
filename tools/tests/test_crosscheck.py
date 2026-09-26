@@ -564,8 +564,8 @@ F = Finding(
 def test_write_finding_stub(tmp_path, monkeypatch):
     monkeypatch.setattr(xc, "_head", lambda root: "abc1234")
     monkeypatch.setattr(xc, "_today", lambda: "2026-09-26")
-    p = xc.write_finding(tmp_path, "FDRE", F)
-    assert p == tmp_path / "findings/FDRE-doc-gap-L1-gsr_init.md"
+    action, p = xc.record_finding(tmp_path, "FDRE", F)
+    assert (action, p) == ("wrote", tmp_path / "findings/FDRE-doc-gap-L1-gsr_init.md")
     assert p.read_text() == (
         "# FDRE: doc-gap in 7series.FDRE.L1.gsr_init\n"
         "\n"
@@ -589,10 +589,10 @@ def test_write_finding_stub(tmp_path, monkeypatch):
 
 
 def test_write_finding_never_overwrites(tmp_path):
-    p = xc.write_finding(tmp_path, "FDRE", F)
+    _, p = xc.record_finding(tmp_path, "FDRE", F)
     p.write_text(p.read_text() + "analysed\n")
     before = p.read_text()
-    assert xc.write_finding(tmp_path, "FDRE", F) is None
+    assert xc.record_finding(tmp_path, "FDRE", F) == ("exists", p)
     assert p.read_text() == before
 
 
@@ -600,7 +600,7 @@ def test_write_finding_known_divergence_writes_nothing(tmp_path):
     k = Finding(
         "known-divergence", F.test_id, "rtl", "m", F.runners, F.points, True, "doc-gap", "X"
     )
-    assert xc.write_finding(tmp_path, "FDRE", k) is None
+    assert xc.record_finding(tmp_path, "FDRE", k) == ("known", None)
     assert not (tmp_path / "findings").exists()
 
 
@@ -1001,7 +1001,7 @@ def test_record_finding_on_a_second_model_source_appends_once(tmp_path, monkeypa
     after = p.read_text()
     assert xc.record_finding(tmp_path, "FDRE", gh) == ("exists", p)
     assert xc.record_finding(tmp_path, "FDRE", F) == ("exists", p)
-    assert xc.write_finding(tmp_path, "FDRE", gh) is None and p.read_text() == after
+    assert p.read_text() == after
 
 
 def test_cli_write_findings_recorded_for_a_second_model_source(repo):
