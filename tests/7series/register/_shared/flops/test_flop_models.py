@@ -7,7 +7,7 @@ from flop_recipes import KINDS
 from xut_models.base import ModelContractError, ModelUnsupported
 from xut_models.registry import get
 
-PRIMS = ["FDRE"]  # FDSE added in Task 25, FDCE/FDPE in Task 26
+PRIMS = ["FDRE", "FDSE"]  # FDCE/FDPE in Task 26
 
 # UG953 v2026.1 (Introduction/Logic-Table page, Attributes page), pinned here as literals
 # -- independently of the model class under test -- so a wrong PAGE/ATTR_PAGE constant is
