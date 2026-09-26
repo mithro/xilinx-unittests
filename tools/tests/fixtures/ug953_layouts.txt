@@ -309,3 +309,48 @@ Toy template.
 UG953 v2026.1                                                                                                   27
                                                                             Send Feedback
 June 23, 2026
+                                                                                          Design Elements
+TOYICAP
+Primitive: Toy long hex list
+
+    PRIMITIVE_GROUP: CONFIGURATION
+    PRIMITIVE_SUBGROUP: ICAP
+
+Available Attributes
+
+   Attribute    Type     Allowed Values      Default                   Description
+                       32'h03600000,
+                       32'h03601000,
+                       32'h03602000,
+                       32'h03603000,
+                       32'h03604000,
+                       32'h03605000,
+                       32'h03606000,
+                       32'h03607000,
+                       32'h03608000,
+                       32'h03609000,
+                       32'h0360A000,
+                       32'h0360B000,
+                                                       Toy pre-programmed id
+TOY_ID          HEX    32'h03800000,      0'h3600000
+                                                       value for simulation.
+                       32'h03700000,
+                       32'h03701000,
+                       32'h03702000,
+                       32'h03703000,
+                       32'h03704000,
+                       32'h03705000,
+                       32'h03706000,
+                       32'h03707000,
+                       32'h03708000,
+                       32'h03709000
+
+
+VHDL Instantiation Template
+
+Toy template.
+
+
+UG953 v2026.1                                                                                                   28
+                                                                            Send Feedback
+June 23, 2026

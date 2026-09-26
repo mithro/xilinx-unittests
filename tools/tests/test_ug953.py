@@ -195,7 +195,7 @@ def test_names_from_text_skips_macros():
     macro = "XPM_TOY\nParameterized Macro: Toy macro\n\n    MACRO_GROUP: XPM\n\n"
     unimacro = "BRAM_TOY\nMacro: Toy unimacro\n\n    MACRO_GROUP: BRAM\n\n"
     assert names_from_text(macro + unimacro + TXT) == ["TOYFF", "TOYLUT"]
-    assert names_from_text(LAY) == ["TOYRAM", "TOYPLL", "TOYIO", "TOYSER", "TOYDUP"]
+    assert names_from_text(LAY) == ["TOYRAM", "TOYPLL", "TOYIO", "TOYSER", "TOYDUP", "TOYICAP"]
 
 
 def test_port_functions_from_vertically_centred_cells():
@@ -241,3 +241,21 @@ def test_split_values_enumerates_one_bit_binary_range():
     assert _split_values("1'b0 to 1'b1") == ["1'b0", "1'b1"]
     assert _split_values("16'h0000 to 16'hffff") == ["16'h0000 to 16'hffff"]
     assert _split_values("1 to 128") == ["1 to 128"]
+
+
+def test_a_long_allowed_value_list_is_never_truncated():
+    """Gate review (b) #11: ICAPE2 DEVICE_ID lists 51 values; capping the joined cell at
+    MAX_FRAGMENT characters cut it to 8 values and a truncated `32'h036C`. Values are
+    facts: every one is kept, whole."""
+    a = split_sections(LAY, ["TOYICAP"])["TOYICAP"].attributes["TOY_ID"]
+    want = [f"32'h0{0x3600000 + i * 0x1000:07X}" for i in range(12)]
+    want += ["32'h03800000"] + [f"32'h0{0x3700000 + i * 0x1000:07X}" for i in range(10)]
+    assert a["allowed"] == want
+    assert a["type"] == "HEX" and a["default"] == "0'h3600000"
+
+
+def test_a_long_prose_allowed_cell_is_still_capped():
+    from xut.catalog.ug953 import MAX_FRAGMENT, _allowed_values
+
+    prose = "Any string representing " + "a very long file name and location, " * 10
+    assert sum(len(v) for v in _allowed_values(prose)) <= MAX_FRAGMENT
