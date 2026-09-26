@@ -882,10 +882,37 @@ def test_expected_divergence_lint(tmp_path, entry, problems):
     (_fdre_dir(tmp_path) / "test.yaml").write_text(
         _VALID_TEST_YAML + f"    expected_divergence: [{entry}]\n"
     )
+    (tmp_path / "findings").mkdir()
+    for name in ("FDRE-doc-gap-L1-reset", "FDRE-doc-gap-L1-other"):
+        (tmp_path / f"findings/{name}.md").write_text("# F\n\n- Status: open\n")
     issues = check_tests_documented(tmp_path)
     assert [i.rule for i in issues] == ["expected-divergence"] * len(problems)
     for i, p in zip(issues, problems, strict=True):
         assert p in i.message and i.severity == "error"
+
+
+@pytest.mark.parametrize(
+    ("status_line", "problem"),
+    [
+        ("- Status: closed\n", "is closed, not open"),
+        ("- Status: wontfix\n", "is wontfix, not open"),
+        ("no status line\n", "has no Status: line"),
+        (None, "does not exist"),
+    ],
+)
+def test_expected_divergence_must_name_an_open_finding(tmp_path, status_line, problem):
+    """Review (b) #4 / ruling S23: an entry naming a finding that is not open (closed,
+    missing) is an error: it would hide a divergence PROGRESS/TODO no longer show."""
+    entry = "{finding: findings/FDRE-doc-gap-L1-reset.md, cls: doc-gap, runners: [xsim]}"
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML + f"    expected_divergence: [{entry}]\n"
+    )
+    if status_line is not None:
+        (tmp_path / "findings").mkdir()
+        (tmp_path / "findings/FDRE-doc-gap-L1-reset.md").write_text("# F\n\n" + status_line)
+    (issue,) = check_tests_documented(tmp_path)
+    assert (issue.rule, issue.severity) == ("expected-divergence", "error")
+    assert problem in issue.message
 
 
 # --- check_bins_accounted / check_gaps_present ------------------------------------------

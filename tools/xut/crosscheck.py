@@ -22,7 +22,8 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
   ``known-divergence`` with the original class and the finding id. An entry matches
   only its exact finding id (``xut.testspec.finding_id``), the class, a superset of
   the finding's runners, and its optional ``model_sources``/``flows`` scope (ruling
-  S17); an in-scope entry with another id is an issue.
+  S17); an in-scope entry with another id is an issue, and so is one naming a finding
+  whose ``Status:`` is not ``open`` (ruling S23).
 - **One tree per comparison.** Every result carries the ``tree_hash``/``dirty`` that
   ``xut run`` stamped (ruling S21). A model source whose results disagree on
   ``tree_hash``, or include one measured on a dirty tree (or outside git), is not
@@ -59,6 +60,7 @@ from xut.testspec import (
     declared_runners,
     finding_id,
     finding_slug,
+    finding_status,
     prim_of,
     runner_key,
 )
@@ -809,8 +811,15 @@ def check(root: Path, case: TestCase, model_source: str | None = None) -> Report
         for _, v in sorted(views.items()):
             rep.issues += _result_issues(ms, v, found)
     for e in case.expected_divergence:
-        if not (Path(root) / e["finding"]).is_file():
+        path = Path(root) / e["finding"]
+        if not path.is_file():
             rep.issues.append(f"expected_divergence names {e['finding']}, which does not exist")
+        elif (st := finding_status(path)) != "open":
+            rep.issues.append(
+                f"expected_divergence names {e['finding']}, whose Status is "
+                f"{st or 'missing'}: not open, so PROGRESS/TODO no longer show it; reopen "
+                "the finding or remove the entry"
+            )
         if Path(e["finding"]).stem not in matched:
             rep.unmatched_expected.append(e["finding"])
     return rep
