@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// vz_bad_rao.v — refusal: the forced reg is read after its assign in the same block.
+// vz_rao.v — the forced reg is read right after its assign in the same block
+// (ruling S18: recorded as a stale read and substituted, no longer a refusal).
 `timescale 1ps/1ps
 module VZRAO (output Q, output X, input C, input D, input S);
   reg r, x;
