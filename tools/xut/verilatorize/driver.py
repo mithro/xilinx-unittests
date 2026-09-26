@@ -19,7 +19,8 @@ transformed model under the default configuration and every one of its
 ``generate_configs``, recording ``pass``/``fail``/``error`` in ``equiv[config_key]`` and the
 oracle in ``equiv_oracle[config_key]``; the work goes in
 ``vz_dir(ms)/equiv/<MODEL>/<config_dir>/``. A ``pass`` or ``fail`` is kept until the model
-is re-transformed; a missing result or an ``error`` is (re)checked.
+is re-transformed or the simulators change (``sim_tools``: the Icarus version and image,
+the xsim version); a missing result or an ``error`` is (re)checked.
 """
 
 from __future__ import annotations
@@ -63,6 +64,9 @@ class ModelEntry:
     equiv: dict[str, str] = field(default_factory=dict)
     #: config key -> the original model's oracle: iverilog | xsim ("" if it never ran)
     equiv_oracle: dict[str, str] = field(default_factory=dict)
+    #: config key -> the simulators the result was computed with (``sim_tools``): a kept
+    #: pass/fail is rechecked when they change
+    equiv_tools: dict[str, str] = field(default_factory=dict)
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
@@ -354,6 +358,32 @@ def verilatorize(
     return man
 
 
+def sim_tools(ms: ModelSource, work: Path) -> str:
+    """The simulators an equivalence result depends on, as one JSON string: the Icarus
+    version and the xut-sim image ID (or ``native``), and the xsim version (or why it is
+    unavailable). Part of the redo key of a kept verdict."""
+    from xut.container import executor_for, image_digest, sim_tool_versions
+    from xut.runners import xsim
+
+    work.mkdir(parents=True, exist_ok=True)
+    parts: dict[str, str] = {}
+    try:
+        ex = executor_for(ms, work)
+        parts["iverilog"] = sim_tool_versions(ex, work)["iverilog"]
+        image = getattr(ex, "image", None)
+        parts["image"] = (image_digest(image) or "missing") if image else "native"
+    except Exception as e:  # recorded: every check then errors, and is redone later
+        parts["iverilog"] = f"unavailable: {type(e).__name__}: {e}"
+    if not xsim.settings_available():
+        parts["xsim"] = "unavailable"
+    else:
+        try:
+            parts["xsim"] = xsim.xsim_version(work)
+        except Exception as e:
+            parts["xsim"] = f"unavailable: {type(e).__name__}: {e}"
+    return json.dumps(parts, sort_keys=True)
+
+
 def _check_all(
     ms: ModelSource,
     man: Manifest,
@@ -365,13 +395,15 @@ def _check_all(
     """Equivalence-check every configuration of ``models`` that has no pass/fail yet."""
     from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
 
+    tools = sim_tools(ms, out_dir / "equiv")
     todo: list[tuple[str, dict[str, str]]] = []
     for m in models:
         e = man.models.get(m)
         if e is None or e.status != "transformed":
             continue
         for cfg in e.generate_configs or [{}]:
-            if e.equiv.get(config_key(cfg)) not in ("pass", "fail"):
+            k = config_key(cfg)
+            if e.equiv.get(k) not in ("pass", "fail") or e.equiv_tools.get(k) != tools:
                 todo.append((m, cfg))
     files = model_files(ms)
     total, done, t0 = len(todo), 0, time.monotonic()
@@ -385,9 +417,10 @@ def _check_all(
             work = out_dir / "equiv" / m / config_dir(config_key(cfg))
             futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
         for fut in as_completed(futs):
-            r = fut.result()  # check_model returns an error result, it does not raise
+            r = fut.result()  # check_model returns an error result, it never raises
             e = man.models[futs[fut]]
             e.equiv[r.config], e.equiv_oracle[r.config] = r.status, r.oracle
+            e.equiv_tools[r.config] = tools
             done += 1
             progress(
                 f"progress: equiv done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
