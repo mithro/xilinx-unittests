@@ -101,14 +101,22 @@ def status_grp() -> None:
 
 
 @status_grp.command("init")
-def status_init_cmd() -> None:
+@click.option(
+    "--refresh-bins",
+    is_flag=True,
+    help="also rewrite the coverage bins of never-recorded stubs (tree_hash null) to the "
+    "current catalog bins; recorded status files are never touched",
+)
+def status_init_cmd(refresh_bins: bool) -> None:
     """Write a status stub for every catalog entry that has none yet.
 
-    Never overwrites an existing status/<family>/<PRIM>.yaml.
+    Never overwrites an existing status/<family>/<PRIM>.yaml, except that
+    --refresh-bins updates the bins of a stub no `xut status record` has touched.
     """
     from xut.catalog.model import load_entry
     from xut.paths import repo_root
     from xut.status import dump_stub
+    from xut.status import refresh_bins as refresh
     from xut.workunits import load_family, load_units
 
     root = repo_root()
@@ -123,15 +131,23 @@ def status_init_cmd() -> None:
         raise ConfigError(
             f"catalog primitive(s) in no work unit of docs/work-units.yaml: {', '.join(orphans)}"
         )
-    written = 0
+    written = refreshed = 0
     for name in names:
         dest = out_dir / f"{name}.yaml"
         if dest.exists():
+            if refresh_bins:
+                try:
+                    refreshed += refresh(dest, load_entry(family, name, root))
+                except (yaml.YAMLError, jsonschema.ValidationError) as e:
+                    raise _schema_error(dest, root, e) from e
             continue
         entry = load_entry(family, name, root)
         dest.write_text(dump_stub(entry, unit_of[name]))
         written += 1
-    click.echo(f"wrote {written} new stub(s); {len(names)} catalog entries, {out_dir}")
+    msg = f"wrote {written} new stub(s); {len(names)} catalog entries, {out_dir}"
+    if refresh_bins:
+        msg += f"; refreshed the bins of {refreshed} never-recorded stub(s)"
+    click.echo(msg)
 
 
 @status_grp.command("record")
@@ -184,12 +200,15 @@ def status_record_cmd(prims: tuple[str, ...], unit_name: str | None, model_sourc
             else s["results_by_model_source"][model_source]
         )
         counts = Counter(results.values())
-        cov = s["coverage"]
-        click.echo(
-            f"wrote status/{family}/{prim}.yaml ({model_source}): "
-            + ", ".join(f"{n} {v}" for v, n in sorted(counts.items()))
-            + f"; coverage {len(cov['covered'])}/{len(cov['covered']) + len(cov['uncovered'])}"
+        line = f"wrote status/{family}/{prim}.yaml ({model_source}): " + ", ".join(
+            f"{n} {v}" for v, n in sorted(counts.items())
         )
+        if model_source == REFERENCE_MODEL_SOURCE:  # coverage is the reference's only
+            cov = s["coverage"]
+            line += (
+                f"; coverage {len(cov['covered'])}/{len(cov['covered']) + len(cov['uncovered'])}"
+            )
+        click.echo(line)
 
 
 def _generated_header(root: Path, branch: str) -> str:
@@ -568,6 +587,14 @@ def crosscheck_cmd(
     from xut.testspec import discover
 
     root = repo_root()
+    if model_source is not None:
+        from xut.modelsrc import known_model_sources
+
+        known = {*known_model_sources(), *(p.name for p in root.glob("build/*/*/*") if p.is_dir())}
+        if model_source not in known:
+            raise XutError(
+                f"unknown model source {model_source!r} (known: {', '.join(sorted(known))})"
+            )
     cases = _select_cases(root, discover(root), selectors)
     if not cases:
         click.echo(f"no tests selected ({' '.join(selectors) or 'no tests under tests/'})")

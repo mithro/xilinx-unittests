@@ -42,6 +42,11 @@ def _candidates() -> list[tuple[str, Path]]:
     return [("unisim-2025.2", VIVADO_SRC), ("unisim-gh-2020.1", submodule_src())]
 
 
+def known_model_sources() -> list[str]:
+    """Every model source name xut knows, available on this machine or not."""
+    return [n for n, _ in _candidates()]
+
+
 def model_sources() -> dict[str, ModelSource]:
     """The model sources present on this machine, in preference order."""
     return {

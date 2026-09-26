@@ -993,3 +993,12 @@ def test_cli_model_source_restricts_the_report(repo):
     data = json.loads((repo / f"build/crosscheck/{TID}.json").read_text())
     assert list(data["model_sources"]) == ["ms2"] and data["findings"] == []
     assert _xc("TOYFF").exit_code == 1  # both sources: ms1's finding is back
+
+
+def test_cli_model_source_must_be_known(repo):
+    _test_yaml(repo)
+    r = _xc("TOYFF", "--model-source", "unisim-typo")
+    assert r.exit_code == 1 and "unknown model source 'unisim-typo'" in r.output
+    assert "unisim-gh-2020.1" in r.output  # the known ones are listed
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    assert "unknown model source" not in _xc("TOYFF", "--model-source", "ms1").output

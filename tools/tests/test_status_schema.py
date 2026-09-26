@@ -9,7 +9,14 @@ import yaml
 from xut.catalog.model import load_entry
 from xut.paths import repo_root
 from xut.schemas import load_schema
-from xut.status import RESULT_VALUES, coverage_bins, load_status, new_stub, validate
+from xut.status import (
+    RESULT_VALUES,
+    coverage_bins,
+    dump_stub,
+    load_status,
+    new_stub,
+    validate,
+)
 from xut.workunits import load_units
 
 STATUS_SCHEMA = load_schema("status")
@@ -150,12 +157,28 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
         entry = load_entry("7series", f.stem, root)
         assert data["primitive"] == entry.name
         assert data["work_unit"] == unit_of[entry.name]
-        # The stubs predate ruling S19's port-class and cross bins, and infra may not
-        # modify a status file: they gain those bins when their unit first records.
-        new = set(coverage_bins(entry))
-        pre_s19 = {b for b in new if not b.startswith("cross:") and b.count(":") == 1}
-        assert set(data["coverage"]["uncovered"]) in (new, pre_s19)
+        if data["measured"]["tree_hash"] is not None:
+            continue  # recorded: its coverage is `xut status record`'s
         assert data["coverage"]["covered"] == []
+        new = coverage_bins(entry)
+        # TEMPORARY (ruling S20): the committed stubs predate ruling S19's port-class
+        # and cross bins, and an infra branch may not modify a status file. Once the
+        # orchestrator runs `xut status init --refresh-bins` on main, drop `pre_s19`:
+        # every never-recorded stub then has exactly `new`.
+        pre_s19 = [b for b in new if not b.startswith("cross:") and b.count(":") == 1]
+        assert data["coverage"]["uncovered"] in (new, pre_s19)
+
+
+def test_every_fresh_stub_has_exactly_the_current_bins():
+    """A stub `xut status init` writes today (and one --refresh-bins rewrites) has
+    exactly coverage_bins(entry), in order, all uncovered."""
+    root = repo_root()
+    for f in sorted((root / "catalog/7series").glob("*.yaml")):
+        if f.name.endswith(".overrides.yaml"):
+            continue
+        entry = load_entry("7series", f.stem, root)
+        stub = yaml.safe_load(dump_stub(entry, "u"))
+        assert stub["coverage"] == {"covered": [], "uncovered": coverage_bins(entry)}
 
 
 # --- port x class and declared-cross bins (ruling S19) -------------------------------------
