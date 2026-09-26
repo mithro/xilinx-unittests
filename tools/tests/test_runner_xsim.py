@@ -797,3 +797,29 @@ def test_xil_defines_are_refused(tmp_path, monkeypatch):
     assert not ok and "XIL_TIMING" in why and "precompiled unisims_ver" in why
     assert "OTHER" not in why
     assert XsimRunner().available(dataclasses.replace(ctx, defines={"OTHER": "1"})) == (True, "")
+
+
+def test_render_script_compiles_verilog_files_without_sv(tmp_path):
+    """The verilatorize oracle: UNISIM originals are Verilog, compiled without -sv, with
+    the model source's glbl and --sourcelibdir; the testbench stays SystemVerilog."""
+    text = render_script(
+        tmp_path,
+        ["tb.sv"],
+        "tb",
+        [],
+        {},
+        {},
+        glbl="/src/glbl.v",
+        libs=(),
+        sourcelibdirs=["/src/unisims"],
+        verilog_files=["dut.v", "/src/unisims/M.v"],
+    )
+    inner = shlex.split(text.split("bash -c ", 1)[1])[0]
+    lines = [ln.strip().removesuffix("\\").strip() for ln in inner.splitlines()]
+    xvlog = [ln for ln in lines if ln.startswith("xvlog")]
+    assert xvlog[0].startswith("xvlog -sv ") and xvlog[0].endswith("tb.sv &&")
+    assert "--sourcelibdir" not in xvlog[0] and "glbl" not in xvlog[0]
+    assert not xvlog[1].startswith("xvlog -sv")
+    assert "--sourcelibdir /src/unisims --sourcelibext .v dut.v /src/unisims/M.v" in xvlog[1]
+    assert xvlog[1].endswith("/src/glbl.v &&")
+    assert any(ln.startswith("xelab --timescale") for ln in lines)  # no -L libraries

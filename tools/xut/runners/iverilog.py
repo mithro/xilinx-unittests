@@ -163,7 +163,7 @@ class IverilogRunner(Runner):
         return ["-s", top, "-s", "glbl"]
 
     @staticmethod
-    def _step(ex: Executor, argv: list[str], cd: Path, log: Path, timeout: int) -> tuple[int, str]:
+    def step(ex: Executor, argv: list[str], cd: Path, log: Path, timeout: int) -> tuple[int, str]:
         """Run one command, appending to ``log``; its exit code and its own output
         (without the executor's ``$ argv`` header line)."""
         start = log.stat().st_size if log.is_file() else 0
@@ -178,7 +178,7 @@ class IverilogRunner(Runner):
     ) -> tuple[bool, str]:
         """Run the compiler: (ok, output). Not ok on a non-zero exit or on any
         ``error:``/``sorry:`` line it printed (Icarus exits 0 on a bad -P value)."""
-        rc, out = self._step(ex, argv, cd, log, timeout)
+        rc, out = self.step(ex, argv, cd, log, timeout)
         return rc == 0 and not any(_COMPILE_ERROR.search(ln) for ln in out.splitlines()), out
 
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
@@ -224,7 +224,7 @@ class IverilogRunner(Runner):
         rc: int | None = None
         rtext = ""
         if compiled_ok:
-            rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
+            rc, rtext = self.step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
         out = SimOutcome(compiled_ok, ctext, rc, rtext)
         if vec.expect == "reject":
             return reject_check(cd, out, vec.illegal, header)
@@ -269,7 +269,7 @@ class IverilogRunner(Runner):
         compiled_ok, ctext = self._compile(ex, argv, cd, log, timeout)
         if not compiled_ok:
             return ConfigResult(cfg, "error", "compile failed")
-        rc, rtext = self._step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
+        rc, rtext = self.step(ex, ["vvp", "-n", "sim.vvp"], cd, log, timeout)
         if (
             r := classify_run(cfg, SimOutcome(True, ctext, rc, rtext), need_done=False)
         ) is not None:
