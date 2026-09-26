@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -147,7 +148,8 @@ endmodule
 """)
     monkeypatch.setattr(driver, "catalog_choices", lambda m: {"SIM_DEVICE": ['"7SERIES"']})
     assert driver.model_choices(f, "VZDEV") == {"SIM_DEVICE": ['"7SERIES"', '"VIRTEX6"']}
-    e = driver.transform_one(f, FIX / "glbl.v", tmp_path)
+    (tmp_path / "out").mkdir()
+    e = driver.transform_one(f, FIX / "glbl.v", tmp_path / "out")
     assert e.status == "transformed"
     assert e.generate_configs == [{}, {"SIM_DEVICE": '"VIRTEX6"'}]
 
@@ -168,3 +170,81 @@ def test_cli_summary(src, monkeypatch):
     assert "progress: done=4 total=4" in r.output
     r = CliRunner().invoke(main, ["verilatorize", "NOPE"])
     assert r.exit_code == 1 and "no such model(s)" in r.output
+
+
+def _redone(ms):
+    lines = []
+    verilatorize(ms, progress=lines.append)
+    return lines[-1].split()[1]  # done=N
+
+
+@pytest.mark.parametrize("what", ["choices", "glbl", "tool"])
+def test_incremental_key_covers_choices_glbl_and_tool(src, monkeypatch, what):
+    ms, out = src
+    verilatorize(ms)
+    assert _redone(ms) == "done=0"
+    if what == "choices":
+        monkeypatch.setattr(driver, "catalog_choices", lambda m: {"X": ['"A"']})
+    elif what == "glbl":
+        ms.glbl.write_text(ms.glbl.read_text() + "// changed\n")
+    else:
+        monkeypatch.setattr(driver, "tool_sha256", lambda: "0" * 64)
+    assert _redone(ms) == "done=4"
+    assert _redone(ms) == "done=0"
+
+
+def test_tool_sha256_covers_the_transform_sources():
+    here = Path(driver.__file__).parent
+    assert {p.name for p in here.glob("*.py")} >= {"analyze.py", "rewrite.py", "driver.py"}
+    assert len(driver.tool_sha256()) == 64
+
+
+class _ThreadPool(ThreadPoolExecutor):
+    """In-process pool, so a monkeypatched transform_one is the one that runs."""
+
+    def __init__(self, max_workers, mp_context=None):
+        super().__init__(max_workers=max_workers)
+
+
+def test_crash_records_the_other_models_then_raises(src, monkeypatch):
+    ms, out = src
+    verilatorize(ms)
+    real = driver.transform_one
+
+    def flaky(path, glbl, out_dir):
+        if Path(path).stem == "VZGEN":
+            (Path(out_dir) / Path(path).name).unlink(missing_ok=True)  # as transform_one does
+            raise RuntimeError("boom")
+        return real(path, glbl, out_dir)
+
+    monkeypatch.setattr(driver, "ProcessPoolExecutor", _ThreadPool)
+    monkeypatch.setattr(driver, "transform_one", flaky)
+    monkeypatch.setattr(driver, "tool_sha256", lambda: "1" * 64)  # redo everything
+    with pytest.raises(XutError, match="VZGEN: verilatorize crashed: RuntimeError: boom"):
+        verilatorize(ms, jobs=2)
+    man = Manifest.load(out / "manifest.json")
+    assert "VZGEN" not in man.models and not (out / "VZGEN.v").exists()
+    assert {m: e.tool_sha256 for m, e in man.models.items()} == {
+        m: "1" * 64 for m in ("VZTRIG", "VZBADSEL", "PLAIN")
+    }
+
+
+def test_transform_one_removes_a_stale_copy_first(tmp_path):
+    (tmp_path / "VZTRIG.v").write_text("stale")
+    (tmp_path / "src").mkdir()
+    shutil.copy(FIX / "vz_bad_select.v", tmp_path / "src" / "VZTRIG.v")  # now refused
+    e = driver.transform_one(tmp_path / "src" / "VZTRIG.v", FIX / "glbl.v", tmp_path)
+    assert e.status == "unsupported" and not (tmp_path / "VZTRIG.v").exists()
+
+
+def test_nonconstant_overrides_recorded(src):
+    ms, out = src
+    man = verilatorize(ms)
+    assert man.models["VZTRIG"].nonconstant_overrides is False
+
+
+def test_transform_one_never_overwrites_its_source(tmp_path):
+    shutil.copy(FIX / "vz_trig.v", tmp_path / "VZTRIG.v")
+    with pytest.raises(XutError, match="would overwrite the model source"):
+        driver.transform_one(tmp_path / "VZTRIG.v", FIX / "glbl.v", tmp_path)
+    assert (tmp_path / "VZTRIG.v").is_file()
