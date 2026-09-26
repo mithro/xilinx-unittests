@@ -31,10 +31,14 @@ MSB-first as characters of ``01xz``. Class rules (spec §5.1) are checked by
 
 A ``#`` starts a comment everywhere it appears outside a double-quoted
 string on a body line; a ``#`` inside ``reason="..."`` (or any other quoted
-token) is data, not a comment. The writer never silently alters a value to
-make it fit the format: a header value or ``hw_renderable`` reason that
-contains a literal ``"`` or a newline cannot be represented and raises
-``XvecError`` instead of being mangled.
+token) is data, not a comment. A header value or ``hw_renderable`` reason
+containing whitespace, a double quote, a backslash or ``#`` is written
+quoted, with a backslash escaped as ``\\\\`` and a double quote as ``\\"``
+(backslash escaped first, exactly the inverse of the order the parser
+unescapes them in), so a literal quote round trips instead of being
+refused (ruling S34.3). A control character such as a newline still cannot
+be represented in this line-oriented format and raises ``XvecError``
+instead of being silently mangled.
 
 Co-timed events (events sharing a ``t``): multiple ``set`` events at the
 same time are allowed *without* ``simultaneous`` exactly when their
@@ -234,17 +238,28 @@ def _strip_comment(raw: str) -> str:
     return raw
 
 
+_CONTROL_CHARS = frozenset(chr(c) for c in range(0x20)) | {"\x7f"}
+
+
+def _check_representable(v: str, what: str) -> None:
+    """A control character (a newline included) breaks this line-oriented format
+    and cannot be represented in a header value or ``hw_renderable`` reason,
+    bare or quoted, so it still raises rather than being silently mangled."""
+    if any(c in _CONTROL_CHARS for c in v):
+        raise XvecError(f"{what} {v!r} cannot be represented (contains a control character)")
+
+
 def _escape_quoted(v: str, what: str) -> str:
-    """Escape ``v`` for embedding inside a double-quoted token, or raise if it
-    cannot be represented: this format has no way to encode a literal quote
-    inside a bare/quoted token or a newline within a single line, and the
-    writer never silently mangles data to work around that."""
-    if '"' in v or "\n" in v or "\r" in v:
-        raise XvecError(f"{what} {v!r} cannot be represented (contains a quote or newline)")
-    return v.replace("\\", "\\\\")
+    """Escape ``v`` for embedding inside a double-quoted token: a backslash is
+    doubled first, then a literal quote is escaped as a backslash-quote pair — the
+    exact inverse of the order ``_unquote`` undoes them in, so a literal quote or
+    backslash round trips (ruling S34.3, reversing I1 narrowly)."""
+    _check_representable(v, what)
+    return v.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _quote(v: str, what: str = "value") -> str:
+    _check_representable(v, what)
     if v and not re.search(r'[\s"#]', v):
         return v
     return f'"{_escape_quoted(v, what)}"'
