@@ -497,16 +497,6 @@ def finding_path(root: Path, prim: str, f: Finding) -> Path:
     return Path(root) / "findings" / f"{prim}-{f.slug}.md"
 
 
-def write_finding(root: Path, prim: str, f: Finding) -> Path | None:
-    """Write the ``findings/<PRIM>-<slug>.md`` stub (spec §8 "Recording") and return
-    its path. Never overwrites: for an existing file it returns ``None`` (after
-    ``record_finding``'s append-only ``Also seen`` line when the finding is seen on a
-    new flow / model source). A ``known-divergence`` returns ``None`` without writing,
-    because its finding already exists (``f.finding``)."""
-    action, p = record_finding(root, prim, f)
-    return p if action == "wrote" else None
-
-
 def _where(f: Finding) -> str:
     return f"{f.flow} / {f.model_source or 'n/a'}"
 
