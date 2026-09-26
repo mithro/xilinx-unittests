@@ -51,7 +51,14 @@ class ModelEntry:
     notes: list[str] = field(default_factory=list)
     #: config key ("default" or sorted "NAME=value,...") -> pass | fail | error (Task 14)
     equiv: dict[str, str] = field(default_factory=dict)
+    #: some override expression is not a constant: Icarus 12 evaluates such a procedural
+    #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
+    nonconstant_overrides: bool = False
     xut_version: str = __version__
+    # The rest of the incremental key (ruling S28c): the entry is redone when any changes.
+    glbl_sha256: str = ""
+    tool_sha256: str = ""  # analyze/rewrite/driver sources + xut.__version__
+    choices_sha256: str = ""  # the catalog-derived generate choices
 
     @classmethod
     def from_dict(cls, d: dict) -> ModelEntry:
@@ -157,13 +164,38 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def tool_sha256() -> str:
+    """Hash of the transform's own sources and ``xut.__version__``."""
+    h = hashlib.sha256(__version__.encode())
+    here = Path(__file__).parent
+    for name in ("analyze.py", "rewrite.py", "driver.py"):
+        h.update((here / name).read_bytes())
+    return h.hexdigest()
+
+
+def choices_sha256(model: str) -> str:
+    return hashlib.sha256(json.dumps(catalog_choices(model), sort_keys=True).encode()).hexdigest()
+
+
+def _key(model: str, path: Path, glbl_sha: str, tool_sha: str) -> dict[str, str]:
+    return {
+        "source_sha256": _sha256(path),
+        "glbl_sha256": glbl_sha,
+        "tool_sha256": tool_sha,
+        "choices_sha256": choices_sha256(model),
+        "xut_version": __version__,
+    }
+
+
 def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
     """Classify, and if forced, transform one model file (runs in a worker process)."""
     path = Path(path)
     sha = _sha256(path)
     out = Path(out_dir) / path.name
+    if out.resolve() == path.resolve():
+        raise XutError(f"{path}: the transformed copy would overwrite the model source")
+    out.unlink(missing_ok=True)  # a crash below must not leave a stale copy behind
     if not has_procedural_assign(path):
-        out.unlink(missing_ok=True)
         return ModelEntry("unchanged", sha)
     model = path.stem
     choices = model_choices(path, model)
@@ -174,7 +206,6 @@ def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
         text = rewrite(an)
         check_clean(text, model, glbl, configs)
     except TransformError as e:
-        out.unlink(missing_ok=True)
         return ModelEntry("unsupported", sha, reason=str(e), generate_configs=configs)
     write_text(out, text)
     forced = [*an.forced, *(f"{n}.{x}" for n, sub in an.submodules.items() for x in sub.forced)]
@@ -186,14 +217,14 @@ def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
         forced=forced,
         generate_configs=configs,
         notes=an.notes,
+        nonconstant_overrides=an.nonconstant_overrides,
     )
 
 
-def _current(e: ModelEntry | None, sha: str, out: Path) -> bool:
+def _current(e: ModelEntry | None, key: dict[str, str], out: Path) -> bool:
     return (
         e is not None
-        and e.source_sha256 == sha
-        and e.xut_version == __version__
+        and all(getattr(e, k) == v for k, v in key.items())
         and (e.status != "transformed" or out.is_file())
     )
 
@@ -219,13 +250,16 @@ def verilatorize(
     man = Manifest.load(mpath) if mpath.is_file() else Manifest(ms.name)
     if man.model_source != ms.name:
         raise XutError(f"{mpath} belongs to model source {man.model_source}, not {ms.name}")
+    glbl_sha, tool_sha = _sha256(ms.glbl), tool_sha256()
+    keys = {m: _key(m, f, glbl_sha, tool_sha) for m, f in files.items()}
     todo = [
         (m, f)
         for m, f in files.items()
-        if not _current(man.models.get(m), _sha256(f), out_dir / f.name)
+        if not _current(man.models.get(m), keys[m], out_dir / f.name)
     ]
     total, done, t0 = len(todo), 0, time.monotonic()
     progress(f"progress: done=0 total={total} elapsed_s=0")
+    crash: XutError | None = None
     try:
         # forkserver: the caller may be multi-threaded (pytest-xdist, runner threads)
         ctx = multiprocessing.get_context("forkserver")
@@ -234,15 +268,22 @@ def verilatorize(
             for fut in as_completed(futs):
                 m = futs[fut]
                 try:
-                    man.models[m] = fut.result()  # a fresh entry: equiv results reset
-                except TransformError:
-                    raise
-                except Exception as e:  # a bug, not a refusal: stop, naming the model
-                    raise XutError(f"{m}: verilatorize crashed: {type(e).__name__}: {e}") from e
+                    entry = fut.result()  # a fresh entry: equiv results reset
+                except Exception as e:  # a bug, not a refusal: record the others, then stop
+                    man.models.pop(m, None)  # never keep a stale entry for a crashed model
+                    if crash is None:
+                        crash = XutError(f"{m}: verilatorize crashed: {type(e).__name__}: {e}")
+                        crash.__cause__ = e
+                    continue
+                for k, v in keys[m].items():
+                    setattr(entry, k, v)
+                man.models[m] = entry
                 done += 1
                 progress(
                     f"progress: done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
                 )
     finally:
         man.save(mpath)
+    if crash is not None:
+        raise crash
     return man
