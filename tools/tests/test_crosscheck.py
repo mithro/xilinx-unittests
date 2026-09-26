@@ -1104,3 +1104,67 @@ def test_stale_model_source_blocks_every_stub_of_the_test(repo):
     assert r.exit_code == 3, r.output
     assert "UNLISTED: doc-gap" in r.output and "ms2" in r.output
     assert not (repo / "findings").exists()
+
+
+# --- evidence: agreement needs a shared configuration (gate review (b) #1, brief B1) ------
+
+
+def test_disjoint_configurations_are_never_agreement(repo):
+    """Probe (b) 1: xsim ran only cfg a, iverilog only cfg b (config_exclusions); nothing
+    was compared, so this is an issue (exit 4), never agree / exit 0."""
+    _test_yaml(repo, runners={"python": "no", "iverilog": "yes", "xsim": "yes"})
+    _result(
+        repo,
+        "rtl",
+        "xsim",
+        "ms1",
+        TID,
+        trace=T({"a/S1": {"Q": "0"}}),
+        configs=[{"cfg": "a", "status": "pass"}, {"cfg": "b", "status": "skip", "reason": "excl"}],
+    )
+    _result(
+        repo,
+        "rtl",
+        "iverilog",
+        "ms1",
+        TID,
+        trace=T({"b/S1": {"Q": "1"}}),
+        configs=[{"cfg": "b", "status": "pass"}, {"cfg": "a", "status": "skip", "reason": "excl"}],
+    )
+    rep = xc.check(repo, _case(repo))
+    assert rep.verdict == "incomplete" and rep.exit_code == 4 and not rep.compared
+    assert any("share no configuration" in i for i in rep.issues), rep.issues
+    assert "ms1 rtl/xsim: cfg a ran only here: compared with nothing" in rep.coverage_gaps
+    assert "ms1 rtl/iverilog: cfg b ran only here: compared with nothing" in rep.coverage_gaps
+    assert _xc("TOYFF").exit_code == 4
+
+
+def test_a_partly_shared_configuration_set_is_compared_and_noted(repo):
+    _test_yaml(repo, runners={"python": "no", "iverilog": "yes", "xsim": "yes"})
+    both = {"a/S1": {"Q": "0"}, "b/S1": {"Q": "1"}}
+    _result(repo, "rtl", "xsim", "ms1", TID, trace=T(both))
+    _result(
+        repo,
+        "rtl",
+        "iverilog",
+        "ms1",
+        TID,
+        trace=T({"b/S1": {"Q": "1"}}),
+        configs=[{"cfg": "b", "status": "pass"}, {"cfg": "a", "status": "skip", "reason": "excl"}],
+    )
+    rep = xc.check(repo, _case(repo))
+    assert rep.verdict == "agree" and rep.exit_code == 0 and rep.issues == []
+    assert rep.coverage_gaps == ["ms1 rtl/xsim: cfg a ran only here: compared with nothing"]
+
+
+def test_two_traces_no_rule_compares_are_not_agreement(repo):
+    """python (rtl) and xsim (vivado flow) only: no classification rule pairs them."""
+    _test_yaml(repo, runners={"python": "yes", "xsim": "yes", "iverilog": "no"})
+    doc = yaml.safe_load((repo / "tests/7series/register/TOYFF/test.yaml").read_text())
+    doc["tests"][0]["flows"] = ["rtl", "vivado"]
+    doc["tests"][0]["unsupported_reasons"] = {"iverilog": "r"}
+    (repo / "tests/7series/register/TOYFF/test.yaml").write_text(yaml.safe_dump(doc))
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "vivado", "xsim", "ms1", TID, trace=T(Q0))
+    rep = xc.check(repo, _case(repo))
+    assert rep.verdict == "incomplete" and not rep.compared
