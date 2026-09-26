@@ -23,9 +23,12 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
 - **Coverage gaps.** ``compare`` ignores ports only the actual trace has (the golden
   model may leave an output unmodelled); ``check`` lists them instead of dropping them.
 
-``check`` returns a ``Report`` whose ``exit_code`` is 1 for any unlisted finding,
-otherwise 2 for any issue (a result that could not be compared or explained), otherwise
-0. The CLI also exits 2 when no selected test had two traces to compare.
+``check`` returns a ``Report`` whose ``exit_code`` (ruling S23) is ``EXIT_FINDING``
+(3) for any unlisted finding, otherwise ``EXIT_INCOMPLETE`` (4) for any issue (a result
+that could not be compared or explained: insufficient evidence), otherwise 0. The CLI
+also exits 4 when no selected test had two traces to compare. The codes never collide
+with the generic ones: 1 is a user error (``XutError``: a selector matching nothing, a
+bad test.yaml), 2 a click usage error.
 """
 
 from __future__ import annotations
@@ -536,6 +539,10 @@ def record_finding(root: Path, prim: str, f: Finding) -> tuple[str, Path | None]
 
 # --- one test, end to end ----------------------------------------------------------------
 
+#: Exit codes (ruling S23); 1 (``XutError``) and 2 (click usage) keep their generic meaning.
+EXIT_FINDING = 3
+EXIT_INCOMPLETE = 4
+
 VERDICTS = ("not-run", "uncompared", "agree", "known-divergence", "incomplete", "divergence")
 
 
@@ -567,7 +574,9 @@ class Report:
 
     @property
     def exit_code(self) -> int:
-        return 1 if self.unlisted else 2 if self.issues else 0
+        if self.unlisted:
+            return EXIT_FINDING
+        return EXIT_INCOMPLETE if self.issues else 0
 
     def to_dict(self) -> dict:
         return {

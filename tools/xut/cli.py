@@ -577,10 +577,15 @@ def crosscheck_cmd(
 
     SELECT is a test-id glob, a primitive name or unit:<name> (default: all). Traces are
     compared like-for-like, per model source. Prints the matrix, findings and issues,
-    and writes build/crosscheck/<test-id>.json. Exit status: 1 if any finding is not
-    listed in the test's expected_divergence; otherwise 2 if any result is an error, a
-    fail no disagreement explains, or no selected test had two traces to compare;
-    otherwise 0.
+    and writes build/crosscheck/<test-id>.json.
+
+    \b
+    Exit status (ruling S23):
+      0  clean: every compared result agrees, or disagrees only as listed
+      3  a finding not listed in the test's expected_divergence (wins over 4)
+      4  incomplete: an error, a fail no disagreement explains, or no two traces
+         to compare
+      1  a user error (e.g. a selector matching no test); 2  a usage error
     """
     from xut import crosscheck as xc
     from xut.paths import repo_root
@@ -612,8 +617,9 @@ def crosscheck_cmd(
                     click.echo(f"{action}{'' if action == 'wrote' else ':'} {p.relative_to(root)}")
     verdicts = Counter(r.verdict for r in reports)
     click.echo("crosscheck: " + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items())))
-    code = max((r.exit_code for r in reports), key=lambda c: (c == 1, c))
+    codes = {r.exit_code for r in reports}
+    code = next((c for c in (xc.EXIT_FINDING, xc.EXIT_INCOMPLETE) if c in codes), 0)
     if code == 0 and all(r.verdict in ("not-run", "uncompared") for r in reports):
-        code = 2  # no cross-checked evidence at all is never a clean result
+        code = xc.EXIT_INCOMPLETE  # no cross-checked evidence at all is never clean
     if code:
         raise SystemExit(code)
