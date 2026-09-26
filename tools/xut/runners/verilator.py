@@ -74,7 +74,17 @@ input does not have, and Verilator stops with "Unsupported: tristate in top-leve
 'CE'" (V3Tristate.cpp, pin handling). It happens for any model instantiated below the top
 that compares an input with z, whatever the wrapper connects (a bit select, a whole port
 or an intermediate wire all fail identically), so it is neither the testbench's nor the
-transform's doing. The runner reports it as an ``error`` whose reason says so.
+transform's doing. Ruling S38 answers it in the transform: ``xut verilatorize`` rewrites
+every such comparison of an input port of the model to its constant for a driven input
+(``xut.verilatorize.zcmp``), so the error remains only for a comparison the syntax tree
+cannot see (code that a define such as ``XIL_TIMING`` enables); the runner reports it as an
+``error`` whose reason says so.
+
+**Every input driven** (ruling S38). The z-compare rewrite is exact only when every input
+of the model is driven. For a model the manifest records with ``zcmp`` among its
+``rewrites``, ``drive_guard`` makes the configuration an ``error`` (both runners) when the
+wrapper leaves an input unconnected or the stimulus drives z (an sv testbench: when an
+instance of the primitive does not connect every input by name).
 
 ``IverilogVzRunner`` (``iverilog-vz``) is Icarus on the verilatorized models: every test
 that runs on ``verilator`` also runs here (spec §6.2; ``xut run`` adds it). Its
@@ -91,6 +101,8 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
+
+import pyslang
 
 from xut.catalog import model as catalog_model
 from xut.container import Executor, executor_for
@@ -121,9 +133,16 @@ from xut.runners.sim import (
 )
 from xut.testspec import TestCase
 from xut.validate import validate
-from xut.verilatorize.driver import ModelEntry, ensure_model, model_attrs, vz_dir
-from xut.verilatorize.equiv import config_key
-from xut.wrap import DutMap, spec_from_catalog, write_dut
+from xut.verilatorize import zcmp
+from xut.verilatorize.analyze import _walk_syntax
+from xut.verilatorize.driver import (
+    ModelEntry,
+    ensure_model,
+    model_attrs,
+    undriven_inputs,
+    vz_dir,
+)
+from xut.wrap import DutMap, build_map, spec_from_catalog, write_dut
 
 __all__ = [
     "TRISTATE",
@@ -146,6 +165,7 @@ _TRISTATE_WHY = (
     "not caused by the testbench or the transform; see xut.runners.verilator)"
 )
 _MAX = 300
+_SX = pyslang.syntax.SyntaxKind
 
 
 def x_seeds(seed: int) -> tuple[int, int]:
@@ -218,6 +238,69 @@ def _x_inputs(src: Path) -> bool:
     return validate(xvec.load(src / "stim.xvec"), m).x_inputs
 
 
+def drive_guard(case: TestCase, cfg: str, ctx: RunContext, e: ModelEntry) -> str | None:
+    """The z-compare rewrite's validity condition (ruling S38), for a model that has it:
+    every input of the primitive driven. An error reason when the configuration's wrapper
+    leaves an input unconnected or its stimulus drives z; None otherwise.
+
+    - vector: the python run's wrapper map and stimulus;
+    - cocotb: the ``xut_cocotb_top`` wrapper built from the catalog (``XutDut`` drives
+      integers only, so a cocotb test cannot drive z);
+    - sv: the testbench instantiates the primitive itself; every instance of it in the
+      testbench source must connect every input by name to something (``sv_undriven``).
+      A value the testbench drives at run time is not visible here: an sv test that drives
+      z must declare verilator unsupported (as x-input tests already do)."""
+    if zcmp.REWRITE not in e.rewrites:
+        return None
+    ms, prim = ctx.model_source, case.prim
+    if case.style == "vector":
+        src = python_dir(ctx, case) / f"cfg-{cfg}"
+        if not (src / "stim.xvec").is_file():
+            return None  # prepare_vector reports why
+        m = DutMap.load(src / "dut" / "xut_dut.map.json")
+        missing = undriven_inputs(ms, prim, zcmp.connected(m))
+        if missing:
+            return zcmp.undriven_reason(prim, missing)
+        return zcmp.Z_STIMULUS if zcmp.drives_z(xvec.load(src / "stim.xvec")) else None
+    if case.style == "cocotb":
+        entry = catalog_model.load_entry(case.family, prim, ctx.root)
+        m = build_map(spec_from_catalog(entry, cfg, cfg_attrs(case, cfg)))
+        missing = undriven_inputs(ms, prim, zcmp.connected(m))
+        return zcmp.undriven_reason(prim, missing) if missing else None
+    return sv_undriven(case.test_dir / str(case.source), prim, undriven_inputs(ms, prim, set()))
+
+
+def sv_undriven(source: Path, prim: str, inputs: list[str]) -> str | None:
+    """Why an sv testbench's instance of ``prim`` may leave an input undriven: an input not
+    connected by name, an empty ``.P()``, a connection to a z literal, or a connection
+    style that cannot be checked (ordered or ``.*``). None when every instance connects
+    every input in ``inputs``, or the testbench does not instantiate ``prim``."""
+    tree = pyslang.syntax.SyntaxTree.fromFile(str(source))
+    for n in _walk_syntax(tree.root):
+        if n.kind != _SX.HierarchyInstantiation or n.type.valueText != prim:
+            continue
+        for inst in n.instances:
+            if not isinstance(inst, pyslang.syntax.SyntaxNode):
+                continue
+            named: dict[str, pyslang.syntax.SyntaxNode | None] = {}
+            for c in inst.connections:
+                if not isinstance(c, pyslang.syntax.SyntaxNode):
+                    continue
+                if c.kind != _SX.NamedPortConnection:
+                    return (
+                        f"{source.name}: an instance of {prim} connects its ports by "
+                        f"position or .*: the z-compare rewrite (ruling S38) needs every "
+                        "input driven, and only named connections can be checked"
+                    )
+                named[c.name.valueText] = c.expr
+            missing = [p for p in inputs if named.get(p) is None]
+            zs = [p for p in inputs if p in named and named[p] is not None and "z" in
+                  str(named[p]).split("'")[-1].lower() and "'" in str(named[p])]  # fmt: skip
+            if missing or zs:
+                return f"{source.name}: " + zcmp.undriven_reason(prim, missing + zs)
+    return None
+
+
 def _log(path: Path) -> Callable[[str], None]:
     def write(line: str) -> None:
         with path.open("a") as f:
@@ -265,12 +348,17 @@ class VerilatorRunner(ContainerSim, Runner):
         return self._sv(case, cfg, cd, ctx, ex, timeout, seeds, attrs)
 
     def _gate(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext, attrs: dict) -> str | None:
-        """``blocked`` for this configuration, after ``ensure_model`` (logged to run.log)."""
+        """``blocked`` for this configuration, after ``ensure_model`` (logged to run.log),
+        then the z-compare rewrite's validity condition (``drive_guard``)."""
         ms = ctx.model_source
         e = ensure_model(ms, case.prim, attrs, root=ctx.root, log=_log(cd / "run.log"))
         if e.status != "transformed":
             return blocked(e, case.prim, "")
-        return blocked(e, case.prim, config_key(model_attrs(ms, case.prim, attrs)))
+        # equiv imports xut.runners (xsim), which imports this module: import it late
+        from xut.verilatorize.equiv import config_key
+
+        why = blocked(e, case.prim, config_key(model_attrs(ms, case.prim, attrs)))
+        return why if why is not None else drive_guard(case, cfg, ctx, e)
 
     def _build(
         self, ex: Executor, cd: Path, argv: list[str], timeout: int
@@ -445,6 +533,9 @@ class IverilogVzRunner(IverilogRunner):
         e = self._entry(case, cfg, ctx, _log(cd / "run.log"))
         if e.status == "unsupported":
             return ConfigResult(cfg, "skip", f"model not transformed: {e.reason}")
+        why = drive_guard(case, cfg, ctx, e)
+        if why is not None:
+            return ConfigResult(cfg, "error", why)
         return super().run_config(case, cfg, cd, ctx)
 
     def lib_first(self, case: TestCase, cfg: str, ctx: RunContext) -> tuple[Path, ...]:

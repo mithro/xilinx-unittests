@@ -66,7 +66,14 @@ any other ``glbl.*`` raises ``TransformError``), with ``async_`` for an async/ga
    a↑ b↑ a↓ b↓ (overlap), a↑ b↑ b↓ a↓ (nested), and a↑b↑ then a↓b↓ together
    (coincident, ``simultaneous``);
 4. ``_with_async``: each trigger t with each async/gate port q that is not a trigger:
-   q↑ t↑ q↓ t↓, a sample after each step, then ``activity(1)``.
+   q↑ t↑ q↓ t↓, a sample after each step, then ``activity(1)``;
+5. ``_inputs``, only for a model with the z-compare rewrite (``rewrites`` holds ``zcmp``,
+   ruling S38): eight rounds of random values on every non-trigger input, so every rewritten
+   comparison is evaluated with its input at 0 and at 1 around clock edges.
+
+For a model with the z-compare rewrite the check also enforces its validity condition,
+every input driven: a wrapper leaving an input of the model unconnected, or a stimulus
+driving z, is an ``error``, never compared.
 """
 
 from __future__ import annotations
@@ -94,6 +101,7 @@ from xut.runners.iverilog import IverilogRunner
 from xut.stimcompile import TB, raw_to_trace, write_stim
 from xut.stimgen import VecBuilder
 from xut.validate import validate
+from xut.verilatorize import zcmp
 from xut.verilatorize.analyze import TransformError
 from xut.wrap import DutMap, spec_from_hdl, write_dut
 
@@ -123,6 +131,8 @@ class Subject(Protocol):
     @property
     def nonconstant_overrides(self) -> bool: ...
 
+    # optional: ``rewrites`` (default ``("shadow",)``), read with getattr
+
 
 @dataclass(frozen=True)
 class Checked:
@@ -133,6 +143,11 @@ class Checked:
     triggers: list[str]
     enablers: list[str]
     nonconstant_overrides: bool
+    rewrites: tuple[str, ...] = ("shadow",)
+
+
+def _rewrites(an: Subject) -> tuple[str, ...]:
+    return tuple(getattr(an, "rewrites", ("shadow",)))
 
 
 @dataclass
@@ -340,11 +355,29 @@ def _with_async(s: _Stim) -> None:
             s.activity(1)
 
 
+def _inputs(s: _Stim) -> None:
+    """The z-compare rewrite's phase (ruling S38): eight rounds of random values on every
+    input that is not a trigger (each one-bit async/gate input driven alone, each data
+    input with the rest), a sample after each, and a cycle of every free clock, so every
+    rewritten comparison is evaluated with its input at 0 and at 1 around clock edges. A
+    multi-bit async/gate input cannot change alone (spec §5.1) and keeps its idle 0."""
+    for k in range(8):
+        s.tag = f"zcmp.{k}"
+        for q in s.asyncs:
+            if s._width(q) == 1 and s.rng.getrandbits(1) != s.b.value(q):
+                s.pulse_async(q, bool(s.b.value(q) == 0))
+                s.sample(q)
+        s.activity(1)
+
+
 def equiv_stimulus(an: Subject, m: DutMap, seed: int = 1) -> Vec:
     """The equivalence stimulus of ``an`` for wrapper map ``m`` (module docstring)."""
     s = _Stim(an, m, seed)
     s.activity(2)
-    for phase in (_independent, _coincident, _pairs, _with_async):
+    phases = [_independent, _coincident, _pairs, _with_async]
+    if "zcmp" in _rewrites(an):
+        phases.append(_inputs)
+    for phase in phases:
         phase(s)
     vec = s.b.build()
     vec.hw_renderable, vec.hw_reason = False, HW_REASON
@@ -527,6 +560,18 @@ def _check(
     # record them (result.json does): an .xvec header cannot hold a quoted string literal.
     m = replace(write_dut(spec, out / "dut"), attrs={})
     vec = equiv_stimulus(an, m, seed)
+    if "zcmp" in _rewrites(an):  # the rewrite's validity condition (ruling S38)
+        missing = sorted(
+            p.name
+            for p in parse_module(an.path, an.model).ports
+            if p.direction == "input" and p.name not in zcmp.connected(m)
+        )
+        if missing:
+            res.reason = zcmp.undriven_reason(an.model, missing)
+            return
+        if zcmp.drives_z(vec):
+            res.reason = zcmp.Z_STIMULUS
+            return
     xvec.dump(vec, out / "stim.xvec")
     comp = write_stim(vec, m, out)
     info["stimulus_sha256"] = xvec.digest(vec)

@@ -3,9 +3,12 @@
 
 Every model file of ``ms.unisims`` (and ``ms.retarget``) is classified:
 
-* ``unchanged``: no procedural ``assign``/``deassign``; Verilator uses the original;
-* ``transformed``: analysed, rewritten and elaborated cleanly under every generate
-  configuration; the copy is written to ``vz_dir(ms)/<MODEL>.v``;
+* ``unchanged``: neither rewrite applies; Verilator uses the original;
+* ``transformed``: rewritten and elaborated cleanly under every generate configuration;
+  the copy is written to ``vz_dir(ms)/<MODEL>.v``. ``rewrites`` names what was applied:
+  ``shadow`` (procedural ``assign``/``deassign``, the shadow-register transform) and/or
+  ``zcmp`` (``xut.verilatorize.zcmp``: an input port compared with z, ruling S38). A model
+  that needs only the z-compare rewrite is ``transformed`` too;
 * ``unsupported``: the transform refused it (``TransformError``); ``reason`` names the
   construct. The model is then ``verilator: unsupported``.
 
@@ -44,6 +47,7 @@ from xut import __version__
 from xut.errors import XutError
 from xut.modelsrc import ModelSource
 from xut.paths import repo_root
+from xut.verilatorize import zcmp
 from xut.verilatorize.analyze import (
     TransformError,
     analyze,
@@ -74,6 +78,8 @@ class ModelEntry:
     equiv_tools: dict[str, str] = field(default_factory=dict)
     #: config key -> the check's reason (why it is an error or a fail; "" for a pass)
     equiv_reason: dict[str, str] = field(default_factory=dict)
+    #: the rewrites applied: "shadow" and/or "zcmp" (ruling S38); empty unless transformed
+    rewrites: list[str] = field(default_factory=list)
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
@@ -264,19 +270,56 @@ def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
     if out.resolve() == path.resolve():
         raise XutError(f"{path}: the transformed copy would overwrite the model source")
     out.unlink(missing_ok=True)  # a crash below must not leave a stale copy behind
-    if not has_procedural_assign(path):
-        return ModelEntry("unchanged", sha)
     model = path.stem
+    forced_regs = has_procedural_assign(path)
+    try:
+        zs = zcmp.find(path, model)
+    except TransformError as e:
+        return ModelEntry("unsupported", sha, reason=str(e))
+    if not forced_regs and not zs:
+        return ModelEntry("unchanged", sha)
     choices = model_choices(path, model)
     configs: list[dict[str, str]] = []
+    notes: list[str] = []
+    rewrites: list[str] = []
+    an = None
     try:
-        configs = generate_configs(path, model, choices)
-        an = analyze(path, model, glbl, choices)
-        text = rewrite(an)
+        if forced_regs:
+            configs = generate_configs(path, model, choices)
+            an = analyze(path, model, glbl, choices)
+            text = rewrite(an)
+            rewrites.append("shadow")
+            notes += an.notes
+        else:
+            text = path.read_bytes().decode("utf-8", "surrogateescape")
+            try:
+                configs = generate_configs(path, model, choices)
+            except TransformError as e:  # recorded: only the z-compare rewrite needs none
+                notes.append(
+                    f"no generate configurations derived ({e}); the equivalence check covers "
+                    "the default configuration and each test configuration on demand"
+                )
+        text, found = zcmp.rewrite_text(text, model)
+        if found:
+            rewrites.append(zcmp.REWRITE)
+            ports = sorted({z.port for z in found})
+            notes.append(
+                f"z-compare rewrite (ruling S38): {len(found)} comparison(s) of input "
+                f"port(s) {', '.join(ports)}; valid only with every input driven"
+            )
+        if left := zcmp.leftover(text):
+            notes.append(
+                f"{left} z-literal comparison(s) remain in preprocessor-disabled code "
+                "(e.g. `ifdef XIL_TIMING); Verilator refuses them if that code is enabled"
+            )
         check_clean(text, model, glbl, configs)
     except TransformError as e:
         return ModelEntry("unsupported", sha, reason=str(e), generate_configs=configs)
     write_text(out, text)
+    if an is None:
+        return ModelEntry(
+            "transformed", sha, generate_configs=configs, notes=notes, rewrites=rewrites
+        )
     forced = [*an.forced, *(f"{n}.{x}" for n, sub in an.submodules.items() for x in sub.forced)]
     return ModelEntry(
         "transformed",
@@ -285,8 +328,9 @@ def transform_one(path: Path, glbl: Path, out_dir: Path) -> ModelEntry:
         enablers=an.enablers,
         forced=forced,
         generate_configs=configs,
-        notes=an.notes,
+        notes=notes,
         nonconstant_overrides=an.nonconstant_overrides,
+        rewrites=rewrites,
     )
 
 
@@ -423,7 +467,9 @@ def _check_all(
         futs = {}
         for m, cfg in todo:
             e = man.models[m]
-            subject = Checked(m, files[m], e.triggers, e.enablers, e.nonconstant_overrides)
+            subject = Checked(
+                m, files[m], e.triggers, e.enablers, e.nonconstant_overrides, tuple(e.rewrites)
+            )
             work = out_dir / "equiv" / m / config_dir(config_key(cfg))
             futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
         for fut in as_completed(futs):
@@ -447,11 +493,33 @@ _LOCKS_GUARD = threading.Lock()
 _MANIFEST_LOCK = threading.Lock()
 #: (transform directory, model) -> its entry, once this process has made sure it is current.
 _ENTRIES: dict[tuple[str, str], ModelEntry] = {}
+#: transform directory -> ``sim_tools`` for it (computed once per process: xsim is slow)
+_TOOLS: dict[str, str] = {}
+#: (transform directory, model, config key) checked by this process: never checked twice
+_CHECKED: set[tuple[str, str, str]] = set()
 
 
 def _model_lock(key: tuple[str, str]) -> threading.Lock:
     with _LOCKS_GUARD:
         return _MODEL_LOCKS.setdefault(key, threading.Lock())
+
+
+def _sim_tools(ms: ModelSource, out: Path) -> str:
+    with _LOCKS_GUARD:
+        lock = _MODEL_LOCKS.setdefault((str(out), "\0tools"), threading.Lock())
+    with lock:
+        if str(out) not in _TOOLS:
+            _TOOLS[str(out)] = sim_tools(ms, out / "equiv")
+        return _TOOLS[str(out)]
+
+
+def undriven_inputs(ms: ModelSource, model: str, connected: set[str]) -> list[str]:
+    """The input ports of ``model`` (its HDL) that are not in ``connected``: a wrapper that
+    leaves one unconnected breaks the z-compare rewrite's validity condition (ruling S38)."""
+    from xut.catalog.unisim import parse_module
+
+    mod = parse_module(model_files(ms)[model], model)
+    return sorted(p.name for p in mod.ports if p.direction == "input" and p.name not in connected)
 
 
 def model_attrs(ms: ModelSource, model: str, attrs: dict | None) -> dict[str, str]:
@@ -482,9 +550,11 @@ def ensure_model(
     ``equiv[config_key]`` has no result yet; the verdict (and its reason) is recorded in the
     manifest. The entry is cached for the process; a per-model lock serialises the work, since
     runner jobs are threads. Only ``model`` is transformed here: any other model it
-    instantiates is used as ``xut verilatorize`` last left it. A result recorded here has no
-    ``equiv_tools``, so ``xut verilatorize --check`` re-verifies it. ``log`` receives the
-    driver's progress lines."""
+    instantiates is used as ``xut verilatorize`` last left it. A verdict is (re)checked by the
+    rule of ``--check``: when it is missing, an ``error``, or was computed with other
+    simulators (``equiv_tools`` differs from ``sim_tools``), at most once per process and
+    configuration; the verdict is recorded with the ``sim_tools`` fingerprint. ``log``
+    receives the driver's progress lines."""
     from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
 
     out = vz_dir(ms, root)
@@ -499,22 +569,32 @@ def ensure_model(
             return e
         cfg = model_attrs(ms, model, attrs)
         k = config_key(cfg)
-        if k in e.equiv:
+        if (str(out), model, k) in _CHECKED:
+            return e
+        tools = _sim_tools(ms, out)
+        if e.equiv.get(k) in ("pass", "fail") and e.equiv_tools.get(k) == tools:
             return e
         subject = Checked(
-            model, model_files(ms)[model], e.triggers, e.enablers, e.nonconstant_overrides
+            model,
+            model_files(ms)[model],
+            e.triggers,
+            e.enablers,
+            e.nonconstant_overrides,
+            tuple(e.rewrites),
         )
-        log(f"equiv: checking {model} [{k}]")
+        why = "no verdict" if k not in e.equiv else f"was {e.equiv[k]}, or other simulators"
+        log(f"equiv: checking {model} [{k}] ({why})")
         r = check_model(subject, ms, out / "equiv" / model / config_dir(k), cfg, lib=out)
         log(f"equiv: {r.status}: {model} [{k}] oracle={r.oracle or '-'} {r.reason}".rstrip())
+        _CHECKED.add((str(out), model, k))
         e.equiv[k], e.equiv_oracle[k], e.equiv_reason[k] = r.status, r.oracle, r.reason
+        e.equiv_tools[k] = tools
         with _MANIFEST_LOCK:
             mpath = out / "manifest.json"
             man = Manifest.load(mpath)
             cur = man.models.get(model)
             if cur is not None and cur.source_sha256 == e.source_sha256:
                 cur.equiv[k], cur.equiv_oracle[k] = r.status, r.oracle
-                cur.equiv_reason[k] = r.reason
-                cur.equiv_tools.pop(k, None)
+                cur.equiv_reason[k], cur.equiv_tools[k] = r.reason, tools
                 man.save(mpath)
         return e
