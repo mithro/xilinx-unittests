@@ -21,6 +21,10 @@ oracle in ``equiv_oracle[config_key]``; the work goes in
 ``vz_dir(ms)/equiv/<MODEL>/<config_dir>/``. A ``pass`` or ``fail`` is kept until the model
 is re-transformed or the simulators change (``sim_tools``: the Icarus version and image,
 the xsim version); a missing result or an ``error`` is (re)checked.
+
+``ensure_model`` is the runners' entry point (the ``verilator`` runner and its
+``iverilog-vz`` companion, Task 15): it transforms one model on demand and runs the
+equivalence check for one configuration when the manifest has no result for it.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import ast
 import hashlib
 import json
 import multiprocessing
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -67,6 +72,8 @@ class ModelEntry:
     #: config key -> the simulators the result was computed with (``sim_tools``): a kept
     #: pass/fail is rechecked when they change
     equiv_tools: dict[str, str] = field(default_factory=dict)
+    #: config key -> the check's reason (why it is an error or a fail; "" for a pass)
+    equiv_reason: dict[str, str] = field(default_factory=dict)
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
@@ -110,9 +117,10 @@ class Manifest:
         tmp.replace(path)
 
 
-def vz_dir(ms: ModelSource) -> Path:
-    """``build/verilatorized/<model-source>/`` (never committed)."""
-    return repo_root() / "build" / "verilatorized" / ms.name
+def vz_dir(ms: ModelSource, root: Path | None = None) -> Path:
+    """``<root>/build/verilatorized/<model-source>/`` (never committed); ``root`` defaults to
+    the repository (a runner passes its run root, ``RunContext.root``)."""
+    return (root if root is not None else repo_root()) / "build" / "verilatorized" / ms.name
 
 
 def model_files(ms: ModelSource) -> dict[str, Path]:
@@ -297,10 +305,12 @@ def verilatorize(
     jobs: int = 1,
     progress: Callable[[str], None] = print,
     check: bool = False,
+    out_dir: Path | None = None,
 ) -> Manifest:
-    """Transform ``ms``'s models (all, or ``models``) into ``vz_dir(ms)``, incrementally, and
-    save ``vz_dir(ms)/manifest.json``. Prints ``progress: done=N total=M elapsed_s=E``, a
-    last line with ``done=M`` even when a model crashed. ``check``: equivalence-check them
+    """Transform ``ms``'s models (all, or ``models``) into ``out_dir`` (default
+    ``vz_dir(ms)``), incrementally, and save ``out_dir/manifest.json``. Prints
+    ``progress: done=N total=M elapsed_s=E``, a last line with ``done=M`` even when a
+    model crashed. ``check``: equivalence-check them
     too (module docstring), printing ``progress: equiv done=N total=M elapsed_s=E``."""
     files = model_files(ms)
     if models:
@@ -308,7 +318,7 @@ def verilatorize(
         if unknown:
             raise XutError(f"no such model(s) in {ms.name}: {unknown}")
         files = {m: files[m] for m in sorted(set(models))}
-    out_dir = vz_dir(ms)
+    out_dir = Path(out_dir) if out_dir is not None else vz_dir(ms)
     out_dir.mkdir(parents=True, exist_ok=True)
     mpath = out_dir / "manifest.json"
     man = Manifest.load(mpath) if mpath.is_file() else Manifest(ms.name)
@@ -420,8 +430,91 @@ def _check_all(
             r = fut.result()  # check_model returns an error result, it never raises
             e = man.models[futs[fut]]
             e.equiv[r.config], e.equiv_oracle[r.config] = r.status, r.oracle
+            e.equiv_reason[r.config] = r.reason
             e.equiv_tools[r.config] = tools
             done += 1
             progress(
                 f"progress: equiv done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
             )
+
+
+# ---- on demand, for the runners (Task 15) --------------------------------------------------
+#: One lock per (transform directory, model): runner jobs are threads, and two runners (or
+#: two configurations) of one model must not transform or check it twice at once.
+_MODEL_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+#: ``manifest.json`` is read, changed and written whole: one writer at a time per process.
+_MANIFEST_LOCK = threading.Lock()
+#: (transform directory, model) -> its entry, once this process has made sure it is current.
+_ENTRIES: dict[tuple[str, str], ModelEntry] = {}
+
+
+def _model_lock(key: tuple[str, str]) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _MODEL_LOCKS.setdefault(key, threading.Lock())
+
+
+def model_attrs(ms: ModelSource, model: str, attrs: dict | None) -> dict[str, str]:
+    """``attrs`` as the equivalence check keys them: only the parameters ``model`` declares
+    (an sv configuration may also set testbench parameters), each rendered as the Verilog
+    literal of its kind (``0`` and ``"1'b0"`` are one configuration of a 1-bit attribute)."""
+    from xut.catalog.unisim import parse_module
+    from xut.wrap import spec_from_hdl
+
+    if not attrs:
+        return {}
+    mod = parse_module(model_files(ms)[model], model)
+    declared = {p.name for p in mod.params}
+    mine = {k: v for k, v in attrs.items() if k in declared}
+    return dict(spec_from_hdl(mod, "default", mine, raw_clock_out=True).attrs)
+
+
+def ensure_model(
+    ms: ModelSource,
+    model: str,
+    attrs: dict | None = None,
+    *,
+    root: Path | None = None,
+    log: Callable[[str], None] = print,
+) -> ModelEntry:
+    """``model``'s manifest entry, transformed (on demand) into ``vz_dir(ms, root)`` and, if it
+    is ``transformed``, equivalence-checked under ``attrs`` (``model_attrs``) when
+    ``equiv[config_key]`` has no result yet; the verdict (and its reason) is recorded in the
+    manifest. The entry is cached for the process; a per-model lock serialises the work, since
+    runner jobs are threads. Only ``model`` is transformed here: any other model it
+    instantiates is used as ``xut verilatorize`` last left it. A result recorded here has no
+    ``equiv_tools``, so ``xut verilatorize --check`` re-verifies it. ``log`` receives the
+    driver's progress lines."""
+    from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
+
+    out = vz_dir(ms, root)
+    key = (str(out), model)
+    with _model_lock(key):
+        e = _ENTRIES.get(key)
+        if e is None:
+            with _MANIFEST_LOCK:
+                man = verilatorize(ms, [model], progress=log, out_dir=out)
+            e = _ENTRIES[key] = man.models[model]
+        if e.status != "transformed":
+            return e
+        cfg = model_attrs(ms, model, attrs)
+        k = config_key(cfg)
+        if k in e.equiv:
+            return e
+        subject = Checked(
+            model, model_files(ms)[model], e.triggers, e.enablers, e.nonconstant_overrides
+        )
+        log(f"equiv: checking {model} [{k}]")
+        r = check_model(subject, ms, out / "equiv" / model / config_dir(k), cfg, lib=out)
+        log(f"equiv: {r.status}: {model} [{k}] oracle={r.oracle or '-'} {r.reason}".rstrip())
+        e.equiv[k], e.equiv_oracle[k], e.equiv_reason[k] = r.status, r.oracle, r.reason
+        with _MANIFEST_LOCK:
+            mpath = out / "manifest.json"
+            man = Manifest.load(mpath)
+            cur = man.models.get(model)
+            if cur is not None and cur.source_sha256 == e.source_sha256:
+                cur.equiv[k], cur.equiv_oracle[k] = r.status, r.oracle
+                cur.equiv_reason[k] = r.reason
+                cur.equiv_tools.pop(k, None)
+                man.save(mpath)
+        return e
