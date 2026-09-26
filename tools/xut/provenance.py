@@ -21,9 +21,16 @@ if TYPE_CHECKING:
 
 
 def tree_paths(family: str, group: str, prim: str, unit: str) -> list[str]:
-    """Every repository path ``prim``'s results depend on: its tests, its unit's shared
-    test code, its golden model (per primitive and the unit's ``_common``) and its
-    catalog overrides (the claims)."""
+    """The unit-owned inputs of ``prim``'s results: its tests, its unit's shared test
+    code, its golden model (per primitive and the unit's ``_common``) and its catalog
+    overrides (the claims).
+
+    Not included: the generated ``catalog/<family>/<PRIM>.yaml`` (the python run reads
+    its polarity levels), ``tools/xut`` and any model helper outside
+    ``_common/<unit>.py``; the tools are recorded separately, in ``measured.tools``.
+    A path absent from HEAD contributes nothing, so a primitive with none of these
+    committed hashes to the empty-input constant ``sha256:e3b0c442...``; harmless,
+    because ``xut status record`` needs a committed test.yaml."""
     return [
         f"tests/{family}/{group}/{prim}",
         f"tests/{family}/{group}/_shared/{unit}",
@@ -35,7 +42,7 @@ def tree_paths(family: str, group: str, prim: str, unit: str) -> list[str]:
 
 @dataclass(frozen=True)
 class TreeState:
-    #: ``"sha256:<hex>"`` over the sorted lines ``"<path> <git rev-parse HEAD:<path>>"``
+    #: ``"sha256:<hex>"`` over the sorted lines ``"<path> <object id of HEAD:./<path>>"``
     #: of the paths that exist in HEAD; ``None`` outside a git checkout.
     tree_hash: str | None
     #: ``git rev-parse HEAD``; ``None`` outside a git checkout.
@@ -45,36 +52,63 @@ class TreeState:
     dirty: list[str] | None
 
 
-def _git(root: Path, *args: str) -> subprocess.CompletedProcess | None:
+def _git(root: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, input=stdin)
     except (FileNotFoundError, NotADirectoryError):
         return None
 
 
+def head(root: Path) -> str | None:
+    """``git rev-parse HEAD`` (the full SHA) of ``root``; ``None`` outside a checkout."""
+    r = _git(Path(root), "rev-parse", "--verify", "--quiet", "HEAD")
+    if r is None or r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
 def tree_state(root: Path, paths: list[str]) -> TreeState:
-    """The git state of ``paths`` under ``root`` (all fields ``None`` if git fails)."""
+    """The git state of ``paths`` under ``root`` (all fields ``None`` if git fails), in
+    three git calls: HEAD, ``status`` and one ``cat-file --batch-check`` for every
+    path's object id (the same ids ``git rev-parse HEAD:./<path>`` gives)."""
     root = Path(root)
-    head = _git(root, "rev-parse", "--verify", "--quiet", "HEAD")
+    sha = head(root)
     st = _git(root, "status", "--porcelain", "--", *paths)
-    if head is None or st is None or head.returncode != 0 or st.returncode != 0:
+    if sha is None or st is None or st.returncode != 0:
         return TreeState(None, None, None)
-    lines = []
-    for p in paths:
-        # ``HEAD:./<p>`` is relative to ``root``, which may be below the checkout's top
-        r = _git(root, "rev-parse", "--verify", "--quiet", f"HEAD:./{p}")
-        if r is not None and r.returncode == 0 and r.stdout.strip():
-            lines.append(f"{p} {r.stdout.strip()}")
+    # ``<sha>:./<p>`` is relative to ``root``, which may be below the checkout's top
+    ids = _git(
+        root,
+        "cat-file",
+        "--batch-check=%(objectname)",
+        stdin="".join(f"{sha}:./{p}\n" for p in paths),
+    )
+    if ids is None or ids.returncode != 0:
+        return TreeState(None, None, None)
+    out = ids.stdout.splitlines()
+    if len(out) != len(paths):
+        return TreeState(None, None, None)
+    lines = [
+        f"{p} {oid}" for p, oid in zip(paths, out, strict=True) if not oid.endswith(" missing")
+    ]
     text = "".join(f"{line}\n" for line in sorted(lines))
     return TreeState(
         "sha256:" + hashlib.sha256(text.encode()).hexdigest(),
-        head.stdout.strip(),
+        sha,
         [line.strip() for line in st.stdout.splitlines() if line.strip()],
     )
 
 
-def case_state(case: TestCase) -> TreeState:
+def case_state(case: TestCase, cache: dict | None = None) -> TreeState:
     """``tree_state`` of the primitive ``case`` tests, from its own repository root
-    (``<root>/tests/<family>/<group>/<PRIM>``)."""
+    (``<root>/tests/<family>/<group>/<PRIM>``). With ``cache`` (one ``xut run``'s,
+    ``RunContext.provenance``), each primitive's state is computed once per run: a
+    run's results are one measurement of one tree."""
     root = case.test_dir.parents[3]
-    return tree_state(root, tree_paths(case.family, case.group, case.prim, case.work_unit))
+    paths = tree_paths(case.family, case.group, case.prim, case.work_unit)
+    if cache is None:
+        return tree_state(root, paths)
+    key = (str(root), tuple(paths))
+    if key not in cache:
+        cache[key] = tree_state(root, paths)
+    return cache[key]

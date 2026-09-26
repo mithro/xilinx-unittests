@@ -58,6 +58,8 @@ class RunContext:
     defines: dict[str, str] = field(default_factory=dict)
     timeout_s: int | None = None
     jobs: int = 1
+    #: ``xut.provenance.case_state`` cache: one tree state per primitive per run.
+    provenance: dict = field(default_factory=dict, compare=False, repr=False)
 
 
 @dataclass
@@ -98,11 +100,12 @@ class RunResult:
     head: str | None = None
     dirty: bool | None = None
 
-    def stamp(self, case: TestCase) -> RunResult:
-        """Fill ``tree_hash``, ``head`` and ``dirty`` from ``case``'s repository."""
+    def stamp(self, case: TestCase, cache: dict | None = None) -> RunResult:
+        """Fill ``tree_hash``, ``head`` and ``dirty`` from ``case``'s repository (via
+        ``cache``, a run's ``RunContext.provenance``, when given)."""
         from xut.provenance import case_state
 
-        st = case_state(case)
+        st = case_state(case, cache)
         self.tree_hash, self.head = st.tree_hash, st.head
         self.dirty = None if st.dirty is None else bool(st.dirty)
         return self
@@ -296,7 +299,7 @@ class Runner(ABC):
             model_source=ctx.model_source.name,
             defines=dict(ctx.defines),
             started=_now(),
-        ).stamp(case)
+        ).stamp(case, ctx.provenance)
 
     def _skip(self, case: TestCase, ctx: RunContext, d: Path, reason: str) -> RunResult:
         r = self._new_result(case, ctx, "skip", reason)
@@ -441,6 +444,6 @@ def error_result(
         defines=dict(ctx.defines),
         duration_s=round(duration_s, 3),
         started=_now(),
-    ).stamp(case)
+    ).stamp(case, ctx.provenance)
     r.write(d)
     return r
