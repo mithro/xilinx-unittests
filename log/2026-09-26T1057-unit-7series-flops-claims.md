@@ -58,3 +58,4 @@ The two sections above describe the branch before the rebase, and parts of them 
 - The FDCE/FDPE C3 wording differs from the brief's text: it says the clear or preset is asynchronous and overrides every other input, per UG953 p369/p372. C2 keeps UG953's own wording, "CE Low, Q holds"; C3 states that the reset, set, clear or preset input overrides it.
 - C8 is a usage rule, not a simulated behaviour, so no vector, SV or cocotb test can reach its bin. It stays uncovered with a documented gap until a flow-level (DRC) test exists. It will be recorded in the whole-unit gaps at Task 27.
 - Next: Task 20, the golden model.
+- Correction to the C2 line above: "CE Low, Q holds" is the claim's paraphrase, not a quotation. UG953 itself says "When CE is Low, clock transitions are ignored", and the logic table gives "No Change".
