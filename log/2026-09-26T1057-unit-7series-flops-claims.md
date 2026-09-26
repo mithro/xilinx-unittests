@@ -41,3 +41,20 @@ Branch `unit/7series/flops`, stacked on `infra/crosscheck` (3c97552).
   unit has added overrides. The alternative is for the orchestrator to authorise refreshing
   the four FD* stubs on this branch. The unit branch may not edit `tools/tests/**`.
 - Task 20: golden model.
+
+## Follow-up (2026-09-26, after the rebase)
+
+The two sections above describe the branch before the rebase, and parts of them are now out of date:
+
+- After PR D merged, the orchestrator rebased the branch onto `main` at a11e51e. It is no longer stacked on `infra/crosscheck`.
+- The two invariant-test failures under "Tests" are resolved, and the TODO under "Next steps" is closed:
+  - Infra 78a8e77 (now on main as ab9703d) moved the S19 bin test onto a fixture and lets stubs include unit overrides.
+  - Commit 115f0cc refreshes the four FD* stubs to the 28 bins listed above.
+  - CLR and PRE on FDCE and FDPE get `assert`/`release` bins, not `main`'s generic `rise`/`fall`.
+  - A fresh `xut status init --refresh-bins` over this tree changes nothing, so the committed stubs match the tool's output.
+- Tests after the rebase:
+  - `uv run pytest -q -n 16 tools/tests`: 1310 passed.
+  - `xut lint --branch`: 0 issues.
+- The FDCE/FDPE C3 wording differs from the brief's text: it says the clear or preset is asynchronous and overrides every other input, per UG953 p369/p372. C2 keeps UG953's own wording, "CE Low, Q holds"; C3 states that the reset, set, clear or preset input overrides it.
+- C8 is a usage rule, not a simulated behaviour, so no vector, SV or cocotb test can reach its bin. It stays uncovered with a documented gap until a flow-level (DRC) test exists. It will be recorded in the whole-unit gaps at Task 27.
+- Next: Task 20, the golden model.
