@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -226,7 +227,9 @@ def verilatorize(
     total, done, t0 = len(todo), 0, time.monotonic()
     progress(f"progress: done=0 total={total} elapsed_s=0")
     try:
-        with ProcessPoolExecutor(max_workers=max(1, jobs)) as ex:
+        # forkserver: the caller may be multi-threaded (pytest-xdist, runner threads)
+        ctx = multiprocessing.get_context("forkserver")
+        with ProcessPoolExecutor(max_workers=max(1, jobs), mp_context=ctx) as ex:
             futs = {ex.submit(transform_one, f, ms.glbl, out_dir): m for m, f in todo}
             for fut in as_completed(futs):
                 m = futs[fut]

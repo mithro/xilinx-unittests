@@ -539,3 +539,22 @@ endmodule
 """)
     x = analyze(f, "VZDONLY", GLBL).forced["r"]
     assert x.sensitivity == {"A"} and x.triggers == {"A"} and len(x.deassigns) == 2
+
+
+def test_reads_after_a_blocking_write_are_fresh():
+    from xut.verilatorize.analyze import FRESH
+
+    a = analyze(FIX / "vz_fresh.v", "VZFRESH", GLBL)
+    x = a.forced["cnt"]
+    got = sorted((a.text[r.span.start - 4 : r.span.end + 3], r.active) for r in x.stale_reads)
+    # `y = cnt` after `if (E) cnt = cnt + 1;` (written on one path) and `cnt[0]` after it; the
+    # read in `cnt = cnt + 1` itself comes before the write
+    assert got == [("if (cnt[0]", FRESH), ("y = cnt;\n ", FRESH)]
+
+
+def test_blocking_write_under_an_active_override_keeps_it(tmp_path):
+    src = (FIX / "vz_rao.v").read_text().replace("    x = r;", "    r = 1'b1;\n    x = r;")
+    (tmp_path / "vz_rw.v").write_text(src)
+    x = analyze(tmp_path / "vz_rw.v", "VZRAO", GLBL).forced["r"]
+    ((ovr, _),) = x.overrides
+    assert [r.active for r in x.stale_reads] == [ovr]  # forced: the write does not show
