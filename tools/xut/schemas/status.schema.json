@@ -29,6 +29,18 @@
       "properties": {
         "tree_hash": {"type": ["string", "null"]},
         "tools": {"type": "object", "additionalProperties": {"type": "string"}},
+        "tree_hash_by_model_source": {
+          "description": "Each recorded model source's tree hash (ruling S21): recording one source never changes another's. `tree_hash` is the reference source's.",
+          "type": "object",
+          "propertyNames": {"minLength": 1},
+          "additionalProperties": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        },
+        "tools_by_model_source": {
+          "description": "Each recorded model source's tools, replaced on every record of that source. `tools` is the reference source's.",
+          "type": "object",
+          "propertyNames": {"minLength": 1},
+          "additionalProperties": {"type": "object", "additionalProperties": {"type": "string"}}
+        },
         "model_sources": {
           "description": "Every model source `xut status record` has recorded results for (review (b) round 2, N2). The model source is recorded here, never in `tools`.",
           "type": "array",
