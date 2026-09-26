@@ -128,6 +128,22 @@ def test_c5_negative_edge(prim):
 
 
 @pytest.mark.parametrize("prim", PRIMS)
+def test_c5_control_force_on_inverted_edge(prim):
+    """R4: a synchronous control's force at an inverted active edge must pin
+    ATTR_PAGE, not PAGE, and must hit C5 (mutant N9: `_force` ignores `inverted`)."""
+    k, f = KINDS[prim], forced(prim)
+    if k.is_async:
+        pytest.skip("async controls act at once, not at a clock edge")
+    m = fresh(prim, IS_C_INVERTED="1'b1")
+    m.set_input(k.ctrl, 1)
+    m.clock_edge("C", True)  # rising: not the active edge under inversion
+    m.clock_edge("C", False)  # falling: the active edge; the control forces here
+    assert q(m).bits == str(f)
+    assert q(m).prov == f"doc:{_PAGES[prim][1]}"  # ATTR_PAGE, not PAGE
+    assert f"{prim}.C5" in m.claims_hit
+
+
+@pytest.mark.parametrize("prim", PRIMS)
 def test_c5_not_hit_when_ce_low(prim):
     """Ruling S32(1)/(2): an active (falling) edge that CE Low ignores decides
     nothing C5-relevant, so it must not credit C5 (the reviewer's false-hit case)."""
@@ -171,11 +187,47 @@ def test_c6_control_active_low(prim):
 
 
 @pytest.mark.parametrize("prim", PRIMS)
+def test_c6_not_hit_from_gsr_edge_probe(prim):
+    """R2: the GSR-edge branch's bare ``_ctrl_active()`` check (whether to re-tag Q
+    as ``inferred:``) must not itself credit C6 (mutant N2)."""
+    k = KINDS[prim]
+    m = fresh(prim, **{f"IS_{k.ctrl}_INVERTED": "1'b1"})
+    m.glbl("GSR", 1)
+    m.set_input(k.ctrl, 0)  # inverted: pin Low -> active
+    m.clock_edge("C", True)  # the GSR-edge branch runs the bare probe
+    assert f"{prim}.C6" not in m.claims_hit
+
+
+@pytest.mark.parametrize("prim", PRIMS)
 def test_c7_d_inverted(prim):
     m = fresh(prim, IS_D_INVERTED="1'b1")
     load(m, 0)
     assert q(m).bits == "1" and f"{prim}.C7" in m.claims_hit
     assert q(m).prov == f"doc:{_PAGES[prim][1]}"  # inverted-D capture: ATTR_PAGE
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_c7_not_hit_when_ce_low(prim):
+    """R3: the C7 (inv_d) non-hit is pinned for a CE-Low edge, not only for
+    IS_D_INVERTED=0 (mutant N6 hits C7 on every edge)."""
+    m = fresh(prim, IS_D_INVERTED="1'b1")
+    m.set_input("D", 1)  # CE stays Low: the edge below is a no-op
+    m.clock_edge("C", True)
+    assert f"{prim}.C7" not in m.claims_hit
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_c7_not_hit_when_control_active(prim):
+    """R3: the C7 (inv_d) non-hit is pinned when the control forces Q instead of a
+    capture deciding it (mutant N6 hits C7 on every edge)."""
+    k = KINDS[prim]
+    m = fresh(prim, IS_D_INVERTED="1'b1")
+    m.set_input("CE", 1)
+    m.set_input("D", 1)
+    m.set_input(k.ctrl, 1)
+    if not k.is_async:
+        m.clock_edge("C", True)
+    assert f"{prim}.C7" not in m.claims_hit
 
 
 @pytest.mark.parametrize("prim", PRIMS)
@@ -223,3 +275,29 @@ def test_unknown_port_is_rejected(prim):
         m.set_input("BOGUS", 1)
     with pytest.raises(ModelContractError):
         m.clock_edge("NOTC", True)
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_set_input_before_power_on_is_rejected(prim):
+    """R5: ``golden.replay`` always calls ``power_on()`` first (golden.py:209); a
+    direct caller that skips it must not get silently-wrong state instead of an error."""
+    m = get("7series", prim)({})
+    with pytest.raises(ModelContractError):
+        m.set_input("D", 0)
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_clock_edge_before_power_on_is_rejected(prim):
+    m = get("7series", prim)({})
+    with pytest.raises(ModelContractError):
+        m.clock_edge("C", True)
+
+
+@pytest.mark.parametrize("prim", PRIMS)
+def test_input_value_other_than_0_or_1_is_rejected(prim):
+    """R5: ``xut.golden._port_value`` already refuses x/z before it ever calls
+    ``set_input`` (x stimulus is covered by sv tests, not the model, spec §5.6), so this
+    guards only a direct/misbehaving caller, never golden replay."""
+    m = fresh(prim)
+    with pytest.raises(ModelContractError):
+        m.set_input("D", 2)
