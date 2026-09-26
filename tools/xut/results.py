@@ -5,6 +5,10 @@ The one reader of ``xut crosscheck`` and ``xut status record``: a result is used
 when it parses, validates against ``result.schema.json`` and names the path it sits
 at. Anything else is *unusable*, and both consumers treat it as an ``error`` result
 with the reason given here, never as a traceback and never as evidence.
+
+A ``pass`` or ``fail`` must also carry evidence: at least one configuration that ran
+(``pass``/``fail``). ``xut run`` never writes one without (no configurations is an
+error there), so a result that does is unusable too (review (b) #2).
 """
 
 from __future__ import annotations
@@ -53,4 +57,6 @@ def read_result(d: Path, flow: str, runner: str, ms: str, test_id: str) -> Resul
     got = (data["flow"], data["runner"], data["model_source"], data["test_id"])
     if got != (flow, runner, ms, test_id):
         return ResultFile(data, f"result.json names {got}, not its path {d}")
+    if data["status"] in RAN and not any(c["status"] in RAN for c in data["configs"]):
+        return ResultFile(data, f"reported {data['status']} but ran no configuration: no evidence")
     return ResultFile(data)

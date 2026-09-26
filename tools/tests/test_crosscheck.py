@@ -1168,3 +1168,27 @@ def test_two_traces_no_rule_compares_are_not_agreement(repo):
     _result(repo, "vivado", "xsim", "ms1", TID, trace=T(Q0))
     rep = xc.check(repo, _case(repo))
     assert rep.verdict == "incomplete" and not rep.compared
+
+
+def test_pass_with_no_configuration_is_no_evidence(repo):
+    """Probe (b) 2: a pass that ran no configuration (``configs: []``) is an issue, never
+    a pass in the matrix nor agreement."""
+    _test_yaml(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    _result(repo, "rtl", "xsim", "ms1", TID, status="pass", configs=[])
+    rep = xc.check(repo, _case(repo))
+    v = rep.views["ms1"][("rtl", "xsim")]
+    assert v.status == "error" and "ran no configuration" in v.result["reason"]
+    assert rep.verdict == "incomplete" and rep.exit_code == 4
+
+
+def test_pass_whose_configurations_all_skipped_is_no_evidence(repo):
+    _test_yaml(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    _result(
+        repo, "rtl", "xsim", "ms1", TID, configs=[{"cfg": "c", "status": "skip", "reason": "x"}]
+    )
+    rep = xc.check(repo, _case(repo))
+    assert rep.views["ms1"][("rtl", "xsim")].status == "error" and rep.exit_code == 4
