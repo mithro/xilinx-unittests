@@ -302,7 +302,7 @@ def test_hw_reason_with_quote_round_trips():
     v.hw_renderable = False
     v.hw_reason = 'has a "quote" in it'
     assert loads(dumps(v)) == v
-    assert v.hw_reason == 'has a "quote" in it'
+    assert loads(dumps(v)).hw_reason == 'has a "quote" in it'
 
 
 def test_dumps_raises_on_unrepresentable_newline_in_header_value():
@@ -361,6 +361,17 @@ def test_attr_value_round_trips(value):
     text = dumps(v)
     assert loads(text) == v
     assert v.attrs == {"NOTE": value}
+
+
+def test_attr_value_with_only_backslash_is_quoted():
+    """The trigger for quoting a header value (``_quote``) includes a bare backslash,
+    matching the module docstring and spec §5.3: a value containing only ``\\`` is
+    not left as a literal, unescaped bare token (code-quality review must-fix on
+    PR #8)."""
+    v = _mem(Event(1000, "sample", "A"), header={**BASE, "attr.NOTE": "a\\b"})
+    text = dumps(v)
+    assert 'attr.NOTE="a\\\\b"' in text
+    assert loads(text) == v
 
 
 def test_attr_value_iostandard_round_trips():

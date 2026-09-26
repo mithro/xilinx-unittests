@@ -259,8 +259,8 @@ def _escape_quoted(v: str, what: str) -> str:
 
 
 def _quote(v: str, what: str = "value") -> str:
-    _check_representable(v, what)
-    if v and not re.search(r'[\s"#]', v):
+    if v and not re.search(r'[\s"#\\]', v):
+        _check_representable(v, what)
         return v
     return f'"{_escape_quoted(v, what)}"'
 
