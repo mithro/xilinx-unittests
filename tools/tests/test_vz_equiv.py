@@ -207,7 +207,7 @@ def test_every_constant_fixture_is_equivalent_on_icarus(tmp_path, monkeypatch, f
     assert {d["oracle"] for d in why.values()} == {"iverilog"}
     assert set(e.equiv_oracle.values()) == {"iverilog"}
     if model == "VZGEN":
-        assert list(e.equiv) == ["default", "IS_C_INVERTED=1'b1"]
+        assert set(e.equiv) == {"default", "IS_C_INVERTED=1'b1"}
 
 
 @pytest.mark.vivado
@@ -290,3 +290,59 @@ def test_mutated_rewrite_breaks_retention_and_the_check_fails(tmp_path):
     doc = json.loads((out / "result.json").read_text())
     assert doc["status"] == "fail" and doc["mismatches"] == len(r.mismatches)
     assert doc["oracle"] == "iverilog"
+
+
+_VZDEV = """// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps/1ps
+module VZDEV (output Q, input C, input D, input R);
+  parameter SIM_DEVICE = "7SERIES";
+  parameter [0:0] BAD = 1'b0;
+  reg q;
+  assign Q = q;
+  initial if (BAD) begin #1 $display("DRC Error : BAD is set on %m"); $finish; end
+  always @(R) if (R) assign q = 1'b0; else deassign q;
+  generate if (SIM_DEVICE == "VIRTEX6") begin : g6
+    always @(posedge C) q <= ~D;
+  end else begin : g7
+    always @(posedge C) q <= D;
+  end endgenerate
+endmodule
+"""
+
+
+def _vzdev(tmp_path):
+    uni = tmp_path / "src" / "unisims"
+    uni.mkdir(parents=True)
+    shutil.copy(GLBL, tmp_path / "src" / "glbl.v")
+    (uni / "VZDEV.v").write_text(_VZDEV)
+    ms = ModelSource("test-src", tmp_path / "src")
+    an = analyze(uni / "VZDEV.v", "VZDEV", GLBL)
+    lib = tmp_path / "vz"
+    lib.mkdir()
+    write_text(lib / "VZDEV.v", rewrite(an))
+    return ms, an, lib
+
+
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+def test_string_attribute_configuration_is_checked(tmp_path):
+    """A quoted string literal reaches the wrapper; the .xvec header cannot hold it."""
+    ms, an, lib = _vzdev(tmp_path)
+    out = lib / "equiv" / "VZDEV" / "x"
+    r = check_model(an, ms, out, {"SIM_DEVICE": '"VIRTEX6"'}, lib=lib)
+    assert (r.status, r.config) == ("pass", 'SIM_DEVICE="VIRTEX6"'), r.reason
+    assert '.SIM_DEVICE("VIRTEX6")' in (out / "dut" / "xut_dut.v").read_text()
+    assert json.loads((out / "result.json").read_text())["attrs"] == {"SIM_DEVICE": '"VIRTEX6"'}
+
+
+@pytest.mark.vivado
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+def test_a_model_that_stops_itself_is_an_error_naming_its_message(tmp_path):
+    """Icarus does not run the original to XUT_DONE, so the oracle falls back to xsim,
+    which stops too: an error (never a pass), quoting the model's own message."""
+    ms, an, lib = _vzdev(tmp_path)
+    r = check_model(an, ms, lib / "equiv" / "VZDEV" / "bad", {"BAD": "1'b1"}, lib=lib)
+    assert (r.status, r.oracle) == ("error", "xsim"), r.reason
+    assert "both models stopped before the end of the stimulus" in r.reason, r.reason
+    assert "DRC Error : BAD is set" in r.reason and "0 of " in r.reason, r.reason

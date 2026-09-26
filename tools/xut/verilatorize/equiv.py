@@ -26,7 +26,15 @@ for it counts. ``check_model`` does that for one attribute configuration:
    ``result.json`` records which one was used (``"oracle": "iverilog" | "xsim"``).
 4. Both runs must print ``XUT_DONE``, else the result is ``error``. The two traces are
    compared exactly, 4-state (``xtr.diff``): no difference is ``pass``, any difference
-   ``fail``, listed in ``mismatches.txt``.
+   ``fail``, listed in ``mismatches.txt``. When *both* models stop early (a UNISIM model's
+   own DRC or attribute check calls ``$finish``: an illegal attribute combination, or a
+   protocol the generic stimulus breaks, such as the FIFO reset sequence), the result is
+   still ``error``, never a pass: the reason quotes each model's message, and the samples
+   both printed are compared and listed.
+
+The wrapper instantiates the model with the configuration's attributes, but the stimulus
+header does not record them (``result.json`` does): an ``.xvec`` header cannot hold a quoted
+string literal such as ``"VIRTEX6"``.
 
 **Scope: sampled outputs only.** The check compares the primitive's outputs at the
 stimulus's sample points. A zero-width glitch inside one time step (an output, or an
@@ -69,7 +77,7 @@ import shutil
 import traceback
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -338,11 +346,27 @@ def equiv_stimulus(an: Subject, m: DutMap, seed: int = 1) -> Vec:
 
 
 # ---- the check ------------------------------------------------------------------------------
+#: A model's own message about why it stopped (UNISIM DRC/attribute checks, then $finish).
+_MODEL_ERROR = re.compile(r"\berror\b", re.IGNORECASE)
+
+
 @dataclass
 class _Run:
     ok: bool
     why: str = ""
     raw: str = ""
+    #: it compiled and ran, but stopped before XUT_DONE (``raw`` holds what it printed)
+    early: bool = False
+
+
+def _ended_early(what: str, rc: int | None, run_text: str, d: Path) -> _Run:
+    """A run that stopped before XUT_DONE, with the model's own first error line (a UNISIM
+    DRC or attribute check calls $finish) and the samples it printed before stopping."""
+    msg = next(
+        (ln.strip() for ln in run_text.splitlines() if _MODEL_ERROR.search(ln)), "no message"
+    )
+    raw = (d / "raw.txt").read_text() if (d / "raw.txt").is_file() else ""
+    return _Run(False, f"{what} ended early (exit {rc}, no {DONE}): {msg}", raw, early=True)
 
 
 def _icarus(
@@ -367,7 +391,7 @@ def _icarus(
     if bad:
         return _Run(False, f"run reported: {bad[0].strip()}")
     if rc != 0 or DONE not in rtext:
-        return _Run(False, f"simulation ended early (exit {rc}, no {DONE})")
+        return _ended_early("simulation", rc, rtext, d)
     return _Run(True, raw=(d / "raw.txt").read_text())
 
 
@@ -394,7 +418,7 @@ def _xsim(d: Path, out: Path, an: Subject, ms: ModelSource, timeout: int) -> _Ru
         first = next((ln for ln in o.compile_text.splitlines() if "ERROR" in ln), "")
         return _Run(False, f"xsim compile failed (exit {rc}): {first.strip() or 'see run.log'}")
     if o.run_rc != 0 or DONE not in o.run_text:
-        return _Run(False, f"xsim simulation ended early (exit {o.run_rc}, no {DONE})")
+        return _ended_early("xsim simulation", o.run_rc, o.run_text, d)
     return _Run(True, raw=(d / "raw.txt").read_text())
 
 
@@ -466,7 +490,9 @@ def _check(
 ) -> None:
     cfg = config_dir(res.config)
     spec = spec_from_hdl(parse_module(an.path, an.model), cfg, attrs, raw_clock_out=True)
-    m = write_dut(spec, out / "dut")
+    # The wrapper instantiates the model with the attributes; the stimulus header does not
+    # record them (result.json does): an .xvec header cannot hold a quoted string literal.
+    m = replace(write_dut(spec, out / "dut"), attrs={})
     vec = equiv_stimulus(an, m, seed)
     xvec.dump(vec, out / "stim.xvec")
     comp = write_stim(vec, m, out)
@@ -493,13 +519,27 @@ def _check(
         tools["xsim"] = xsim.xsim_version(out)
         orig = _xsim(out / "orig-xsim", out, an, ms, _TIMEOUT_S)
     info["tools"] = tools
+    header = {"model": ms.name, "prim": an.model, "cfg": cfg, "flow": "rtl"}
+    if vz.early and orig.early:
+        # Both stopped (a model's own DRC $finish): no verdict, but say how far they agreed.
+        n = min(len(vz.raw.splitlines()), len(orig.raw.splitlines()))
+        lab = comp.labels[:n]
+        t_o = raw_to_trace(_first(orig.raw, n), lab, m, {**header, "runner": res.oracle})
+        t_v = raw_to_trace(_first(vz.raw, n), lab, m, {**header, "runner": "iverilog-vz"})
+        res.mismatches = [str(x) for x in xtr.diff(t_o, t_v)]
+        info["samples_before_stop"] = n
+        res.reason = (
+            f"both models stopped before the end of the stimulus: the original on "
+            f"{res.oracle}: {orig.why}; the transformed model on Icarus: {vz.why}; "
+            f"{n} of {len(comp.labels)} samples ran, {len(res.mismatches)} differ"
+        )
+        return
     if not vz.ok:
         res.reason = f"transformed model on Icarus: {vz.why}"
         return
     if not orig.ok:
         res.reason = f"original model on {res.oracle}: {orig.why}"
         return
-    header = {"model": ms.name, "prim": an.model, "cfg": cfg, "flow": "rtl"}
     t_orig = raw_to_trace(orig.raw, comp.labels, m, {**header, "runner": res.oracle})
     t_vz = raw_to_trace(vz.raw, comp.labels, m, {**header, "runner": "iverilog-vz"})
     xtr.dump(t_orig, out / "orig.xtr")
@@ -508,3 +548,8 @@ def _check(
     res.status = "fail" if res.mismatches else "pass"
     if res.mismatches:
         res.reason = f"{len(res.mismatches)} mismatch(es) against the original on {res.oracle}"
+
+
+def _first(raw: str, n: int) -> str:
+    """The first ``n`` sample lines of a raw.txt (samples print in order)."""
+    return "".join(f"{ln}\n" for ln in raw.splitlines()[:n])
