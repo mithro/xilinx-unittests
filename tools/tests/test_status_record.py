@@ -324,7 +324,10 @@ def test_vector_bins_need_a_simulator_pass(repo):
     warnings: list[str] = []
     s = record(repo, "FDRE", warn=warnings.append)
     assert s["coverage"]["covered"] == ["port:R"]  # only the sv test's
-    assert any(cap in w and "no simulator passed" in w for w in warnings)
+    assert any(
+        cap in w and "no configuration passed on both the golden model and a simulator" in w
+        for w in warnings
+    )
 
 
 def test_model_sources_coexist(repo):
@@ -482,10 +485,10 @@ def test_cli_status_record(repo, monkeypatch):
     assert "recipes.py" in r.output
 
 
-def test_record_covers_declared_crosses_from_passing_configurations(repo):
-    """Ruling S19: a cross bin is covered when a configuration that ran and passed (on
-    the golden model for a vector test, on a simulator for sv) has those values; an
-    attribute a configuration does not set takes its catalog default."""
+def _cross_fixture(repo) -> tuple[dict, dict]:
+    """FDRE with the declared cross INIT x IS_C_INVERTED, the capture test's python run
+    with cfg a (INIT=1) and cfg b (INIT=1, IS_C_INVERTED=1) stimuli, and the sv test's
+    configurations inv (IS_C_INVERTED=1) and bad."""
     (repo / "catalog/7series/FDRE.overrides.yaml").write_text(
         SPDX + "claims: []\ncrosses: [[INIT, IS_C_INVERTED]]\n"
     )
@@ -503,9 +506,20 @@ def test_record_covers_declared_crosses_from_passing_configurations(repo):
         (d / "stim.xvec").write_text(
             f"# xut-vec 2  prim=FDRE cfg={cfg} nin=3 nout=1 nclk=1 settle_ps=1 seed=0 {attrs}\n"
         )
+    return cap, sv
+
+
+def test_record_covers_declared_crosses_from_passing_configurations(repo):
+    """Rulings S19, S23: a cross bin is covered when a credited configuration has those
+    values (a vector configuration that passed on the golden model AND on a simulator;
+    an sv configuration a simulator passed); an attribute a configuration does not set
+    takes its catalog default."""
+    cap, sv = _cross_fixture(repo)
     _result(
         repo, cap["id"], "python", "pass", bins=["port:C"], configs=[("a", "pass"), ("b", "error")]
     )
+    _result(repo, cap["id"], "xsim", "pass", configs=[("a", "pass")])
+    _result(repo, cap["id"], "iverilog", "fail", configs=[("a", "pass"), ("b", "fail")])
     _result(
         repo, sv["id"], "iverilog", "fail", style="sv", configs=[("inv", "pass"), ("bad", "fail")]
     )
@@ -515,6 +529,30 @@ def test_record_covers_declared_crosses_from_passing_configurations(repo):
     assert crosses == ["cross:INIT=1'b0,IS_C_INVERTED=1'b1", "cross:INIT=1'b1,IS_C_INVERTED=1'b0"]
     assert "cross:INIT=1'b1,IS_C_INVERTED=1'b1" in s["coverage"]["uncovered"]  # cfg b errored
     assert any("cross:INIT=1'b1,IS_C_INVERTED=1'b1" in w for w in warnings)
+
+
+def test_vector_coverage_is_credited_per_configuration(repo):
+    """Review (b) #3 / ruling S23: cfg b passed on the golden model only (every simulator
+    excluded it), so neither its cross nor the bins only it reached are covered."""
+    cap, _ = _cross_fixture(repo)
+    _result(repo, cap["id"], "python", "pass", configs=[("a", "pass"), ("b", "pass")])
+    data_p = repo / "build/rtl/python" / REFERENCE_MODEL_SOURCE / cap["id"] / "result.json"
+    data = json.loads(data_p.read_text())
+    per_cfg = {"a": ["port:C", "port:Q"], "b": ["port:C", "port:Q", "port:D", "attr:INIT=1'b0"]}
+    for c in data["configs"]:
+        c["bins_reached"] = per_cfg[c["cfg"]]
+    data["bins_reached"] = sorted(set().union(*per_cfg.values()))
+    data_p.write_text(json.dumps(data))
+    for sim in ("xsim", "iverilog"):
+        _result(repo, cap["id"], sim, "pass", configs=[("a", "pass"), ("b", "skip")])
+    warnings: list[str] = []
+    s = record(repo, "FDRE", warn=warnings.append)
+    covered = s["coverage"]["covered"]
+    assert "port:C" in covered and "port:Q" in covered
+    assert "port:D" not in covered and "attr:INIT=1'b0" not in covered  # cfg b only
+    assert "cross:INIT=1'b1,IS_C_INVERTED=1'b0" in covered  # cfg a
+    assert "cross:INIT=1'b1,IS_C_INVERTED=1'b1" not in covered  # cfg b: golden only
+    assert any("port:D" in w and "golden model and a simulator reached" in w for w in warnings)
 
 
 def test_status_init_refresh_bins_only_touches_never_recorded_stubs(repo, monkeypatch):

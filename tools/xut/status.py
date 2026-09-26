@@ -568,33 +568,24 @@ def enum_value(value: object, allowed: list[str]) -> str | None:
 
 
 def _config_attrs(
-    root: Path, ms: str, case: TestCase, results: Results, warn: Callable[[str], None]
+    root: Path, ms: str, case: TestCase, cfgs: set[str], warn: Callable[[str], None]
 ) -> list[dict[str, object]]:
-    """The explicitly-set attributes of every configuration of ``case`` that ran and
-    passed against ``ms``: for a vector test, on the golden model (python, its
-    ``cfg-<cfg>/stim.xvec``); for sv/cocotb, on at least one simulator (test.yaml
-    ``configs``)."""
+    """The explicitly-set attributes of the configurations ``cfgs`` of ``case``: for a
+    vector test from the python run's ``cfg-<cfg>/stim.xvec``, for sv/cocotb from
+    test.yaml ``configs``."""
     from xut.formats import xvec
 
+    if case.style != "vector":
+        declared = case.configs or [{"cfg": "default", "attrs": {}}]
+        return [dict(c.get("attrs", {})) for c in declared if c["cfg"] in cfgs]
     out: list[dict[str, object]] = []
-    if case.style == "vector":
-        py = results.get(("rtl", "python", case.id)) or {}
-        d = result_dir(root, "rtl", "python", ms, case.id)
-        for c in py.get("configs", []):
-            if c.get("status") != "pass":
-                continue
-            try:
-                out.append(dict(xvec.load(d / f"cfg-{c['cfg']}" / "stim.xvec").attrs))
-            except (OSError, xvec.XvecError) as e:
-                warn(f"{case.id}: cfg {c['cfg']}: unreadable stim.xvec ({e})")
-        return out
-    passed: set[str] = set()
-    for sim in SIMULATORS:
-        for flow in runner_flows(sim, case.flows):
-            r = results.get((flow, sim, case.id)) or {}
-            passed |= {c["cfg"] for c in r.get("configs", []) if c["status"] == "pass"}
-    cfgs = case.configs or [{"cfg": "default", "attrs": {}}]
-    return [dict(c.get("attrs", {})) for c in cfgs if c["cfg"] in passed]
+    d = result_dir(root, "rtl", "python", ms, case.id)
+    for cfg in sorted(cfgs):
+        try:
+            out.append(dict(xvec.load(d / f"cfg-{cfg}" / "stim.xvec").attrs))
+        except (OSError, xvec.XvecError) as e:
+            warn(f"{case.id}: cfg {cfg}: unreadable stim.xvec ({e})")
+    return out
 
 
 def _crosses_reached(
@@ -602,15 +593,15 @@ def _crosses_reached(
     ms: str,
     entry: CatalogEntry,
     case: TestCase,
-    results: Results,
+    cfgs: set[str],
     warn: Callable[[str], None],
 ) -> set[str]:
-    """The ``cross:`` bins the passing configurations of ``case`` realise: attribute
+    """The ``cross:`` bins the configurations ``cfgs`` of ``case`` realise: attribute
     values are the configuration's, else the catalog default (ruling S19)."""
     allowed = {a["name"]: a.get("allowed") or [] for a in entry.attributes}
     defaults = {a["name"]: a["default"] for a in entry.attributes}
     out: set[str] = set()
-    for attrs in _config_attrs(root, ms, case, results, warn):
+    for attrs in _config_attrs(root, ms, case, cfgs, warn):
         vals = {**defaults, **attrs}
         for cross in entry.crosses:
             for a, b in combinations(cross, 2):
@@ -620,13 +611,58 @@ def _crosses_reached(
     return out
 
 
+def _passed_cfgs(res: dict | None) -> dict[str, dict]:
+    """The configurations ``res`` ran and passed, by name."""
+    return {c["cfg"]: c for c in (res or {}).get("configs", []) if c["status"] == "pass"}
+
+
+def _sim_passed_cfgs(case: TestCase, results: Results) -> set[str]:
+    """The configurations of ``case`` at least one UNISIM simulator passed (any flow)."""
+    return {
+        cfg
+        for sim in SIMULATORS
+        for flow in runner_flows(sim, case.flows)
+        for cfg in _passed_cfgs(results.get((flow, sim, case.id)))
+    }
+
+
 def _sim_passed(case: TestCase, results: Results) -> bool:
-    """True if at least one UNISIM simulator passed ``case``."""
+    """True if at least one UNISIM simulator passed ``case`` (every configuration it ran)."""
     return any(
         (results.get((flow, sim, case.id)) or {}).get("status") == "pass"
         for sim in SIMULATORS
         for flow in runner_flows(sim, case.flows)
     )
+
+
+def _vector_reached(
+    case: TestCase, ms: str, results: Results, warn: Callable[[str], None]
+) -> tuple[set[str], set[str]] | None:
+    """``(credited configurations, bins they reached)`` of a vector test: a configuration
+    is credited only when it passed on the golden model AND on at least one simulator
+    (rulings S21, S23), and only its own reach counts. ``None`` (with a warning) when
+    no configuration is credited."""
+    golden = _passed_cfgs(results.get(("rtl", "python", case.id)))
+    credited = set(golden) & _sim_passed_cfgs(case, results)
+    if not credited:
+        if case.exercises:
+            why = (
+                "no configuration passed on the golden model"
+                if not golden
+                else "no configuration passed on both the golden model and a simulator"
+            )
+            warn(
+                f"{case.id}: {why} ({ms}); its exercises stay uncovered (rulings S21, S23: "
+                "the golden model alone covers nothing)"
+            )
+        return None
+    reached: set[str] = set()
+    for cfg in sorted(credited):
+        bins = golden[cfg].get("bins_reached")
+        if bins is None:
+            warn(f"{case.id}: cfg {cfg}: the python result has no bins_reached; re-run it")
+        reached |= set(bins or ())
+    return credited, reached
 
 
 def _coverage(
@@ -637,9 +673,16 @@ def _coverage(
     results: Results,
     warn: Callable[[str], None],
 ) -> dict:
-    """``covered`` = (vector ``exercises`` ∩ the python run's ``bins_reached``) ∪ (sv/cocotb
-    ``exercises`` of tests that passed on a simulator); ``uncovered`` = the rest of
-    ``coverage_bins(entry)`` (spec §9)."""
+    """``covered`` (spec §9, rulings S19, S21, S23):
+
+    - a vector test's ``exercises`` that a credited configuration (passed on the golden
+      model and on at least one simulator) reached, per that configuration's own
+      ``bins_reached``, and its ``cross:`` bins that a credited configuration realises;
+    - an sv/cocotb test's ``exercises`` once it passed on a simulator (declared and
+      passed, not measured: those harnesses report no reach), and its ``cross:`` bins
+      that a configuration some simulator passed realises.
+
+    ``uncovered`` is the rest of ``coverage_bins(entry)``."""
     bins = coverage_bins(entry)
     known = set(bins)
     covered: set[str] = set()
@@ -647,39 +690,31 @@ def _coverage(
         for b in c.exercises:
             if b not in known:
                 warn(f"{c.id}: exercises {b}, which is not a coverage bin of {c.prim}")
-        sim_passed = _sim_passed(c, results)
         crosses = {b for b in c.exercises if b.startswith("cross:")}
-        if crosses and (c.style != "vector" or sim_passed):
-            reached_x = _crosses_reached(root, ms, entry, c, results, warn)
-            covered |= crosses & reached_x
-            for b in sorted(crosses - reached_x):
-                warn(f"{c.id}: declares {b} but no passing configuration has those values")
         if c.style == "vector":
-            py = results.get(("rtl", "python", c.id))
-            reached = py.get("bins_reached") if py and py["status"] == "pass" else None
-            if reached is None:
-                if c.exercises:
-                    warn(
-                        f"{c.id}: no passing python result with bins_reached ({ms}); its "
-                        "exercises stay uncovered"
-                    )
+            got = _vector_reached(c, ms, results, warn)
+            if got is None:
                 continue
-            if not sim_passed:
-                if c.exercises:
-                    warn(
-                        f"{c.id}: no simulator passed it ({ms}); its exercises stay "
-                        "uncovered (ruling S21: the golden model alone covers nothing)"
-                    )
-                continue
+            cfgs, reached = got
             for b in c.exercises:
                 if b.startswith("cross:"):
-                    continue  # from the passing configurations, above
+                    continue
                 if b in reached:
                     covered.add(b)
                 else:
-                    warn(f"{c.id}: declares {b} but the golden model did not reach it")
-        elif sim_passed:
-            covered |= {b for b in c.exercises if not b.startswith("cross:")}
+                    warn(
+                        f"{c.id}: declares {b} but no configuration that passed on the "
+                        "golden model and a simulator reached it"
+                    )
+        else:
+            cfgs = _sim_passed_cfgs(c, results)
+            if _sim_passed(c, results):
+                covered |= {b for b in c.exercises if not b.startswith("cross:")}
+        if crosses:
+            reached_x = _crosses_reached(root, ms, entry, c, cfgs, warn)
+            covered |= crosses & reached_x
+            for b in sorted(crosses - reached_x):
+                warn(f"{c.id}: declares {b} but no passing configuration has those values")
     return {
         "covered": [b for b in bins if b in covered],
         "uncovered": [b for b in bins if b not in covered],
