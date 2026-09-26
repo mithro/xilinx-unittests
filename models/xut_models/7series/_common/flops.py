@@ -18,8 +18,11 @@ Behaviour UG953 does not state is tagged ``inferred:``. Ruling S30: an async
 control (CLR/PRE) that is active while GSR is asserted, and disagrees with
 GSR's INIT, is not left as a don't-care -- a ``-`` bit needs ``doc:<page>``
 provenance (spec §5.3), and UG953 never declares *this* conflict undefined.
-Instead the control's forced value is taken to win (``inferred:``), and the
-C3 (``control``) claim is still hit.
+Instead the control's forced value is taken to win (``inferred:``).
+
+Ruling S44 (refines S32): a documented claim is hit only when a *documented*
+rule decides the output. An output decided by an ``inferred:`` rule -- the S30
+conflict above, or ``_GSR_EDGE`` -- credits no claim at all.
 
 Ruling S32: a claim is hit only when its behaviour actually decides the
 output at that event (never from a bare probe, and never redundantly from an
@@ -96,7 +99,8 @@ class SdrFlop(Model):
 
     def _under_gsr(self) -> Out:
         if self.CTRL_ASYNC and self._ctrl_active() and self.init != self.CTRL_VALUE:
-            self._hit("control")  # the two documented behaviours disagree: control wins
+            # The two documented rules disagree; the inferred S30 rule decides Q, so
+            # no documented claim is credited (ruling S44).
             return Out(str(self.CTRL_VALUE), _GSR_VS_CTRL)
         self._hit("gsr_init")  # (when they agree, both documented rules give INIT)
         return self._doc(self.init)
@@ -116,7 +120,11 @@ class SdrFlop(Model):
     def power_on(self) -> None:
         self._powered_on = True
         self.gsr = 1
-        self.q = self._under_gsr()
+        # No pin has been driven yet, so the control is not evaluated here: GSR at
+        # power-up places INIT on Q (C4). The first set_input of the control, still
+        # under GSR, re-evaluates it through _under_gsr (review Task 26, Minor 1).
+        self._hit("gsr_init")
+        self.q = self._doc(self.init)
 
     def glbl(self, signal: str, value: int) -> None:
         if not self._powered_on:
