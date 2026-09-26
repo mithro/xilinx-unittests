@@ -559,6 +559,18 @@ classified:
   attribute values (§4.2), declared crosses, and behavioural claims. A test's
   `exercises:` list marks bins as covered, and simulation of the golden model
   confirms that the stimulus actually reaches them.
+- **Port × class bins** (rulings S19, S21) come from the applied stimulus:
+  - data inputs get `port:<P>:0` and `:1`, per bit for a multi-bit port. A value bin
+    is reached only by a `set` that explicitly writes that value; the power-on 0 of
+    every input does not count.
+  - clocks get `port:<P>:edge`.
+  - async and gate inputs get `port:<P>:assert` and `:release` when the catalog
+    declares the port's `active` level, and `:rise` and `:fall` otherwise.
+  - inouts get `drive0`, `drive1` and `release`.
+  - Declared crosses give `cross:<A>=<a>,<B>=<b>` bins. One counts as covered when
+    a configuration that ran and passed has those values.
+  - A vector test's bins count only when the golden model passed and at least one
+    simulator passed the test against the reference model source.
 - **Model code coverage.** UNISIM line/branch coverage (Verilator `--coverage`)
   shows which model branches no test reaches. It is reported in status and
   first added in step 5.

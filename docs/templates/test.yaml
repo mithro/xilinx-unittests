@@ -10,7 +10,11 @@ tests:
     # Relative to this directory. vector: vectors/<file>.py:<function> (generator) or
     # vectors/<file>.xvec (frozen); sv: sv/<file>.sv; cocotb: cocotb/<file>.py.
     source: vectors/gen.py:l1_reset_over_ce
-    exercises: [port:R, port:CE, claim:<PRIM>.C3]
+    # Coverage bins (spec §9): port:<P> (the port is used at all), port:<P>:0/1 for a
+    # data input (reached only by a `set` that explicitly writes that value; the
+    # power-on 0 does not count), port:<P>:edge, port:<P>:rise/fall (assert/release),
+    # attr:<A>=<v>, cross:<A>=<a>,<B>=<b>, claim:<id>.
+    exercises: [port:R, port:R:1, port:CE, claim:<PRIM>.C3]
     attr_sampling: {INIT: [0, 1]}
     # Always the quoted strings "yes" | "no" | "unsupported" (a bare yes is a boolean).
     runners: {python: "yes", xsim: "yes", iverilog: "yes", verilator: "yes", hw: "unsupported"}
