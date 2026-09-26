@@ -79,6 +79,7 @@ class SdrFlop(Model):
         self.inv_ctrl = bit_attr(a.get(f"IS_{self.CTRL}_INVERTED", 0))
         self.pin = dict.fromkeys(self.inputs(), 0)
         self.gsr = 0
+        self._powered_on = False
         self.q = Out(str(self.init), _INIT_BEFORE_POWER_ON)
 
     # -- helpers ------------------------------------------------------------------
@@ -113,6 +114,7 @@ class SdrFlop(Model):
 
     # -- Model API ------------------------------------------------------------------
     def power_on(self) -> None:
+        self._powered_on = True
         self.gsr = 1
         self.q = self._under_gsr()
 
@@ -126,8 +128,12 @@ class SdrFlop(Model):
             self._force()
 
     def set_input(self, port: str, value: int) -> None:
+        if not self._powered_on:
+            raise ModelContractError(f"{self.PRIM}: set_input before power_on")
         if port not in self.pin:
             raise ModelContractError(f"{self.PRIM}: not an input port: {port!r}")
+        if value not in (0, 1):
+            raise ModelContractError(f"{self.PRIM}: {port}={value!r} is not 0 or 1")
         self.pin[port] = value
         if port != self.CTRL or not self.CTRL_ASYNC:
             return
@@ -137,6 +143,8 @@ class SdrFlop(Model):
             self._force()
 
     def clock_edge(self, port: str, rising: bool) -> None:
+        if not self._powered_on:
+            raise ModelContractError(f"{self.PRIM}: clock_edge before power_on")
         if port not in self.CLOCKS:
             raise ModelContractError(f"{self.PRIM}: not a clock port: {port!r}")
         if rising == bool(self.inv_c):
