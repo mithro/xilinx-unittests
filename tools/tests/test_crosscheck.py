@@ -291,13 +291,33 @@ def test_errored_configuration_is_excluded_from_comparison():
 # --- gather / check / matrix on a build tree ------------------------------------------------
 
 
+#: The tree hash every fixture result is stamped with (``xut run`` stamps the real one).
+TH = "sha256:" + "a" * 64
+
+
+def _cfg_entry(c: dict) -> dict:
+    """A schema-complete ``configs`` entry (a non-pass needs a reason)."""
+    reason = c.get("reason") or (None if c["status"] == "pass" else f"{c['status']} reason")
+    return {
+        "stimulus_sha256": None,
+        "trace_sha256": None,
+        "mismatches": 0,
+        **c,
+        "reason": reason,
+    }
+
+
 def _result(root: Path, flow, runner, ms, tid, status="pass", trace=None, reason=None, **kw):
+    """A schema-valid result.json (as ``xut run`` writes it, stamped with ``TH`` on a
+    clean tree unless ``tree_hash``/``dirty`` are given), plus trace.xtr if given."""
     d = root / "build" / flow / runner / ms / tid
     d.mkdir(parents=True)
     cfgs = kw.pop("configs", None)
     if cfgs is None and trace is not None:
         cfgs = sorted({lbl.split("/", 1)[0] for lbl in trace.samples})
         cfgs = [{"cfg": c, "status": status, "reason": reason} for c in cfgs]
+    if reason is None and status != "pass":
+        reason = f"{status} reason"
     data = {
         "format": "xut-result 1",
         "test_id": tid,
@@ -306,10 +326,21 @@ def _result(root: Path, flow, runner, ms, tid, status="pass", trace=None, reason
         "style": "vector",
         "status": status,
         "reason": reason,
-        "configs": cfgs or [],
+        "configs": [_cfg_entry(c) for c in cfgs or []],
         "model_source": ms,
+        "seeds": {"stimulus": 1, "x": []},
+        "defines": {},
+        "tools": {},
+        "container": None,
+        "duration_s": 0.0,
+        "started": "",
+        "host": "h",
         "x_dependence": None,
+        "bins_reached": None,
         "hw": None,
+        "tree_hash": TH,
+        "head": "abc",
+        "dirty": False,
         **kw,
     }
     (d / "result.json").write_text(json.dumps(data))
@@ -388,7 +419,17 @@ def test_gather_result_not_matching_its_path_is_an_error_view(repo):
     data = json.loads((d / "result.json").read_text())
     (d / "result.json").write_text(json.dumps({**data, "model_source": "other"}))
     v = xc.gather(repo, TID)["ms1"][("rtl", "iverilog")]
-    assert v.status == "error" and "does not match" in v.result["reason"]
+    assert v.status == "error" and "not its path" in v.result["reason"]
+
+
+def test_gather_schema_invalid_result_is_an_error_view_not_a_traceback(repo):
+    """Review (a) #4: the one schema-validated reader; a configs entry that is not an
+    object is an error view, as it is for ``xut status record``."""
+    d = _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    data = json.loads((d / "result.json").read_text())
+    (d / "result.json").write_text(json.dumps({**data, "configs": ["c"]}))
+    v = xc.gather(repo, TID)["ms1"][("rtl", "iverilog")]
+    assert v.status == "error" and "invalid result.json" in v.result["reason"]
 
 
 def _case(root):

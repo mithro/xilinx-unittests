@@ -8,7 +8,6 @@ the ``result.json`` files of ``xut run``. This module also defines the schema, l
 and validates a status file, and builds a fresh stub.
 """
 
-import json
 import os
 import subprocess
 import sys
@@ -24,6 +23,7 @@ from xut.catalog.model import CatalogEntry, is_enumerated
 from xut.errors import ConfigError, GitError, XutError
 from xut.formats.common import int_literal
 from xut.provenance import tree_paths, tree_state
+from xut.results import read_result, result_dir
 from xut.testspec import (
     DECLARATION_OF,
     RUNNER_ORDER,
@@ -493,25 +493,37 @@ def open_findings(root: Path, prim: str) -> list[str]:
     ]
 
 
-def _load_result(
-    root: Path, flow: str, runner: str, ms: str, test_id: str, warn: Callable[[str], None]
-) -> dict | None:
-    """``build/<flow>/<runner>/<ms>/<test_id>/result.json``, validated; ``None`` if absent.
-    An unreadable, invalid or misplaced one is an ``error`` result (with a warning)."""
-    p = Path(root) / "build" / flow / runner / ms / test_id / "result.json"
-    if not p.is_file():
-        return None
-    try:
-        data = json.loads(p.read_text())
-        schemas.validate(data, "result")
-    except (OSError, ValueError, jsonschema.ValidationError) as e:
-        warn(f"{p}: unusable result.json, recorded as error: {str(e).splitlines()[0]}")
-        return {"status": "error", "reason": "unusable result.json", "tools": {}, "_unusable": 1}
-    got = (data["flow"], data["runner"], data["model_source"], data["test_id"])
-    if got != (flow, runner, ms, test_id):
-        warn(f"{p}: result.json names {got}, not its path; recorded as error")
-        return {"status": "error", "reason": "misplaced result.json", "tools": {}, "_unusable": 1}
-    return data
+#: One primitive's results against one model source, read once: ``(flow, runner,
+#: test_id)`` -> the result.json data (an unusable one as an ``error`` stand-in).
+Results = dict[tuple[str, str, str], dict]
+
+
+def _load_results(
+    root: Path, ms: str, cases: list[TestCase], warn: Callable[[str], None]
+) -> Results:
+    """Every result.json of ``cases`` against ``ms`` that ``record`` reads, each read and
+    validated once (``xut.results.read_result``). An unusable one is an ``error`` result,
+    with one warning."""
+    out: Results = {}
+    for c in cases:
+        for runner in RECORDED_RUNNERS:
+            for flow in runner_flows(runner, c.flows):
+                d = result_dir(root, flow, runner, ms, c.id)
+                rf = read_result(d, flow, runner, ms, c.id)
+                if rf is None:
+                    continue
+                if rf.problem is not None:
+                    warn(f"{d / 'result.json'}: {rf.problem}; recorded as error")
+                    out[(flow, runner, c.id)] = {
+                        "status": "error",
+                        "reason": rf.problem,
+                        "configs": [],
+                        "tools": {},
+                        "_unusable": 1,
+                    }
+                else:
+                    out[(flow, runner, c.id)] = rf.data
+    return out
 
 
 def _cell(declared_as: str | None, res: dict | None) -> str:
@@ -556,7 +568,7 @@ def enum_value(value: object, allowed: list[str]) -> str | None:
 
 
 def _config_attrs(
-    root: Path, ms: str, case: TestCase, warn: Callable[[str], None]
+    root: Path, ms: str, case: TestCase, results: Results, warn: Callable[[str], None]
 ) -> list[dict[str, object]]:
     """The explicitly-set attributes of every configuration of ``case`` that ran and
     passed against ``ms``: for a vector test, on the golden model (python, its
@@ -566,9 +578,9 @@ def _config_attrs(
 
     out: list[dict[str, object]] = []
     if case.style == "vector":
-        py = _load_result(root, "rtl", "python", ms, case.id, warn)
-        d = Path(root) / "build/rtl/python" / ms / case.id
-        for c in (py or {}).get("configs", []):
+        py = results.get(("rtl", "python", case.id)) or {}
+        d = result_dir(root, "rtl", "python", ms, case.id)
+        for c in py.get("configs", []):
             if c.get("status") != "pass":
                 continue
             try:
@@ -579,21 +591,26 @@ def _config_attrs(
     passed: set[str] = set()
     for sim in SIMULATORS:
         for flow in runner_flows(sim, case.flows):
-            r = _load_result(root, flow, sim, ms, case.id, warn)
-            passed |= {c["cfg"] for c in (r or {}).get("configs", []) if c["status"] == "pass"}
+            r = results.get((flow, sim, case.id)) or {}
+            passed |= {c["cfg"] for c in r.get("configs", []) if c["status"] == "pass"}
     cfgs = case.configs or [{"cfg": "default", "attrs": {}}]
     return [dict(c.get("attrs", {})) for c in cfgs if c["cfg"] in passed]
 
 
 def _crosses_reached(
-    root: Path, ms: str, entry: CatalogEntry, case: TestCase, warn: Callable[[str], None]
+    root: Path,
+    ms: str,
+    entry: CatalogEntry,
+    case: TestCase,
+    results: Results,
+    warn: Callable[[str], None],
 ) -> set[str]:
     """The ``cross:`` bins the passing configurations of ``case`` realise: attribute
     values are the configuration's, else the catalog default (ruling S19)."""
     allowed = {a["name"]: a.get("allowed") or [] for a in entry.attributes}
     defaults = {a["name"]: a["default"] for a in entry.attributes}
     out: set[str] = set()
-    for attrs in _config_attrs(root, ms, case, warn):
+    for attrs in _config_attrs(root, ms, case, results, warn):
         vals = {**defaults, **attrs}
         for cross in entry.crosses:
             for a, b in combinations(cross, 2):
@@ -603,18 +620,22 @@ def _crosses_reached(
     return out
 
 
-def _sim_passed(root: Path, ms: str, case: TestCase, warn: Callable[[str], None]) -> bool:
-    """True if at least one UNISIM simulator passed ``case`` against ``ms``."""
+def _sim_passed(case: TestCase, results: Results) -> bool:
+    """True if at least one UNISIM simulator passed ``case``."""
     return any(
-        (r := _load_result(root, flow, sim, ms, case.id, warn)) is not None
-        and r["status"] == "pass"
+        (results.get((flow, sim, case.id)) or {}).get("status") == "pass"
         for sim in SIMULATORS
         for flow in runner_flows(sim, case.flows)
     )
 
 
 def _coverage(
-    root: Path, ms: str, entry: CatalogEntry, cases: list[TestCase], warn: Callable[[str], None]
+    root: Path,
+    ms: str,
+    entry: CatalogEntry,
+    cases: list[TestCase],
+    results: Results,
+    warn: Callable[[str], None],
 ) -> dict:
     """``covered`` = (vector ``exercises`` ∩ the python run's ``bins_reached``) ∪ (sv/cocotb
     ``exercises`` of tests that passed on a simulator); ``uncovered`` = the rest of
@@ -626,14 +647,15 @@ def _coverage(
         for b in c.exercises:
             if b not in known:
                 warn(f"{c.id}: exercises {b}, which is not a coverage bin of {c.prim}")
+        sim_passed = _sim_passed(c, results)
         crosses = {b for b in c.exercises if b.startswith("cross:")}
-        if crosses and (c.style != "vector" or _sim_passed(root, ms, c, warn)):
-            reached_x = _crosses_reached(root, ms, entry, c, warn)
+        if crosses and (c.style != "vector" or sim_passed):
+            reached_x = _crosses_reached(root, ms, entry, c, results, warn)
             covered |= crosses & reached_x
             for b in sorted(crosses - reached_x):
                 warn(f"{c.id}: declares {b} but no passing configuration has those values")
         if c.style == "vector":
-            py = _load_result(root, "rtl", "python", ms, c.id, warn)
+            py = results.get(("rtl", "python", c.id))
             reached = py.get("bins_reached") if py and py["status"] == "pass" else None
             if reached is None:
                 if c.exercises:
@@ -642,7 +664,7 @@ def _coverage(
                         "exercises stay uncovered"
                     )
                 continue
-            if not _sim_passed(root, ms, c, warn):
+            if not sim_passed:
                 if c.exercises:
                     warn(
                         f"{c.id}: no simulator passed it ({ms}); its exercises stay "
@@ -656,9 +678,8 @@ def _coverage(
                     covered.add(b)
                 else:
                     warn(f"{c.id}: declares {b} but the golden model did not reach it")
-        else:
-            if _sim_passed(root, ms, c, warn):
-                covered |= {b for b in c.exercises if not b.startswith("cross:")}
+        elif sim_passed:
+            covered |= {b for b in c.exercises if not b.startswith("cross:")}
     return {
         "covered": [b for b in bins if b in covered],
         "uncovered": [b for b in bins if b not in covered],
@@ -719,6 +740,7 @@ def record(
     entry = load_entry(family, prim, root)
     thash = tree_hash(root, tree_paths(family, group, prim, unit))
 
+    loaded = _load_results(root, model_source, cases, warn)
     cells: dict[str, list[str]] = {}
     tools: dict[str, set[str]] = {}
     found = 0
@@ -726,7 +748,7 @@ def record(
     for c in cases:
         for runner in RECORDED_RUNNERS:
             for flow in runner_flows(runner, c.flows):
-                res = _load_result(root, flow, runner, model_source, c.id, warn)
+                res = loaded.get((flow, runner, c.id))
                 if res is not None:
                     found += 1
                     _merge_tools(tools, res)
@@ -778,7 +800,7 @@ def record(
         measured["tree_hash"] = thash  # the reference's, as in step 1
         measured["tools"] = src_tools
         status["results"] = results
-        status["coverage"] = _coverage(root, model_source, entry, cases, warn)
+        status["coverage"] = _coverage(root, model_source, entry, cases, loaded, warn)
     else:
         by = status.setdefault("results_by_model_source", {})
         by[model_source] = results
