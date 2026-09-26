@@ -22,8 +22,6 @@ tests:
   - port:C:edge
   - port:CE:1
   - port:D:1
-  - port:R:0
-  - port:R:1
   - attr:INIT=1'b0
   - attr:INIT=1'b1
   - attr:IS_C_INVERTED=1'b0
@@ -53,7 +51,7 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: &id001
+  flows:
   - rtl
   - vivado
   - yosys
@@ -68,7 +66,7 @@ tests:
   - only one capture per configuration; no control, CE-low or GSR activity
   - no x/z on any input (sv_x_inputs covers x)
   - illegal values are tried only by L0.illegal_init
-  config_exclusions: &id003
+  config_exclusions:
     hw:
       '*_d1_*': IS_D_INVERTED=1 (UG953 p376) is only legal on I/O registers; the fabric harness uses SLICE
         flops
@@ -84,7 +82,12 @@ tests:
     iverilog: 'yes'
     verilator: unsupported
     hw: unsupported
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L0.illegal_init
   - 7series.FDCE.L0.illegal_init
@@ -111,7 +114,7 @@ tests:
   - port:D:0
   - port:D:1
   - claim:FDRE.C1
-  attr_sampling: &id002
+  attr_sampling:
     INIT:
     - 0
     - 1
@@ -121,7 +124,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.capture
   - 7series.FDCE.L1.capture
@@ -147,14 +155,22 @@ tests:
   - port:D:0
   - port:D:1
   - claim:FDRE.C2
-  attr_sampling: *id002
+  attr_sampling:
+    INIT:
+    - 0
+    - 1
   runners:
     python: 'yes'
     xsim: 'yes'
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.ce_hold
   - 7series.FDCE.L1.ce_hold
@@ -177,14 +193,22 @@ tests:
   - port:R:0
   - port:R:1
   - claim:FDRE.C3
-  attr_sampling: *id002
+  attr_sampling:
+    INIT:
+    - 0
+    - 1
   runners:
     python: 'yes'
     xsim: 'yes'
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.set_over_ce
   - 7series.FDCE.L1.clear_over_ce
@@ -200,14 +224,22 @@ tests:
   exercises:
   - port:Q
   - claim:FDRE.C4
-  attr_sampling: *id002
+  attr_sampling:
+    INIT:
+    - 0
+    - 1
   runners:
     python: 'yes'
     xsim: 'yes'
     iverilog: 'yes'
     verilator: 'yes'
     hw: unsupported
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.gsr_init
   - 7series.FDCE.L1.gsr_init
@@ -240,7 +272,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.is_c_inverted
   - 7series.FDCE.L1.is_c_inverted
@@ -270,7 +307,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.is_s_inverted
   - 7series.FDCE.L1.is_clr_inverted
@@ -300,7 +342,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: unsupported
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L1.is_d_inverted
   - 7series.FDCE.L1.is_d_inverted
@@ -361,7 +408,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L2.exhaustive
   - 7series.FDCE.L2.exhaustive
@@ -371,7 +423,10 @@ tests:
   - 'single edge per combination: no multi-cycle ordering (see L2.random)'
   - no GSR (L1.gsr_init and sv_gsr_midsim cover it; hardware GSR needs §7.2)
   - no x/z on any input (sv_x_inputs covers x)
-  config_exclusions: *id003
+  config_exclusions:
+    hw:
+      '*_d1_*': IS_D_INVERTED=1 (UG953 p376) is only legal on I/O registers; the fabric harness uses SLICE
+        flops
 - id: 7series.FDRE.L2.random
   level: L2
   style: vector
@@ -419,7 +474,12 @@ tests:
     iverilog: 'yes'
     verilator: 'yes'
     hw: 'yes'
-  flows: *id001
+  flows:
+  - rtl
+  - vivado
+  - yosys
+  - openxc7
+  - vpr
   related:
   - 7series.FDSE.L2.random
   - 7series.FDCE.L2.random
@@ -430,7 +490,10 @@ tests:
   - one seed per run; failing seeds must be frozen by hand (xut freeze-seed is deferred)
   - no x/z on any input (sv_x_inputs covers x)
   - the control only changes between edges (sync kinds)
-  config_exclusions: *id003
+  config_exclusions:
+    hw:
+      '*_d1_*': IS_D_INVERTED=1 (UG953 p376) is only legal on I/O registers; the fabric harness uses SLICE
+        flops
 - id: 7series.FDRE.L1.sv_gsr_midsim
   level: L1
   style: sv
