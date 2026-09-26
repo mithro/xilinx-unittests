@@ -13,6 +13,9 @@ coverage:
   uncovered:
   - port:RDY
   - port:REFCLK
+  - port:REFCLK:edge
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - attr:SIM_DEVICE
 notes: ''

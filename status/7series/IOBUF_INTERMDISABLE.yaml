@@ -13,10 +13,21 @@ coverage:
   uncovered:
   - port:O
   - port:IO
+  - port:IO:drive0
+  - port:IO:drive1
+  - port:IO:release
   - port:I
+  - port:I:0
+  - port:I:1
   - port:IBUFDISABLE
+  - port:IBUFDISABLE:0
+  - port:IBUFDISABLE:1
   - port:INTERMDISABLE
+  - port:INTERMDISABLE:0
+  - port:INTERMDISABLE:1
   - port:T
+  - port:T:0
+  - port:T:1
   - attr:DRIVE
   - attr:IBUF_LOW_PWR
   - attr:IOSTANDARD

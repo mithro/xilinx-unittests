@@ -13,6 +13,9 @@ coverage:
   uncovered:
   - port:O
   - port:CE
+  - port:CE:rise
+  - port:CE:fall
   - port:I
+  - port:I:edge
   - attr:SIM_DEVICE
 notes: ''

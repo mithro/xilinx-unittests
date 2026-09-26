@@ -14,9 +14,24 @@ coverage:
   - port:Q
   - port:Q31
   - port:A
+  - port:A[0]:0
+  - port:A[0]:1
+  - port:A[1]:0
+  - port:A[1]:1
+  - port:A[2]:0
+  - port:A[2]:1
+  - port:A[3]:0
+  - port:A[3]:1
+  - port:A[4]:0
+  - port:A[4]:1
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:CLK
+  - port:CLK:edge
   - port:D
+  - port:D:0
+  - port:D:1
   - attr:INIT
   - attr:IS_CLK_INVERTED=1'b0
   - attr:IS_CLK_INVERTED=1'b1

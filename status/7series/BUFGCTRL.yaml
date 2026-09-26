@@ -13,13 +13,27 @@ coverage:
   uncovered:
   - port:O
   - port:CE0
+  - port:CE0:rise
+  - port:CE0:fall
   - port:CE1
+  - port:CE1:rise
+  - port:CE1:fall
   - port:I0
+  - port:I0:edge
   - port:I1
+  - port:I1:edge
   - port:IGNORE0
+  - port:IGNORE0:rise
+  - port:IGNORE0:fall
   - port:IGNORE1
+  - port:IGNORE1:rise
+  - port:IGNORE1:fall
   - port:S0
+  - port:S0:rise
+  - port:S0:fall
   - port:S1
+  - port:S1:rise
+  - port:S1:fall
   - attr:CE_TYPE_CE0
   - attr:CE_TYPE_CE1
   - attr:INIT_OUT=0

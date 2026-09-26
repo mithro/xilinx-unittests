@@ -13,8 +13,15 @@ coverage:
   uncovered:
   - port:DOUT
   - port:CLK
+  - port:CLK:edge
   - port:DIN
+  - port:DIN:0
+  - port:DIN:1
   - port:READ
+  - port:READ:0
+  - port:READ:1
   - port:SHIFT
+  - port:SHIFT:0
+  - port:SHIFT:1
   - attr:SIM_DNA_VALUE
 notes: ''

@@ -26,20 +26,188 @@ coverage:
   - port:Q8
   - port:Q9
   - port:D0
+  - port:D0[0]:0
+  - port:D0[0]:1
+  - port:D0[1]:0
+  - port:D0[1]:1
+  - port:D0[2]:0
+  - port:D0[2]:1
+  - port:D0[3]:0
+  - port:D0[3]:1
+  - port:D0[4]:0
+  - port:D0[4]:1
+  - port:D0[5]:0
+  - port:D0[5]:1
+  - port:D0[6]:0
+  - port:D0[6]:1
+  - port:D0[7]:0
+  - port:D0[7]:1
   - port:D1
+  - port:D1[0]:0
+  - port:D1[0]:1
+  - port:D1[1]:0
+  - port:D1[1]:1
+  - port:D1[2]:0
+  - port:D1[2]:1
+  - port:D1[3]:0
+  - port:D1[3]:1
+  - port:D1[4]:0
+  - port:D1[4]:1
+  - port:D1[5]:0
+  - port:D1[5]:1
+  - port:D1[6]:0
+  - port:D1[6]:1
+  - port:D1[7]:0
+  - port:D1[7]:1
   - port:D2
+  - port:D2[0]:0
+  - port:D2[0]:1
+  - port:D2[1]:0
+  - port:D2[1]:1
+  - port:D2[2]:0
+  - port:D2[2]:1
+  - port:D2[3]:0
+  - port:D2[3]:1
+  - port:D2[4]:0
+  - port:D2[4]:1
+  - port:D2[5]:0
+  - port:D2[5]:1
+  - port:D2[6]:0
+  - port:D2[6]:1
+  - port:D2[7]:0
+  - port:D2[7]:1
   - port:D3
+  - port:D3[0]:0
+  - port:D3[0]:1
+  - port:D3[1]:0
+  - port:D3[1]:1
+  - port:D3[2]:0
+  - port:D3[2]:1
+  - port:D3[3]:0
+  - port:D3[3]:1
+  - port:D3[4]:0
+  - port:D3[4]:1
+  - port:D3[5]:0
+  - port:D3[5]:1
+  - port:D3[6]:0
+  - port:D3[6]:1
+  - port:D3[7]:0
+  - port:D3[7]:1
   - port:D4
+  - port:D4[0]:0
+  - port:D4[0]:1
+  - port:D4[1]:0
+  - port:D4[1]:1
+  - port:D4[2]:0
+  - port:D4[2]:1
+  - port:D4[3]:0
+  - port:D4[3]:1
+  - port:D4[4]:0
+  - port:D4[4]:1
+  - port:D4[5]:0
+  - port:D4[5]:1
+  - port:D4[6]:0
+  - port:D4[6]:1
+  - port:D4[7]:0
+  - port:D4[7]:1
   - port:D5
+  - port:D5[0]:0
+  - port:D5[0]:1
+  - port:D5[1]:0
+  - port:D5[1]:1
+  - port:D5[2]:0
+  - port:D5[2]:1
+  - port:D5[3]:0
+  - port:D5[3]:1
+  - port:D5[4]:0
+  - port:D5[4]:1
+  - port:D5[5]:0
+  - port:D5[5]:1
+  - port:D5[6]:0
+  - port:D5[6]:1
+  - port:D5[7]:0
+  - port:D5[7]:1
   - port:D6
+  - port:D6[0]:0
+  - port:D6[0]:1
+  - port:D6[1]:0
+  - port:D6[1]:1
+  - port:D6[2]:0
+  - port:D6[2]:1
+  - port:D6[3]:0
+  - port:D6[3]:1
+  - port:D6[4]:0
+  - port:D6[4]:1
+  - port:D6[5]:0
+  - port:D6[5]:1
+  - port:D6[6]:0
+  - port:D6[6]:1
+  - port:D6[7]:0
+  - port:D6[7]:1
   - port:D7
+  - port:D7[0]:0
+  - port:D7[0]:1
+  - port:D7[1]:0
+  - port:D7[1]:1
+  - port:D7[2]:0
+  - port:D7[2]:1
+  - port:D7[3]:0
+  - port:D7[3]:1
+  - port:D7[4]:0
+  - port:D7[4]:1
+  - port:D7[5]:0
+  - port:D7[5]:1
+  - port:D7[6]:0
+  - port:D7[6]:1
+  - port:D7[7]:0
+  - port:D7[7]:1
   - port:D8
+  - port:D8[0]:0
+  - port:D8[0]:1
+  - port:D8[1]:0
+  - port:D8[1]:1
+  - port:D8[2]:0
+  - port:D8[2]:1
+  - port:D8[3]:0
+  - port:D8[3]:1
+  - port:D8[4]:0
+  - port:D8[4]:1
+  - port:D8[5]:0
+  - port:D8[5]:1
+  - port:D8[6]:0
+  - port:D8[6]:1
+  - port:D8[7]:0
+  - port:D8[7]:1
   - port:D9
+  - port:D9[0]:0
+  - port:D9[0]:1
+  - port:D9[1]:0
+  - port:D9[1]:1
+  - port:D9[2]:0
+  - port:D9[2]:1
+  - port:D9[3]:0
+  - port:D9[3]:1
+  - port:D9[4]:0
+  - port:D9[4]:1
+  - port:D9[5]:0
+  - port:D9[5]:1
+  - port:D9[6]:0
+  - port:D9[6]:1
+  - port:D9[7]:0
+  - port:D9[7]:1
   - port:RDCLK
+  - port:RDCLK:edge
   - port:RDEN
+  - port:RDEN:0
+  - port:RDEN:1
   - port:RESET
+  - port:RESET:rise
+  - port:RESET:fall
   - port:WRCLK
+  - port:WRCLK:edge
   - port:WREN
+  - port:WREN:0
+  - port:WREN:1
   - attr:ALMOST_EMPTY_VALUE=1
   - attr:ALMOST_EMPTY_VALUE=2
   - attr:ALMOST_FULL_VALUE=1

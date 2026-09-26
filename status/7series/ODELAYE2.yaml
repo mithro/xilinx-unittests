@@ -14,15 +14,41 @@ coverage:
   - port:CNTVALUEOUT
   - port:DATAOUT
   - port:C
+  - port:C:edge
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:CINVCTRL
+  - port:CINVCTRL:0
+  - port:CINVCTRL:1
   - port:CLKIN
+  - port:CLKIN:edge
   - port:CNTVALUEIN
+  - port:CNTVALUEIN[0]:0
+  - port:CNTVALUEIN[0]:1
+  - port:CNTVALUEIN[1]:0
+  - port:CNTVALUEIN[1]:1
+  - port:CNTVALUEIN[2]:0
+  - port:CNTVALUEIN[2]:1
+  - port:CNTVALUEIN[3]:0
+  - port:CNTVALUEIN[3]:1
+  - port:CNTVALUEIN[4]:0
+  - port:CNTVALUEIN[4]:1
   - port:INC
+  - port:INC:0
+  - port:INC:1
   - port:LD
+  - port:LD:0
+  - port:LD:1
   - port:LDPIPEEN
+  - port:LDPIPEEN:0
+  - port:LDPIPEEN:1
   - port:ODATAIN
+  - port:ODATAIN:0
+  - port:ODATAIN:1
   - port:REGRST
+  - port:REGRST:0
+  - port:REGRST:1
   - attr:CINVCTRL_SEL=FALSE
   - attr:CINVCTRL_SEL=TRUE
   - attr:DELAY_SRC=ODATAIN

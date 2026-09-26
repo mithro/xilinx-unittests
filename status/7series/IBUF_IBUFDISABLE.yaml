@@ -14,6 +14,8 @@ coverage:
   - port:O
   - port:I
   - port:IBUFDISABLE
+  - port:IBUFDISABLE:0
+  - port:IBUFDISABLE:1
   - attr:IBUF_LOW_PWR
   - attr:IOSTANDARD
   - attr:SIM_DEVICE

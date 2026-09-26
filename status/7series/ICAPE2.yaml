@@ -13,9 +13,78 @@ coverage:
   uncovered:
   - port:O
   - port:CLK
+  - port:CLK:edge
   - port:CSIB
+  - port:CSIB:0
+  - port:CSIB:1
   - port:I
+  - port:I[0]:0
+  - port:I[0]:1
+  - port:I[1]:0
+  - port:I[1]:1
+  - port:I[2]:0
+  - port:I[2]:1
+  - port:I[3]:0
+  - port:I[3]:1
+  - port:I[4]:0
+  - port:I[4]:1
+  - port:I[5]:0
+  - port:I[5]:1
+  - port:I[6]:0
+  - port:I[6]:1
+  - port:I[7]:0
+  - port:I[7]:1
+  - port:I[8]:0
+  - port:I[8]:1
+  - port:I[9]:0
+  - port:I[9]:1
+  - port:I[10]:0
+  - port:I[10]:1
+  - port:I[11]:0
+  - port:I[11]:1
+  - port:I[12]:0
+  - port:I[12]:1
+  - port:I[13]:0
+  - port:I[13]:1
+  - port:I[14]:0
+  - port:I[14]:1
+  - port:I[15]:0
+  - port:I[15]:1
+  - port:I[16]:0
+  - port:I[16]:1
+  - port:I[17]:0
+  - port:I[17]:1
+  - port:I[18]:0
+  - port:I[18]:1
+  - port:I[19]:0
+  - port:I[19]:1
+  - port:I[20]:0
+  - port:I[20]:1
+  - port:I[21]:0
+  - port:I[21]:1
+  - port:I[22]:0
+  - port:I[22]:1
+  - port:I[23]:0
+  - port:I[23]:1
+  - port:I[24]:0
+  - port:I[24]:1
+  - port:I[25]:0
+  - port:I[25]:1
+  - port:I[26]:0
+  - port:I[26]:1
+  - port:I[27]:0
+  - port:I[27]:1
+  - port:I[28]:0
+  - port:I[28]:1
+  - port:I[29]:0
+  - port:I[29]:1
+  - port:I[30]:0
+  - port:I[30]:1
+  - port:I[31]:0
+  - port:I[31]:1
   - port:RDWRB
+  - port:RDWRB:0
+  - port:RDWRB:1
   - attr:DEVICE_ID=32'h03651093
   - attr:DEVICE_ID=32'h036A2093
   - attr:DEVICE_ID=32'h036A4093
@@ -24,7 +93,49 @@ coverage:
   - attr:DEVICE_ID=32'h036B1093
   - attr:DEVICE_ID=32'h036B3093
   - attr:DEVICE_ID=32'h036C2093
-  - attr:DEVICE_ID=32'h036C
+  - attr:DEVICE_ID=32'h036C4093
+  - attr:DEVICE_ID=32'h036C6093
+  - attr:DEVICE_ID=32'h036DF093
+  - attr:DEVICE_ID=32'h036D1093
+  - attr:DEVICE_ID=32'h036D3093
+  - attr:DEVICE_ID=32'h036D5093
+  - attr:DEVICE_ID=32'h036D9093
+  - attr:DEVICE_ID=32'h0362C093
+  - attr:DEVICE_ID=32'h0362D093
+  - attr:DEVICE_ID=32'h0363B093
+  - attr:DEVICE_ID=32'h0364C093
+  - attr:DEVICE_ID=32'h0371F093
+  - attr:DEVICE_ID=32'h0372C093
+  - attr:DEVICE_ID=32'h0377F093
+  - attr:DEVICE_ID=32'h03627093
+  - attr:DEVICE_ID=32'h03628093
+  - attr:DEVICE_ID=32'h03631093
+  - attr:DEVICE_ID=32'h03636093
+  - attr:DEVICE_ID=32'h03642093
+  - attr:DEVICE_ID=32'h03647093
+  - attr:DEVICE_ID=32'h03656093
+  - attr:DEVICE_ID=32'h03667093
+  - attr:DEVICE_ID=32'h03671093
+  - attr:DEVICE_ID=32'h03676093
+  - attr:DEVICE_ID=32'h03680093
+  - attr:DEVICE_ID=32'h03681093
+  - attr:DEVICE_ID=32'h03682093
+  - attr:DEVICE_ID=32'h03687093
+  - attr:DEVICE_ID=32'h03691093
+  - attr:DEVICE_ID=32'h03692093
+  - attr:DEVICE_ID=32'h03696093
+  - attr:DEVICE_ID=32'h03702093
+  - attr:DEVICE_ID=32'h03704093
+  - attr:DEVICE_ID=32'h03711093
+  - attr:DEVICE_ID=32'h03722093
+  - attr:DEVICE_ID=32'h03727093
+  - attr:DEVICE_ID=32'h03731093
+  - attr:DEVICE_ID=32'h03747093
+  - attr:DEVICE_ID=32'h03751093
+  - attr:DEVICE_ID=32'h03752093
+  - attr:DEVICE_ID=32'h03762093
+  - attr:DEVICE_ID=32'h03771093
+  - attr:DEVICE_ID=32'h03782093
   - attr:ICAP_WIDTH=X32
   - attr:ICAP_WIDTH=X8
   - attr:ICAP_WIDTH=X16

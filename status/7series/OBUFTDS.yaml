@@ -14,7 +14,11 @@ coverage:
   - port:O
   - port:OB
   - port:I
+  - port:I:0
+  - port:I:1
   - port:T
+  - port:T:0
+  - port:T:1
   - attr:CAPACITANCE
   - attr:IOSTANDARD
   - attr:SLEW

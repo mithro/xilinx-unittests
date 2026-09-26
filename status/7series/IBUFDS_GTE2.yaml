@@ -14,6 +14,8 @@ coverage:
   - port:O
   - port:ODIV2
   - port:CEB
+  - port:CEB:0
+  - port:CEB:1
   - port:I
   - port:IB
   - attr:CLKCM_CFG

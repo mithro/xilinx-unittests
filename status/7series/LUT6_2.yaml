@@ -14,10 +14,22 @@ coverage:
   - port:O5
   - port:O6
   - port:I0
+  - port:I0:0
+  - port:I0:1
   - port:I1
+  - port:I1:0
+  - port:I1:1
   - port:I2
+  - port:I2:0
+  - port:I2:1
   - port:I3
+  - port:I3:0
+  - port:I3:1
   - port:I4
+  - port:I4:0
+  - port:I4:1
   - port:I5
+  - port:I5:0
+  - port:I5:1
   - attr:INIT
 notes: ''

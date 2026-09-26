@@ -16,15 +16,74 @@ coverage:
   - port:DOC
   - port:DOD
   - port:ADDRA
+  - port:ADDRA[0]:0
+  - port:ADDRA[0]:1
+  - port:ADDRA[1]:0
+  - port:ADDRA[1]:1
+  - port:ADDRA[2]:0
+  - port:ADDRA[2]:1
+  - port:ADDRA[3]:0
+  - port:ADDRA[3]:1
+  - port:ADDRA[4]:0
+  - port:ADDRA[4]:1
   - port:ADDRB
+  - port:ADDRB[0]:0
+  - port:ADDRB[0]:1
+  - port:ADDRB[1]:0
+  - port:ADDRB[1]:1
+  - port:ADDRB[2]:0
+  - port:ADDRB[2]:1
+  - port:ADDRB[3]:0
+  - port:ADDRB[3]:1
+  - port:ADDRB[4]:0
+  - port:ADDRB[4]:1
   - port:ADDRC
+  - port:ADDRC[0]:0
+  - port:ADDRC[0]:1
+  - port:ADDRC[1]:0
+  - port:ADDRC[1]:1
+  - port:ADDRC[2]:0
+  - port:ADDRC[2]:1
+  - port:ADDRC[3]:0
+  - port:ADDRC[3]:1
+  - port:ADDRC[4]:0
+  - port:ADDRC[4]:1
   - port:ADDRD
+  - port:ADDRD[0]:0
+  - port:ADDRD[0]:1
+  - port:ADDRD[1]:0
+  - port:ADDRD[1]:1
+  - port:ADDRD[2]:0
+  - port:ADDRD[2]:1
+  - port:ADDRD[3]:0
+  - port:ADDRD[3]:1
+  - port:ADDRD[4]:0
+  - port:ADDRD[4]:1
   - port:DIA
+  - port:DIA[0]:0
+  - port:DIA[0]:1
+  - port:DIA[1]:0
+  - port:DIA[1]:1
   - port:DIB
+  - port:DIB[0]:0
+  - port:DIB[0]:1
+  - port:DIB[1]:0
+  - port:DIB[1]:1
   - port:DIC
+  - port:DIC[0]:0
+  - port:DIC[0]:1
+  - port:DIC[1]:0
+  - port:DIC[1]:1
   - port:DID
+  - port:DID[0]:0
+  - port:DID[0]:1
+  - port:DID[1]:0
+  - port:DID[1]:1
   - port:WCLK
+  - port:WCLK:edge
   - port:WE
+  - port:WE:0
+  - port:WE:1
   - attr:INIT_A
   - attr:INIT_B
   - attr:INIT_C

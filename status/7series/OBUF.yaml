@@ -13,6 +13,8 @@ coverage:
   uncovered:
   - port:O
   - port:I
+  - port:I:0
+  - port:I:1
   - attr:CAPACITANCE
   - attr:DRIVE
   - attr:IOSTANDARD

@@ -13,11 +13,22 @@ coverage:
   uncovered:
   - port:Q
   - port:C
+  - port:C:edge
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:D1
+  - port:D1:0
+  - port:D1:1
   - port:D2
+  - port:D2:0
+  - port:D2:1
   - port:R
+  - port:R:0
+  - port:R:1
   - port:S
+  - port:S:0
+  - port:S:1
   - attr:DDR_CLK_EDGE=OPPOSITE_EDGE
   - attr:DDR_CLK_EDGE=SAME_EDGE
   - attr:INIT=0

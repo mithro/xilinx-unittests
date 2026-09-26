@@ -31,19 +31,34 @@ coverage:
   - port:LOCKED
   - port:PSDONE
   - port:CLKFBIN
+  - port:CLKFBIN:edge
   - port:CLKIN1
+  - port:CLKIN1:edge
   - port:CLKIN2
+  - port:CLKIN2:edge
   - port:CLKINSEL
+  - port:CLKINSEL:0
+  - port:CLKINSEL:1
   - port:DADDR
   - port:DCLK
+  - port:DCLK:edge
   - port:DEN
   - port:DI
   - port:DWE
   - port:PSCLK
+  - port:PSCLK:edge
   - port:PSEN
+  - port:PSEN:0
+  - port:PSEN:1
   - port:PSINCDEC
+  - port:PSINCDEC:0
+  - port:PSINCDEC:1
   - port:PWRDWN
+  - port:PWRDWN:rise
+  - port:PWRDWN:fall
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - attr:BANDWIDTH=OPTIMIZED
   - attr:BANDWIDTH=HIGH
   - attr:BANDWIDTH=LOW

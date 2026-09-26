@@ -22,6 +22,8 @@ coverage:
   - port:TMS
   - port:UPDATE
   - port:TDO
+  - port:TDO:0
+  - port:TDO:1
   - attr:DISABLE_JTAG
   - attr:JTAG_CHAIN=1
   - attr:JTAG_CHAIN=2

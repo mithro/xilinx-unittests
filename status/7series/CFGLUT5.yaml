@@ -15,13 +15,28 @@ coverage:
   - port:O5
   - port:O6
   - port:CDI
+  - port:CDI:0
+  - port:CDI:1
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:CLK
+  - port:CLK:edge
   - port:I0
+  - port:I0:0
+  - port:I0:1
   - port:I1
+  - port:I1:0
+  - port:I1:1
   - port:I2
+  - port:I2:0
+  - port:I2:1
   - port:I3
+  - port:I3:0
+  - port:I3:1
   - port:I4
+  - port:I4:0
+  - port:I4:1
   - attr:INIT
   - attr:IS_CLK_INVERTED=1'b0
   - attr:IS_CLK_INVERTED=1'b1

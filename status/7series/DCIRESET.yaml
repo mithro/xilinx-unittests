@@ -13,4 +13,6 @@ coverage:
   uncovered:
   - port:LOCKED
   - port:RST
+  - port:RST:0
+  - port:RST:1
 notes: ''

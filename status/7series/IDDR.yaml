@@ -14,10 +14,19 @@ coverage:
   - port:Q1
   - port:Q2
   - port:C
+  - port:C:edge
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:D
+  - port:D:0
+  - port:D:1
   - port:R
+  - port:R:0
+  - port:R:1
   - port:S
+  - port:S:0
+  - port:S:1
   - attr:DDR_CLK_EDGE=OPPOSITE_EDGE
   - attr:DDR_CLK_EDGE=SAME_EDGE
   - attr:DDR_CLK_EDGE=SAME_EDGE_PIPELINED

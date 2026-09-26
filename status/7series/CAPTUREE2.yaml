@@ -12,7 +12,10 @@ coverage:
   covered: []
   uncovered:
   - port:CAP
+  - port:CAP:0
+  - port:CAP:1
   - port:CLK
+  - port:CLK:edge
   - attr:ONESHOT=TRUE
   - attr:ONESHOT=FALSE
 notes: ''

@@ -16,23 +16,181 @@ coverage:
   - port:DOPADOP
   - port:DOPBDOP
   - port:ADDRARDADDR
+  - port:ADDRARDADDR[0]:0
+  - port:ADDRARDADDR[0]:1
+  - port:ADDRARDADDR[1]:0
+  - port:ADDRARDADDR[1]:1
+  - port:ADDRARDADDR[2]:0
+  - port:ADDRARDADDR[2]:1
+  - port:ADDRARDADDR[3]:0
+  - port:ADDRARDADDR[3]:1
+  - port:ADDRARDADDR[4]:0
+  - port:ADDRARDADDR[4]:1
+  - port:ADDRARDADDR[5]:0
+  - port:ADDRARDADDR[5]:1
+  - port:ADDRARDADDR[6]:0
+  - port:ADDRARDADDR[6]:1
+  - port:ADDRARDADDR[7]:0
+  - port:ADDRARDADDR[7]:1
+  - port:ADDRARDADDR[8]:0
+  - port:ADDRARDADDR[8]:1
+  - port:ADDRARDADDR[9]:0
+  - port:ADDRARDADDR[9]:1
+  - port:ADDRARDADDR[10]:0
+  - port:ADDRARDADDR[10]:1
+  - port:ADDRARDADDR[11]:0
+  - port:ADDRARDADDR[11]:1
+  - port:ADDRARDADDR[12]:0
+  - port:ADDRARDADDR[12]:1
+  - port:ADDRARDADDR[13]:0
+  - port:ADDRARDADDR[13]:1
   - port:ADDRBWRADDR
+  - port:ADDRBWRADDR[0]:0
+  - port:ADDRBWRADDR[0]:1
+  - port:ADDRBWRADDR[1]:0
+  - port:ADDRBWRADDR[1]:1
+  - port:ADDRBWRADDR[2]:0
+  - port:ADDRBWRADDR[2]:1
+  - port:ADDRBWRADDR[3]:0
+  - port:ADDRBWRADDR[3]:1
+  - port:ADDRBWRADDR[4]:0
+  - port:ADDRBWRADDR[4]:1
+  - port:ADDRBWRADDR[5]:0
+  - port:ADDRBWRADDR[5]:1
+  - port:ADDRBWRADDR[6]:0
+  - port:ADDRBWRADDR[6]:1
+  - port:ADDRBWRADDR[7]:0
+  - port:ADDRBWRADDR[7]:1
+  - port:ADDRBWRADDR[8]:0
+  - port:ADDRBWRADDR[8]:1
+  - port:ADDRBWRADDR[9]:0
+  - port:ADDRBWRADDR[9]:1
+  - port:ADDRBWRADDR[10]:0
+  - port:ADDRBWRADDR[10]:1
+  - port:ADDRBWRADDR[11]:0
+  - port:ADDRBWRADDR[11]:1
+  - port:ADDRBWRADDR[12]:0
+  - port:ADDRBWRADDR[12]:1
+  - port:ADDRBWRADDR[13]:0
+  - port:ADDRBWRADDR[13]:1
   - port:CLKARDCLK
+  - port:CLKARDCLK:edge
   - port:CLKBWRCLK
+  - port:CLKBWRCLK:edge
   - port:DIADI
+  - port:DIADI[0]:0
+  - port:DIADI[0]:1
+  - port:DIADI[1]:0
+  - port:DIADI[1]:1
+  - port:DIADI[2]:0
+  - port:DIADI[2]:1
+  - port:DIADI[3]:0
+  - port:DIADI[3]:1
+  - port:DIADI[4]:0
+  - port:DIADI[4]:1
+  - port:DIADI[5]:0
+  - port:DIADI[5]:1
+  - port:DIADI[6]:0
+  - port:DIADI[6]:1
+  - port:DIADI[7]:0
+  - port:DIADI[7]:1
+  - port:DIADI[8]:0
+  - port:DIADI[8]:1
+  - port:DIADI[9]:0
+  - port:DIADI[9]:1
+  - port:DIADI[10]:0
+  - port:DIADI[10]:1
+  - port:DIADI[11]:0
+  - port:DIADI[11]:1
+  - port:DIADI[12]:0
+  - port:DIADI[12]:1
+  - port:DIADI[13]:0
+  - port:DIADI[13]:1
+  - port:DIADI[14]:0
+  - port:DIADI[14]:1
+  - port:DIADI[15]:0
+  - port:DIADI[15]:1
   - port:DIBDI
+  - port:DIBDI[0]:0
+  - port:DIBDI[0]:1
+  - port:DIBDI[1]:0
+  - port:DIBDI[1]:1
+  - port:DIBDI[2]:0
+  - port:DIBDI[2]:1
+  - port:DIBDI[3]:0
+  - port:DIBDI[3]:1
+  - port:DIBDI[4]:0
+  - port:DIBDI[4]:1
+  - port:DIBDI[5]:0
+  - port:DIBDI[5]:1
+  - port:DIBDI[6]:0
+  - port:DIBDI[6]:1
+  - port:DIBDI[7]:0
+  - port:DIBDI[7]:1
+  - port:DIBDI[8]:0
+  - port:DIBDI[8]:1
+  - port:DIBDI[9]:0
+  - port:DIBDI[9]:1
+  - port:DIBDI[10]:0
+  - port:DIBDI[10]:1
+  - port:DIBDI[11]:0
+  - port:DIBDI[11]:1
+  - port:DIBDI[12]:0
+  - port:DIBDI[12]:1
+  - port:DIBDI[13]:0
+  - port:DIBDI[13]:1
+  - port:DIBDI[14]:0
+  - port:DIBDI[14]:1
+  - port:DIBDI[15]:0
+  - port:DIBDI[15]:1
   - port:DIPADIP
+  - port:DIPADIP[0]:0
+  - port:DIPADIP[0]:1
+  - port:DIPADIP[1]:0
+  - port:DIPADIP[1]:1
   - port:DIPBDIP
+  - port:DIPBDIP[0]:0
+  - port:DIPBDIP[0]:1
+  - port:DIPBDIP[1]:0
+  - port:DIPBDIP[1]:1
   - port:ENARDEN
+  - port:ENARDEN:0
+  - port:ENARDEN:1
   - port:ENBWREN
+  - port:ENBWREN:0
+  - port:ENBWREN:1
   - port:REGCEAREGCE
+  - port:REGCEAREGCE:0
+  - port:REGCEAREGCE:1
   - port:REGCEB
+  - port:REGCEB:0
+  - port:REGCEB:1
   - port:RSTRAMARSTRAM
+  - port:RSTRAMARSTRAM:0
+  - port:RSTRAMARSTRAM:1
   - port:RSTRAMB
+  - port:RSTRAMB:0
+  - port:RSTRAMB:1
   - port:RSTREGARSTREG
+  - port:RSTREGARSTREG:0
+  - port:RSTREGARSTREG:1
   - port:RSTREGB
+  - port:RSTREGB:0
+  - port:RSTREGB:1
   - port:WEA
+  - port:WEA[0]:0
+  - port:WEA[0]:1
+  - port:WEA[1]:0
+  - port:WEA[1]:1
   - port:WEBWE
+  - port:WEBWE[0]:0
+  - port:WEBWE[0]:1
+  - port:WEBWE[1]:0
+  - port:WEBWE[1]:1
+  - port:WEBWE[2]:0
+  - port:WEBWE[2]:1
+  - port:WEBWE[3]:0
+  - port:WEBWE[3]:1
   - attr:DOA_REG=0
   - attr:DOA_REG=1
   - attr:DOB_REG=0

@@ -13,9 +13,19 @@ coverage:
   uncovered:
   - port:O
   - port:IO
+  - port:IO:drive0
+  - port:IO:drive1
+  - port:IO:release
   - port:IOB
+  - port:IOB:drive0
+  - port:IOB:drive1
+  - port:IOB:release
   - port:I
+  - port:I:0
+  - port:I:1
   - port:T
+  - port:T:0
+  - port:T:1
   - attr:DIFF_TERM
   - attr:DQS_BIAS
   - attr:IBUF_LOW_PWR

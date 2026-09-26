@@ -23,22 +23,50 @@ coverage:
   - port:SHIFTOUT1
   - port:SHIFTOUT2
   - port:BITSLIP
+  - port:BITSLIP:0
+  - port:BITSLIP:1
   - port:CE1
+  - port:CE1:0
+  - port:CE1:1
   - port:CE2
+  - port:CE2:0
+  - port:CE2:1
   - port:CLK
+  - port:CLK:edge
   - port:CLKB
+  - port:CLKB:edge
   - port:CLKDIV
+  - port:CLKDIV:edge
   - port:CLKDIVP
+  - port:CLKDIVP:edge
   - port:D
+  - port:D:0
+  - port:D:1
   - port:DDLY
+  - port:DDLY:0
+  - port:DDLY:1
   - port:DYNCLKDIVSEL
+  - port:DYNCLKDIVSEL:0
+  - port:DYNCLKDIVSEL:1
   - port:DYNCLKSEL
+  - port:DYNCLKSEL:0
+  - port:DYNCLKSEL:1
   - port:OCLK
+  - port:OCLK:edge
   - port:OCLKB
+  - port:OCLKB:edge
   - port:OFB
+  - port:OFB:0
+  - port:OFB:1
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - port:SHIFTIN1
+  - port:SHIFTIN1:0
+  - port:SHIFTIN1:1
   - port:SHIFTIN2
+  - port:SHIFTIN2:0
+  - port:SHIFTIN2:1
   - attr:DATA_RATE=DDR
   - attr:DATA_RATE=SDR
   - attr:DATA_WIDTH=4

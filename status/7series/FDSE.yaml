@@ -13,9 +13,16 @@ coverage:
   uncovered:
   - port:Q
   - port:C
+  - port:C:edge
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:D
+  - port:D:0
+  - port:D:1
   - port:S
+  - port:S:0
+  - port:S:1
   - attr:INIT=1'b1
   - attr:INIT=1'b0
   - attr:IS_C_INVERTED=1'b0

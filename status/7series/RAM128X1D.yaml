@@ -14,10 +14,43 @@ coverage:
   - port:DPO
   - port:SPO
   - port:A
+  - port:A[0]:0
+  - port:A[0]:1
+  - port:A[1]:0
+  - port:A[1]:1
+  - port:A[2]:0
+  - port:A[2]:1
+  - port:A[3]:0
+  - port:A[3]:1
+  - port:A[4]:0
+  - port:A[4]:1
+  - port:A[5]:0
+  - port:A[5]:1
+  - port:A[6]:0
+  - port:A[6]:1
   - port:D
+  - port:D:0
+  - port:D:1
   - port:DPRA
+  - port:DPRA[0]:0
+  - port:DPRA[0]:1
+  - port:DPRA[1]:0
+  - port:DPRA[1]:1
+  - port:DPRA[2]:0
+  - port:DPRA[2]:1
+  - port:DPRA[3]:0
+  - port:DPRA[3]:1
+  - port:DPRA[4]:0
+  - port:DPRA[4]:1
+  - port:DPRA[5]:0
+  - port:DPRA[5]:1
+  - port:DPRA[6]:0
+  - port:DPRA[6]:1
   - port:WCLK
+  - port:WCLK:edge
   - port:WE
+  - port:WE:0
+  - port:WE:1
   - attr:INIT
   - attr:IS_WCLK_INVERTED=1'b0
   - attr:IS_WCLK_INVERTED=1'b1

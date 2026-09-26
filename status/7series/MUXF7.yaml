@@ -13,6 +13,12 @@ coverage:
   uncovered:
   - port:O
   - port:I0
+  - port:I0:0
+  - port:I0:1
   - port:I1
+  - port:I1:0
+  - port:I1:1
   - port:S
+  - port:S:0
+  - port:S:1
 notes: ''

@@ -20,9 +20,15 @@ coverage:
   - port:CLKOUT5
   - port:LOCKED
   - port:CLKFBIN
+  - port:CLKFBIN:edge
   - port:CLKIN1
+  - port:CLKIN1:edge
   - port:PWRDWN
+  - port:PWRDWN:rise
+  - port:PWRDWN:fall
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - attr:BANDWIDTH=OPTIMIZED
   - attr:BANDWIDTH=HIGH
   - attr:BANDWIDTH=LOW

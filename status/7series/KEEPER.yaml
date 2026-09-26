@@ -12,4 +12,7 @@ coverage:
   covered: []
   uncovered:
   - port:O
+  - port:O:drive0
+  - port:O:drive1
+  - port:O:release
 notes: ''

@@ -16,14 +16,30 @@ coverage:
   - port:EOS
   - port:PREQ
   - port:CLK
+  - port:CLK:edge
   - port:GSR
+  - port:GSR:rise
+  - port:GSR:fall
   - port:GTS
+  - port:GTS:rise
+  - port:GTS:fall
   - port:KEYCLEARB
+  - port:KEYCLEARB:0
+  - port:KEYCLEARB:1
   - port:PACK
+  - port:PACK:0
+  - port:PACK:1
   - port:USRCCLKO
+  - port:USRCCLKO:edge
   - port:USRCCLKTS
+  - port:USRCCLKTS:0
+  - port:USRCCLKTS:1
   - port:USRDONEO
+  - port:USRDONEO:0
+  - port:USRDONEO:1
   - port:USRDONETS
+  - port:USRDONETS:0
+  - port:USRDONETS:1
   - attr:PROG_USR=FALSE
   - attr:PROG_USR=TRUE
   - attr:SIM_CCLK_FREQ

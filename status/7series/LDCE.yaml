@@ -13,9 +13,17 @@ coverage:
   uncovered:
   - port:Q
   - port:CLR
+  - port:CLR:rise
+  - port:CLR:fall
   - port:D
+  - port:D:0
+  - port:D:1
   - port:G
+  - port:G:rise
+  - port:G:fall
   - port:GE
+  - port:GE:rise
+  - port:GE:fall
   - attr:INIT=1'b0
   - attr:INIT=1'b1
   - attr:IS_CLR_INVERTED=1'b0

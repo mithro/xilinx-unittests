@@ -24,13 +24,19 @@ coverage:
   - port:MUXADDR
   - port:OT
   - port:CONVST
+  - port:CONVST:0
+  - port:CONVST:1
   - port:CONVSTCLK
+  - port:CONVSTCLK:edge
   - port:DADDR
   - port:DCLK
+  - port:DCLK:edge
   - port:DEN
   - port:DI
   - port:DWE
   - port:RESET
+  - port:RESET:rise
+  - port:RESET:fall
   - port:VAUXN
   - port:VAUXP
   - port:VN

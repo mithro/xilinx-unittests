@@ -14,12 +14,28 @@ coverage:
   - port:O
   - port:OB
   - port:IO
+  - port:IO:drive0
+  - port:IO:drive1
+  - port:IO:release
   - port:IOB
+  - port:IOB:drive0
+  - port:IOB:drive1
+  - port:IOB:release
   - port:DCITERMDISABLE
+  - port:DCITERMDISABLE:0
+  - port:DCITERMDISABLE:1
   - port:I
+  - port:I:0
+  - port:I:1
   - port:IBUFDISABLE
+  - port:IBUFDISABLE:0
+  - port:IBUFDISABLE:1
   - port:TM
+  - port:TM:0
+  - port:TM:1
   - port:TS
+  - port:TS:0
+  - port:TS:1
   - attr:DIFF_TERM
   - attr:DQS_BIAS
   - attr:IBUF_LOW_PWR

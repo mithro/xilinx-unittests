@@ -19,25 +19,63 @@ coverage:
   - port:TFB
   - port:TQ
   - port:CLK
+  - port:CLK:edge
   - port:CLKDIV
+  - port:CLKDIV:edge
   - port:D1
+  - port:D1:0
+  - port:D1:1
   - port:D2
+  - port:D2:0
+  - port:D2:1
   - port:D3
+  - port:D3:0
+  - port:D3:1
   - port:D4
+  - port:D4:0
+  - port:D4:1
   - port:D5
+  - port:D5:0
+  - port:D5:1
   - port:D6
+  - port:D6:0
+  - port:D6:1
   - port:D7
+  - port:D7:0
+  - port:D7:1
   - port:D8
+  - port:D8:0
+  - port:D8:1
   - port:OCE
+  - port:OCE:0
+  - port:OCE:1
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - port:SHIFTIN1
+  - port:SHIFTIN1:0
+  - port:SHIFTIN1:1
   - port:SHIFTIN2
+  - port:SHIFTIN2:0
+  - port:SHIFTIN2:1
   - port:T1
+  - port:T1:0
+  - port:T1:1
   - port:T2
+  - port:T2:0
+  - port:T2:1
   - port:T3
+  - port:T3:0
+  - port:T3:1
   - port:T4
+  - port:T4:0
+  - port:T4:1
   - port:TBYTEIN
+  - port:TBYTEIN:0
+  - port:TBYTEIN:1
   - port:TCE
+  - port:TCE:0
+  - port:TCE:1
   - attr:DATA_RATE_OQ=DDR
   - attr:DATA_RATE_OQ=SDR
   - attr:DATA_RATE_TQ=DDR

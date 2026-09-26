@@ -16,7 +16,11 @@ coverage:
   - port:I
   - port:IB
   - port:IBUFDISABLE
+  - port:IBUFDISABLE:0
+  - port:IBUFDISABLE:1
   - port:INTERMDISABLE
+  - port:INTERMDISABLE:0
+  - port:INTERMDISABLE:1
   - attr:DIFF_TERM
   - attr:DQS_BIAS
   - attr:IBUF_LOW_PWR

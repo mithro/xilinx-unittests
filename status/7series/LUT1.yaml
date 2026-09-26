@@ -13,5 +13,7 @@ coverage:
   uncovered:
   - port:O
   - port:I0
+  - port:I0:0
+  - port:I0:1
   - attr:INIT
 notes: ''

@@ -14,11 +14,22 @@ coverage:
   - port:Q1
   - port:Q2
   - port:C
+  - port:C:edge
   - port:CB
+  - port:CB:0
+  - port:CB:1
   - port:CE
+  - port:CE:0
+  - port:CE:1
   - port:D
+  - port:D:0
+  - port:D:1
   - port:R
+  - port:R:0
+  - port:R:1
   - port:S
+  - port:S:0
+  - port:S:1
   - attr:DDR_CLK_EDGE
   - attr:INIT_Q1=0
   - attr:INIT_Q1=1

@@ -13,4 +13,5 @@ coverage:
   uncovered:
   - port:O
   - port:I
+  - port:I:edge
 notes: ''

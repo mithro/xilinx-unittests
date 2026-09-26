@@ -22,14 +22,98 @@ coverage:
   - port:WRCOUNT
   - port:WRERR
   - port:DI
+  - port:DI[0]:0
+  - port:DI[0]:1
+  - port:DI[1]:0
+  - port:DI[1]:1
+  - port:DI[2]:0
+  - port:DI[2]:1
+  - port:DI[3]:0
+  - port:DI[3]:1
+  - port:DI[4]:0
+  - port:DI[4]:1
+  - port:DI[5]:0
+  - port:DI[5]:1
+  - port:DI[6]:0
+  - port:DI[6]:1
+  - port:DI[7]:0
+  - port:DI[7]:1
+  - port:DI[8]:0
+  - port:DI[8]:1
+  - port:DI[9]:0
+  - port:DI[9]:1
+  - port:DI[10]:0
+  - port:DI[10]:1
+  - port:DI[11]:0
+  - port:DI[11]:1
+  - port:DI[12]:0
+  - port:DI[12]:1
+  - port:DI[13]:0
+  - port:DI[13]:1
+  - port:DI[14]:0
+  - port:DI[14]:1
+  - port:DI[15]:0
+  - port:DI[15]:1
+  - port:DI[16]:0
+  - port:DI[16]:1
+  - port:DI[17]:0
+  - port:DI[17]:1
+  - port:DI[18]:0
+  - port:DI[18]:1
+  - port:DI[19]:0
+  - port:DI[19]:1
+  - port:DI[20]:0
+  - port:DI[20]:1
+  - port:DI[21]:0
+  - port:DI[21]:1
+  - port:DI[22]:0
+  - port:DI[22]:1
+  - port:DI[23]:0
+  - port:DI[23]:1
+  - port:DI[24]:0
+  - port:DI[24]:1
+  - port:DI[25]:0
+  - port:DI[25]:1
+  - port:DI[26]:0
+  - port:DI[26]:1
+  - port:DI[27]:0
+  - port:DI[27]:1
+  - port:DI[28]:0
+  - port:DI[28]:1
+  - port:DI[29]:0
+  - port:DI[29]:1
+  - port:DI[30]:0
+  - port:DI[30]:1
+  - port:DI[31]:0
+  - port:DI[31]:1
   - port:DIP
+  - port:DIP[0]:0
+  - port:DIP[0]:1
+  - port:DIP[1]:0
+  - port:DIP[1]:1
+  - port:DIP[2]:0
+  - port:DIP[2]:1
+  - port:DIP[3]:0
+  - port:DIP[3]:1
   - port:RDCLK
+  - port:RDCLK:edge
   - port:RDEN
+  - port:RDEN:0
+  - port:RDEN:1
   - port:REGCE
+  - port:REGCE:0
+  - port:REGCE:1
   - port:RST
+  - port:RST:rise
+  - port:RST:fall
   - port:RSTREG
+  - port:RSTREG:0
+  - port:RSTREG:1
   - port:WRCLK
+  - port:WRCLK:edge
   - port:WREN
+  - port:WREN:0
+  - port:WREN:1
   - attr:ALMOST_EMPTY_OFFSET
   - attr:ALMOST_FULL_OFFSET
   - attr:DATA_WIDTH=4
