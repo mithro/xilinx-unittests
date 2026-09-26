@@ -694,11 +694,16 @@ def test_cli_exit_codes_never_collide(repo):
 
 
 def _committed(root: Path) -> None:
-    """Make ``root`` a committed git checkout (build/ ignored), so ``xut run`` stamps a
-    clean tree hash: crosscheck never compares unstamped results (gate review (a) #1)."""
+    """Make ``root`` a committed git checkout with the repo's ``.gitignore`` (build/,
+    and the ``__pycache__/`` a python run writes beside a test's ``vectors/gen.py``), so
+    ``xut run`` stamps a clean tree hash: crosscheck never compares unstamped results
+    (gate review (a) #1)."""
+    import shutil
     import subprocess
 
-    (root / ".gitignore").write_text("build/\n")
+    from conftest import REPO_GITIGNORE
+
+    shutil.copyfile(REPO_GITIGNORE, root / ".gitignore")
     for args in (
         ["init", "-q", "-b", "main"],
         ["config", "user.email", "t@example.com"],

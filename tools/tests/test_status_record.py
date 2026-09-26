@@ -12,6 +12,7 @@ import jsonschema
 import pytest
 import yaml
 from click.testing import CliRunner
+from conftest import REPO_GITIGNORE
 
 from xut.cli import main
 from xut.errors import XutError
@@ -166,7 +167,7 @@ def repo(tmp_path):
     (root / "findings/FDRE-sim-divergence-L1-ce_hold.md").write_text("# x\n\n- Status: open\n")
     (root / "findings/FDRE-doc-gap-L1-capture.md").write_text("# x\n\n- Status: closed\n")
     (root / "findings/FDSE-doc-gap-L1-capture.md").write_text("# x\n\n- Status: open\n")
-    (root / ".gitignore").write_text("build/\n")
+    shutil.copyfile(REPO_GITIGNORE, root / ".gitignore")
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
