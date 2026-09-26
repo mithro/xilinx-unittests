@@ -161,6 +161,14 @@ class ForcedReg:
     triggers: set[str] = field(default_factory=set)
     enablers: set[str] = field(default_factory=set)
     stale_reads: set[StaleRead] = field(default_factory=set)
+    # Regs written by a non-blocking assignment in the trigger cone (ruling S28): the forcing
+    # block can then run from the NBA region, which the rewrite cannot make order-safe on
+    # Verilator; the rewrite refuses such a reg.
+    nba_cone: set[str] = field(default_factory=set)
+    # Some override expression is not a constant (reads a signal or calls a function).
+    # Icarus 12 evaluates such a procedural continuous assign once ("sorry"), so Task 14
+    # needs another oracle for the original model (ruling S28b).
+    nonconstant: bool = False
 
 
 @dataclass
@@ -188,6 +196,11 @@ class Analysis:
         return sorted(set().union(*(f.triggers for f in self._regs())))
 
     @property
+    def nonconstant_overrides(self) -> bool:
+        """Any override expression of the model or its helpers is not a constant."""
+        return any(f.nonconstant for f in self._regs())
+
+    @property
     def enablers(self) -> list[str]:
         en = set().union(*(f.enablers for f in self._regs()))
         return sorted(en - set(self.triggers))
@@ -197,6 +210,7 @@ class Analysis:
 class _Driver:
     reads: frozenset[str]
     clocks: frozenset[str]
+    nba: bool = False  # a non-blocking assignment (ruling S28: refused in a trigger cone)
 
 
 @dataclass(frozen=True)
@@ -537,6 +551,8 @@ class _Walker:
         self.regs: dict[str, ForcedReg] = {}
         self.generate_blocks: set[int] = set()  # syntax offsets of elaborated generate blocks
         self._stack: list[str] = []  # hierarchical paths of the subroutines being entered
+        # NBA-written regs met by trace() (shared by the whole instance tree)
+        self.nba_sink: set[str] = parent.nba_sink if parent is not None else set()
 
     # ---- helpers ---------------------------------------------------------------------------
     def err(self, msg: str) -> TransformError:
@@ -817,9 +833,13 @@ class _Walker:
             self.drivers[name].append(_Driver(reads, frozenset()))
 
     def drive(
-        self, nv: ast.Expression, reads: set[str] | frozenset[str], clocks: frozenset[str]
+        self,
+        nv: ast.Expression,
+        reads: set[str] | frozenset[str],
+        clocks: frozenset[str],
+        nba: bool = False,
     ) -> None:
-        self.drivers[self.key(nv.symbol)].append(_Driver(frozenset(reads), clocks))
+        self.drivers[self.key(nv.symbol)].append(_Driver(frozenset(reads), clocks, nba))
 
     def gate(self, prim: ast.PrimitiveInstanceSymbol) -> None:
         """buf/not/and/or/nand/nor/xor/xnor/bufif*/notif* and UDPs: outputs <- inputs."""
@@ -1061,7 +1081,7 @@ class _Walker:
             self.select_reads(e.left, reads)
             for nv in self.lvalues(e.left):
                 name = self.key(nv.symbol)
-                self.drive(nv, reads, frozenset(ctx.edges - reads))
+                self.drive(nv, reads, frozenset(ctx.edges - reads), e.isNonBlocking)
                 if name in self.regs:
                     self.regs[name].writes.add(self.span(nv))
         elif e.kind == _EK.Call and not e.isSystemCall:
@@ -1125,6 +1145,16 @@ class _Walker:
             if "." in r and not r.startswith("glbl."):
                 raise self.err(f"override expression of {name} reads local {r}")
         self.regs[name].overrides.append((self.span(s), self.span(a.right)))
+        calls: list[bool] = []
+
+        def call(n: _AstNode) -> ast.VisitAction:
+            if n.kind == _EK.Call:
+                calls.append(True)
+            return ast.VisitAction.Advance
+
+        a.right.visit(call)
+        if rhs or calls:
+            self.regs[name].nonconstant = True
         self.drivers[name].append(
             _Driver(frozenset(rhs | conds | ctx.levels), frozenset(ctx.edges - rhs - conds))
         )
@@ -1311,7 +1341,7 @@ class _Walker:
         def v(n: _AstNode) -> ast.VisitAction:
             if n.kind == _EK.Assignment:
                 for nv in self.lvalues(n.left):
-                    self.drive(nv, reads, frozenset(ctx.edges - reads))
+                    self.drive(nv, reads, frozenset(ctx.edges - reads), n.isNonBlocking)
             return ast.VisitAction.Advance
 
         s.visit(v)
@@ -1376,6 +1406,9 @@ class _Walker:
                     f"cannot resolve the driver of {s} while tracing triggers "
                     "(spec §6.2: never drop a signal silently)"
                 )
+            if any(d.nba for d in self.drivers[s]):
+                # Ruling S28: recorded here, refused by the rewrite (ForcedReg.nba_cone)
+                self.nba_sink.add(s if self.parent is None else f"{self.defname}.{s}")
             for d in self.drivers[s]:
                 work += [(r, via_clock) for r in d.reads]
                 work += [(c, True) for c in d.clocks]
@@ -1490,6 +1523,8 @@ def _merge_reg(m: ForcedReg, x: ForcedReg, model: str) -> None:
     m.sensitivity |= x.sensitivity
     m.triggers |= x.triggers
     m.enablers |= x.enablers
+    m.nba_cone |= x.nba_cone
+    m.nonconstant |= x.nonconstant
     active = {r.span: r.active for r in m.stale_reads}
     for r in x.stale_reads:
         was = active.get(r.span, r.active)
@@ -1533,7 +1568,9 @@ def analyze(
                         merged.setdefault(w.defname, {}).setdefault(x.name, _copy(x)), x, module
                     )
                     continue
+                w.nba_sink.clear()
                 trig, en = w.lift(*w.trace(x.sensitivity))
+                x.nba_cone = set(w.nba_sink)
                 if not trig and x.name in w.always_forced:
                     raise w.err(
                         f"{x.name}: no trigger found (the forcing block has no sensitivity "
