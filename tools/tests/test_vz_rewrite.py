@@ -15,6 +15,7 @@ FIX = Path(__file__).parent / "fixtures" / "verilatorize"
 GLBL = FIX / "glbl.v"
 # The spec §6.2 fixture set (Task 14 equivalence-checks every one of these). MMCMVZ (vz_cone.v)
 # left it under ruling S28: its trigger crosses an NBA-written register, so it is refused.
+# VZCEA joined it under ruling S31(3): 16 fixtures.
 MODS = {
     "vz_single.v": "VZSINGLE",
     "vz_multi.v": "VZMULTI",
@@ -31,6 +32,8 @@ MODS = {
     "vz_generate.v": "VZGEN",
     "vz_ranges.v": "VZRANGE",
     "vz_ifelse.v": "VZIFELSE",
+    # ruling S31(3): an NBA-triggered assign that is never deassigned (accepted, S29(1))
+    "vz_cea.v": "VZCEA",
 }
 # Ruling S18 fixtures: stale reads, real/integer forced regs, helper modules, `output reg`
 # ports, no-op deassigns, never-written variables.
