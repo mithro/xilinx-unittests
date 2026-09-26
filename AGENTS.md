@@ -139,8 +139,27 @@ log/<YYYY-MM-DDTHHMM>-<branch-slug>-<slug>.md
 
 Update `status/7series/<PRIM>.yaml` whenever a result changes: a new
 level × runner × flow result, a new finding, a coverage bin flipping
-covered/uncovered. Include the tree hash of the test directory and the
-tool/model versions it was measured with (spec §11).
+covered/uncovered. Record it with `xut status record`, never by hand. That
+command writes the tree hash and the tool versions per model source (spec §11).
+
+The tree hash covers the primitive's unit-owned inputs:
+- `tests/<family>/<group>/<PRIM>/` and `tests/<family>/<group>/_shared/<unit>/`;
+- the golden model (`<prim>.py` and `_common/<unit>.py`);
+- `<PRIM>.overrides.yaml`.
+
+Record in this order:
+1. Commit those inputs.
+2. `xut run` against each model source: it stamps `tree_hash`, `head` and
+   `dirty` into every `result.json`.
+3. `xut status record`.
+
+`xut status record` refuses uncommitted inputs, and any result that is stale
+(another tree hash) or dirty. After changing an input, commit and re-run;
+there is no override. Each model source keeps its own tree hash, tools and
+results (`results_by_model_source`).
+
+`xut status init --refresh-bins` updates the bins of never-recorded stubs to
+the current catalog. The orchestrator runs it on `main` only.
 
 ## 8. Clean-room golden models
 
