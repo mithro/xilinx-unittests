@@ -403,11 +403,19 @@ def _with_defaults(path, model, cfg):
     return text
 
 
-def _lint(ms, model, work, configs):
+def _lint(ms, model, work, entry):
     """(verilator ok under the default and every generate configuration, icarus ok, icarus
-    errors the ORIGINAL model has too) for ``model``'s transformed copy, logging to ``work``."""
+    errors the ORIGINAL model has too, wrapped) for ``model``'s transformed copy, logging to
+    ``work``. ``wrapped`` (z-compare models only, else None): Verilator lints the copy
+    instantiated below ``xut_dut``, the runner's situation, where an input compared with z
+    used to fail ("tristate in top-level IO", ruling S38); a string when no wrapper can be
+    generated for the model (why)."""
+    from xut.catalog.unisim import parse_module
     from xut.container import executor_for
     from xut.verilatorize.driver import model_files, vz_dir
+    from xut.wrap import WrapError, spec_from_hdl, write_dut
+
+    configs = entry.generate_configs
 
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
@@ -432,20 +440,55 @@ def _lint(ms, model, work, configs):
              ex.guest(copy), glbl],
             cwd=work, log=work / f"verilator-cfg{k}.log", timeout_s=600,
         )  # fmt: skip
+    wrapped: bool | str | None = None
+    if "zcmp" in entry.rewrites:
+        mod = parse_module(model_files(ms)[model], model)
+        try:
+            write_dut(spec_from_hdl(mod, "default", {}, raw_clock_out=True), work / "dut")
+        except WrapError as e:
+            wrapped = f"no wrapper: {e}"
+        else:
+            wrapped = ex.run(
+                ["verilator", "--lint-only", "--timing", "-Wno-fatal", "-Wno-lint",
+                 "-Wno-style", "-Wno-MULTITOP", "-y", ex.guest(vz_dir(ms)), *libs,
+                 "+libext+.v", ex.guest(work / "dut" / "xut_dut.v"), glbl],
+                cwd=work, log=work / "verilator-wrapped.log", timeout_s=600,
+            ) == 0  # fmt: skip
     iv = ex.run(
         ["iverilog", "-g2012", "-o", "sim.vvp", "-s", model, "-s", "glbl",
          "-y", ex.guest(vz_dir(ms)), *libs, src, glbl],
         cwd=work, log=work / "iverilog.log", timeout_s=600,
     )  # fmt: skip
     if iv == 0:
-        return vl == 0, True, False
+        return vl == 0, True, False, wrapped
     orig = ex.guest(model_files(ms)[model])
     ex.run(
         ["iverilog", "-g2012", "-o", "orig.vvp", "-s", model, "-s", "glbl", *libs, orig, glbl],
         cwd=work, log=work / "iverilog-orig.log", timeout_s=600,
     )  # fmt: skip
     new = _errors(work / "iverilog.log")
-    return vl == 0, False, bool(new) and new <= _errors(work / "iverilog-orig.log")
+    return vl == 0, False, bool(new) and new <= _errors(work / "iverilog-orig.log"), wrapped
+
+
+def _inherent(work, unsupported):
+    """Why every Verilator ``%Error`` in ``work``'s logs is not the transform's, or None:
+    ``secureip`` (only missing ``SIP_*`` modules: encrypted models no open simulator has),
+    ``unsupported dependency`` (every error is in the file of a model the transform refused,
+    which Verilator then reads unmodified)."""
+    errors = [
+        ln
+        for f in sorted(work.glob("verilator*.log"))
+        for ln in f.read_text(errors="replace").splitlines()
+        if ln.startswith("%Error") and not ln.startswith("%Error: Exiting")
+    ]
+    if not errors:
+        return None
+    if all("MODMISSING" in ln and "'SIP_" in ln for ln in errors):
+        return "secureip"
+    files = {re.search(r"/(\w+)\.v:\d+", ln) for ln in errors}
+    if None not in files and {f.group(1) for f in files} <= unsupported:
+        return "unsupported dependency: " + ",".join(sorted({f.group(1) for f in files}))
+    return None
 
 
 # Refused, each for a reason the transform cannot prove it handles:
@@ -456,16 +499,34 @@ _NBA_BOTH = [
     "PLLE2_ADV", "PLLE3_ADV", "PLLE4_ADV", "SRL16E", "SRLC16E", "SRLC32E",
     "RAMB18E1", "RAMB36E1",
 ]  # fmt: skip
+#   the IO buffers below: a z-literal comparison of an internal net or an inout port, which
+#   the z-compare rewrite refuses (ruling S38: input ports only).
+_ZREF_BOTH = [
+    "DPHY_DIFFINBUF", "IBUFDS", "IBUFDSE3", "IBUFDS_DPHY", "IBUFDS_IBUFDISABLE",
+    "IBUFDS_IBUFDISABLE_INT", "IBUFDS_INTERMDISABLE", "IBUFDS_INTERMDISABLE_INT", "IOBUFDS",
+    "IOBUFDSE3", "IOBUFDS_DCIEN", "IOBUFDS_DIFF_OUT", "IOBUFDS_DIFF_OUT_DCIEN",
+    "IOBUFDS_DIFF_OUT_INTERMDISABLE", "IOBUFDS_INTERMDISABLE",
+]  # fmt: skip
+_ZREF_2025 = [
+    "IBUFDSE3_XP5", "IBUFDS_DPHY_XP5", "IBUFDS_IBUFDISABLE_XP5", "IBUFDS_XP5", "IBUFE3_XP5",
+    "IOBUFDSE3_XP5", "IOBUFDS_COMP", "IOBUFDS_COMP_ODDR", "IOBUFDS_DCIEN_XP5",
+    "IOBUFDS_DIFF_OUT_DCIEN_XP5", "IOBUFDS_DIFF_OUT_INTERMDISABLE_ODDR", "IOBUFDS_DIFF_OUT_ODDR",
+    "IOBUFDS_DIFF_OUT_XP5", "IOBUFDS_INTERMDISABLE_ODDR", "IOBUFDS_ODDR", "IOBUFDS_XP5",
+    "IOBUFE3", "IOBUFE3_XP5", "IOBUF_ODDR",
+]  # fmt: skip
+_ZREF = {*_ZREF_BOTH, *_ZREF_2025}
 REFUSED = {
-    "unisim-2025.2": sorted([*_NBA_BOTH, "MBUFGCE_DIV", "MBUFG_GT", "PLLE4XP_ADV"]),
-    "unisim-gh-2020.1": sorted(_NBA_BOTH),
+    "unisim-2025.2": sorted(
+        [*_NBA_BOTH, "MBUFGCE_DIV", "MBUFG_GT", "PLLE4XP_ADV", *_ZREF_BOTH, *_ZREF_2025]
+    ),
+    "unisim-gh-2020.1": sorted([*_NBA_BOTH, *_ZREF_BOTH]),
 }
 
 
 @pytest.mark.slow
 @pytest.mark.container
 @pytest.mark.skipif(_no_image, reason="xut-sim image not built")
-@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 27), ("unisim-gh-2020.1", 25)])
+@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 157), ("unisim-gh-2020.1", 94)])
 def test_sweep_every_transformed_model_lints(source, n_transformed):
     from concurrent.futures import ThreadPoolExecutor
 
@@ -481,33 +542,48 @@ def test_sweep_every_transformed_model_lints(source, n_transformed):
     assert len(done) == n_transformed, refused
     assert sorted(refused) == REFUSED[source], refused
     for m, why in refused.items():
-        assert ("nested generate" if m.startswith("RAMB") else "NBA-written reg") in why, why
+        want = "nested generate" if m.startswith("RAMB") else "NBA-written reg"
+        assert ("z-literal comparison of" if m in _ZREF else want) in why, why
     for m in ("FDRE", "FDSE", "FDCE", "FDPE"):
         e = man.models[m]
         assert "glbl.GSR" in e.triggers and len(e.generate_configs) > 1
+        assert e.rewrites == ["shadow", "zcmp"]
     root = repo_root() / "build" / "vz-lint-sweep" / source
     with ThreadPoolExecutor(16) as pool:
         res = dict(
             zip(
                 done,
-                pool.map(lambda m: _lint(ms, m, root / m, man.models[m].generate_configs), done),
+                pool.map(lambda m: _lint(ms, m, root / m, man.models[m]), done),
                 strict=True,
             )
         )
     vl_ok = [m for m, r in res.items() if r[0]]
     iv_ok = [m for m, r in res.items() if r[1]]
     iv_orig = [m for m, r in res.items() if r[2]]
+    wrapped = {m: r[3] for m, r in res.items() if r[3] is not None}
     n_cfg = sum(len(man.models[m].generate_configs or [{}]) for m in done)
+    no_wrap = sorted(m for m, w in wrapped.items() if isinstance(w, str))
+    wrap_ok = sorted(m for m, w in wrapped.items() if w is True)
+    # Verilator failures that are not the transform's: the model instantiates an encrypted
+    # secureip module (SIP_*) no open simulator has, or a model the transform refused
+    unsup = {m for m, e in man.models.items() if e.status == "unsupported"}
+    inherent = {m: _inherent(root / m, unsup) for m, r in res.items() if not r[0] or r[3] is False}
     (root / "summary.txt").write_text(
         f"{source}: transformed {len(done)}; verilator lint clean {len(vl_ok)} (every one of "
         f"{n_cfg} configurations); icarus clean "
-        f"{len(iv_ok)}; icarus fails as the original does: {iv_orig}\n"
+        f"{len(iv_ok)}; icarus fails as the original does: {iv_orig}; z-compare models "
+        f"linted under the xut_dut wrapper: {len(wrap_ok)} clean of {len(wrapped)}, no "
+        f"wrapper for {no_wrap}; Verilator failures not the transform's: {inherent}\n"
     )
-    bad = [f"{m}: verilator={v} icarus={i} (logs {root / m})" for m, (v, i, o) in res.items()
-           if not v or not (i or o)]  # fmt: skip
+    bad = [f"{m}: verilator={v} icarus={i} wrapped={w} (logs {root / m})"
+           for m, (v, i, o, w) in res.items()
+           if ((not v or w is False) and inherent.get(m) is None) or not (i or o)]  # fmt: skip
     assert not bad, "\n".join(bad)
-    # known Icarus 12 limitation of the model itself: a scalar port redeclared [1:0]
-    assert iv_orig == (["OSERDESE1"] if "OSERDESE1" in done else [])
+    # Icarus fails the original identically: a scalar port redeclared [1:0] (OSERDESE1), or
+    # an encrypted secureip model Icarus cannot have (SIP_*)
+    for m in iv_orig:
+        log = (root / m / "iverilog-orig.log").read_text()
+        assert m == "OSERDESE1" or "Unknown module type: SIP_" in log, (m, log[-500:])
 
 
 _FRESH_TB = """`timescale 1ps/1ps
