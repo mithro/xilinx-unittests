@@ -68,12 +68,19 @@ def test_c4_explicit_init(prim, init):
 
 
 @pytest.mark.parametrize("prim", PRIMS)
-def test_power_on_hits_only_gsr_init(prim):
-    """Ruling S32(2): kills the mutant that credits every claim at power-on."""
-    m = get("7series", prim)({})
+@pytest.mark.parametrize("inv_ctrl", [0, 1])
+@pytest.mark.parametrize("init", [0, 1])
+def test_power_on_hits_only_gsr_init(prim, inv_ctrl, init):
+    """Ruling S32(2): kills the mutant that credits every claim at power-on. Review
+    Task 26 Minor 1: also under IS_<ctrl>_INVERTED=1, where an undriven (0) control pin
+    would read as active -- power-on must still give INIT and hit only C4, not C3."""
+    m = get("7series", prim)(
+        {"INIT": f"1'b{init}", f"IS_{KINDS[prim].ctrl}_INVERTED": f"1'b{inv_ctrl}"}
+    )
     assert m.claims_hit == set()  # nothing is decided before power-on
     m.power_on()
     assert m.claims_hit == {f"{prim}.C4"}  # only GSR->INIT; C1-C3, C5-C7 stay unhit
+    assert q(m) == Out(str(init), f"doc:{_PAGES[prim][0]}")
 
 
 @pytest.mark.parametrize("prim", PRIMS)
@@ -262,7 +269,8 @@ ASYNC_PRIMS = [p for p in PRIMS if KINDS[p].is_async]
 @pytest.mark.parametrize("inv_ctrl", [0, 1])
 def test_gsr_versus_async_control_inferred_control_wins(prim, inv_ctrl):
     """Ruling S30/S41(1): GSR and an active async control that disagree with INIT give
-    the control value, tagged inferred: (never a don't-care), and still hit C3."""
+    the control value, tagged inferred: (never a don't-care). Ruling S44: that inferred
+    outcome credits no claim; the documented force at GSR release then hits C3."""
     k, f = KINDS[prim], forced(prim)
     inv = {f"IS_{k.ctrl}_INVERTED": f"1'b{inv_ctrl}"}
     same = fresh(prim, INIT=f"1'b{f}", **inv)
@@ -270,13 +278,18 @@ def test_gsr_versus_async_control_inferred_control_wins(prim, inv_ctrl):
     same.set_input(k.ctrl, 1 ^ inv_ctrl)
     assert q(same).bits == str(f) and q(same).prov.startswith("doc:")  # both rules agree
     m = fresh(prim, INIT=f"1'b{1 - f}", **inv)
+    m.claims_hit.clear()  # review Task 26 Minor 2: judge only what the steps below hit
     m.glbl("GSR", 1)
+    assert m.claims_hit == {f"{prim}.C4"}  # GSR, control inactive: documented INIT
+    m.claims_hit.clear()
     m.set_input(k.ctrl, 1 ^ inv_ctrl)
     assert q(m).bits == str(f) and q(m).prov.startswith("inferred:")
     assert "control_is_taken_to_win" in q(m).prov  # the S30 reason, not another one
-    assert f"{prim}.C3" in m.claims_hit  # ruling S30: the control claim still hits
-    m.glbl("GSR", 0)  # control still active: it wins
+    assert m.claims_hit == set()  # ruling S44: an inferred outcome credits no claim
+    m.glbl("GSR", 0)  # control still active: the documented force now decides Q
     assert q(m).bits == str(f) and q(m).prov.startswith("doc:")
+    want = {f"{prim}.C3"} | ({f"{prim}.C6"} if inv_ctrl else set())
+    assert m.claims_hit == want
 
 
 @pytest.mark.parametrize("prim", ASYNC_PRIMS)
