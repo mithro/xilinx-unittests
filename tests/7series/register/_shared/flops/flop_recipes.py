@@ -120,6 +120,7 @@ def l1_capture(ctx, k):
     # "default" sets no attribute at all: the one vector config where the model's
     # documented defaults meet the UNISIM defaults (Review Focus 2).
     for f in [Flop(ctx, k, "default", {})] + [_init_only(ctx, k, init) for init in (0, 1)]:
+        f.sample()  # INIT, before the first capture (M6: "for both INIT values" needs this)
         for d in (1, 0, 1, 1, 0, 0):
             f.data(d=d, ce=1)
             f.clock()
