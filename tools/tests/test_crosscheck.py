@@ -542,7 +542,7 @@ def test_check_expected_divergence_naming_a_missing_finding_is_an_issue(repo):
 def test_check_unmatched_expected_divergence_is_noted(repo):
     _test_yaml(repo, [ED])
     (repo / "findings").mkdir()
-    (repo / ED["finding"]).write_text("# x\n")
+    (repo / ED["finding"]).write_text("# x\n- Status: open\n")
     _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
     _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
     rep = xc.check(repo, _case(repo))
@@ -1192,3 +1192,17 @@ def test_pass_whose_configurations_all_skipped_is_no_evidence(repo):
     )
     rep = xc.check(repo, _case(repo))
     assert rep.views["ms1"][("rtl", "xsim")].status == "error" and rep.exit_code == 4
+
+
+@pytest.mark.parametrize("status_line", ["- Status: closed\n", "- Status: fixed\n", "none\n"])
+def test_expected_divergence_naming_a_finding_not_open_is_an_issue(repo, status_line):
+    """Review (b) #4 / ruling S23: a closed finding no longer shows in PROGRESS/TODO, so
+    an entry naming it must not quietly keep a divergence known: an issue (exit 4); the
+    divergence is still reported."""
+    _diverging(repo, [ED])
+    (repo / "findings").mkdir()
+    (repo / ED["finding"]).write_text("# TOYFF\n" + status_line)
+    rep = xc.check(repo, _case(repo))
+    assert [f.cls for f in rep.findings] == ["known-divergence"]
+    assert any(ED["finding"] in i and "not open" in i for i in rep.issues), rep.issues
+    assert rep.verdict == "incomplete" and rep.exit_code == 4

@@ -20,7 +20,7 @@ import yaml
 from xut.errors import GitError, XutError
 from xut.schemas import validate as validate_schema
 from xut.status import load_status
-from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, finding_id
+from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, finding_id, finding_status
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
 
 #: Tracked-file extensions checked for the SPDX header (global constraints; controller
@@ -227,8 +227,9 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     (`config-exclusions`; vector configs are only known at run time, where the runner
     logs the same warning). Every `expected_divergence` entry names its finding by the
     exact id `xut crosscheck` gives it (`findings/<PRIM>-<cls>-<level>-<name>.md`), lists
-    only known runners, and scopes `flows` only to flows the test declares (rule
-    `expected-divergence`, error; ruling S17)."""
+    only known runners, scopes `flows` only to flows the test declares, and names a
+    finding file that exists with `Status: open` (rule `expected-divergence`, error;
+    rulings S17, S23)."""
     root = Path(root)
     test_files = sorted(root.glob("tests/**/test.yaml"))
 
@@ -310,7 +311,7 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
                             "error",
                         )
                     )
-            issues += _expected_divergence_issues(rel, data["primitive"], t)
+            issues += _expected_divergence_issues(root, rel, data["primitive"], t)
             if readme_text is not None and tid not in readme_text:
                 issues.append(
                     LintIssue(
@@ -333,7 +334,7 @@ def check_tests_documented(root: Path) -> list[LintIssue]:
     return issues
 
 
-def _expected_divergence_issues(rel: str, prim: str, t: dict) -> list[LintIssue]:
+def _expected_divergence_issues(root: Path, rel: str, prim: str, t: dict) -> list[LintIssue]:
     tid = t["id"]
     known = (*DECLARED_RUNNERS, *DECLARATION_OF)
     out = []
@@ -342,6 +343,13 @@ def _expected_divergence_issues(rel: str, prim: str, t: dict) -> list[LintIssue]
         problems = []
         if e["finding"] != want:
             problems.append(f"finding {e['finding']!r} is not the {e['cls']} finding id {want!r}")
+        path = root / e["finding"]
+        if not path.is_file():
+            problems.append(f"finding {e['finding']!r} does not exist")
+        elif (st := finding_status(path)) is None:
+            problems.append(f"finding {e['finding']!r} has no Status: line")
+        elif st != "open":
+            problems.append(f"finding {e['finding']!r} is {st}, not open")
         for r in sorted(set(e["runners"]) - set(known)):
             problems.append(f"unknown runner {r!r}")
         for f in sorted(set(e.get("flows", [])) - set(t["flows"]) - {"rtl"}):
