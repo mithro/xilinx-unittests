@@ -44,19 +44,19 @@ accepted: Icarus 12 takes them (probed in the container).
 
 glbl is a second top module (spec §6). ``glbl_instance = True`` selects the
 ``XUT_GLBL_INSTANCE`` strategy instead (glbl instantiated inside the testbench, by
-``xut_vector_tb.sv`` or ``xut_trace.svh``); Verilator may need it (Task 15).
+``xut_vector_tb.sv`` or ``xut_trace.svh``); no runner needs it (Task 15: Verilator 5.048
+takes glbl as a second top too). ``lib_first`` is the hook of ``iverilog-vz``
+(``xut.runners.verilator.IverilogVzRunner``).
 """
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
 import traceback
 from pathlib import Path
 from typing import ClassVar
 
-from xut.container import SIM_IMAGE, Executor, executor_for, image_digest, sim_tool_versions
+from xut.container import Executor, executor_for
 from xut.errors import XutError
 from xut.runners.base import (
     ConfigResult,
@@ -71,6 +71,7 @@ from xut.runners.base import (
 from xut.runners.reject import SimOutcome, reject_check
 from xut.runners.sim import (
     HDL,
+    ContainerSim,
     ParamError,
     cfg_attrs,
     classify_run,
@@ -78,7 +79,6 @@ from xut.runners.sim import (
     cocotb_command,
     sv_check,
     sv_seed_define,
-    tool_versions,
     vector_check,
     with_seed,
 )
@@ -113,11 +113,7 @@ def param_value(name: str, value: object) -> str:
     return text
 
 
-def _native() -> bool:
-    return os.environ.get("XUT_NATIVE") == "1"
-
-
-class IverilogRunner(Runner):
+class IverilogRunner(ContainerSim, Runner):
     name = "iverilog"
     x_observable = True
     #: True: glbl is instantiated inside the testbench (XUT_GLBL_INSTANCE), not a top.
@@ -127,24 +123,6 @@ class IverilogRunner(Runner):
         """Library dirs searched before the model source. iverilog-vz returns the
         verilatorized dir (see ``Runner`` for the per-instance contract)."""
         return ()
-
-    def available(self, ctx: RunContext) -> tuple[bool, str]:
-        if _native():
-            return True, ""
-        if shutil.which("docker") is None:
-            return False, "docker not found"
-        if image_digest(SIM_IMAGE) is None:
-            return False, f"{SIM_IMAGE} not built: uv run xut container build"
-        return True, ""
-
-    def tools(self, ctx: RunContext) -> dict:
-        ex = executor_for(ctx.model_source, ctx.root)
-        return tool_versions(ctx, lambda d: sim_tool_versions(ex, d))
-
-    def container(self, ctx: RunContext) -> dict | None:
-        if _native():
-            return None
-        return {"image": SIM_IMAGE, "digest": image_digest(SIM_IMAGE)}
 
     def _libs(self, ex: Executor, ctx: RunContext, first: tuple[Path, ...]) -> list[str]:
         out: list[str] = []
@@ -321,13 +299,3 @@ class IverilogRunner(Runner):
         )
         rc = ex.run(argv, cwd=cd, log=cd / "run.log", timeout_s=timeout, env=env)
         return cocotb_check(cd, rc, seed, header)
-
-
-class IverilogVzRunner(IverilogRunner):
-    """Icarus on verilatorized UNISIM: guards every verilator result (spec §6.2). Not in
-    ``RUNNERS`` until Task 15 wires it, so no run can select this stub."""
-
-    name = "iverilog-vz"
-
-    def lib_first(self, case: TestCase, cfg: str, ctx: RunContext) -> tuple[Path, ...]:
-        raise NotImplementedError("iverilog-vz is completed in Task 15")

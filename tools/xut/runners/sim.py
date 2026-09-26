@@ -18,6 +18,7 @@ the directory name.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import uuid
@@ -25,7 +26,7 @@ import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from pathlib import Path
 
-from xut.container import Executor
+from xut.container import SIM_IMAGE, Executor, executor_for, image_digest, sim_tool_versions
 from xut.errors import XutError
 from xut.formats import xtr
 from xut.runners.base import ConfigResult, RunContext, sha256_file
@@ -52,6 +53,7 @@ _SEED = re.compile(r"^\s*XUT_SEED (\d+)\s*$", re.MULTILINE)
 __all__ = [
     "COCOTB_BUILD_FAILED",
     "COCOTB_RUN",
+    "ContainerSim",
     "HDL",
     "MODELS",
     "TOOLS",
@@ -70,6 +72,30 @@ __all__ = [
     "vector_check",
     "with_seed",
 ]
+
+
+class ContainerSim:
+    """``available``/``tools``/``container`` of a runner whose simulators run in the
+    xut-sim image (``XUT_NATIVE=1``: on the host ``PATH``). Mixed into the iverilog and
+    verilator runners."""
+
+    def available(self, ctx: RunContext) -> tuple[bool, str]:
+        if os.environ.get("XUT_NATIVE") == "1":
+            return True, ""
+        if shutil.which("docker") is None:
+            return False, "docker not found"
+        if image_digest(SIM_IMAGE) is None:
+            return False, f"{SIM_IMAGE} not built: uv run xut container build"
+        return True, ""
+
+    def tools(self, ctx: RunContext) -> dict:
+        ex = executor_for(ctx.model_source, ctx.root)
+        return tool_versions(ctx, lambda d: sim_tool_versions(ex, d))
+
+    def container(self, ctx: RunContext) -> dict | None:
+        if os.environ.get("XUT_NATIVE") == "1":
+            return None
+        return {"image": SIM_IMAGE, "digest": image_digest(SIM_IMAGE)}
 
 
 class ParamError(XutError, ValueError):

@@ -288,7 +288,7 @@ def test_launcher_build_args(launcher):
         *("-Y", ".v"),
     ]
     assert launcher.build_args("verilator", "/u", None, ["/vz"]) == [
-        *("--timing", "-Wno-fatal", "-Wno-lint", "-Wno-style"),
+        *("--timing", "-Wno-fatal"),
         *("--x-assign", "unique", "--x-initial", "unique"),
         *("-y", "/vz", "-y", "/u", "+libext+.v"),
     ]

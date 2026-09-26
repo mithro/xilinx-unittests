@@ -6,6 +6,9 @@ The python run is the source of truth for vector tests, so ``python`` always run
 were selected. The remaining pairs run in a thread pool of ``ctx.jobs`` workers; the
 simulators themselves are subprocesses. A ``progress: done=N total=M elapsed_s=E`` line
 is printed after every completion, for long-run monitors.
+
+Selecting ``verilator`` also selects ``iverilog-vz`` (``with_companions``): Icarus on the
+verilatorized models guards every Verilator result (spec §6.2).
 """
 
 from __future__ import annotations
@@ -48,13 +51,25 @@ def _one(case: TestCase, name: str, ctx: RunContext) -> RunResult:
             )
 
 
+#: runner -> the runners that must run whenever it does
+COMPANIONS = {"verilator": ("iverilog-vz",)}
+
+
+def with_companions(names: list[str]) -> list[str]:
+    """``names`` (deduplicated, in order) plus each selected runner's companions."""
+    out = list(dict.fromkeys(names))
+    for n in list(out):
+        out += [c for c in COMPANIONS.get(n, ()) if c not in out]
+    return out
+
+
 def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -> list[RunResult]:
     """Run every selected runner on every case; the results, python runs first.
 
     On KeyboardInterrupt, queued jobs are cancelled, running ones finish, the summary
     records what completed, and the KeyboardInterrupt propagates (the CLI exits 130)."""
     known = runner_registry.RUNNERS
-    names = list(dict.fromkeys(runner_names))
+    names = with_companions(runner_names)
     unknown = [n for n in names if n not in known]
     if unknown:
         raise XutError(f"unknown runner(s) {unknown} (known: {sorted(known)})")

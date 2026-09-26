@@ -37,11 +37,10 @@ def build_args(sim: str, unisims: str, retarget: str | None, lib_first: list[str
     libs = [*lib_first, unisims, *([retarget] if retarget else [])]
     if sim == "icarus":
         return [*(a for d in libs for a in ("-y", d)), "-Y", ".v"]
+    # as the verilator runner's own builds: warnings stay in the log, none is fatal
     return [
         "--timing",
         "-Wno-fatal",
-        "-Wno-lint",
-        "-Wno-style",
         "--x-assign",
         "unique",
         "--x-initial",
@@ -115,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as e:  # the compiler's output is already logged
         print(f"XUT_COCOTB build failed: exit status {e.returncode}", flush=True)
         return BUILD_FAILED
+    print(f"XUT_COCOTB plusargs: {' '.join(plus) or '(none)'}", flush=True)
     results = runner.test(
         test_module=a.module,
         hdl_toplevel=TOP,

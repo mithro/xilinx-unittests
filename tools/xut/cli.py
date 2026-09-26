@@ -408,9 +408,9 @@ def run_cmd(
     unknown = sorted(set(runner_names) - set(RUNNERS))
     if unknown:
         raise XutError(f"unknown runner(s) {unknown} (known: {sorted(RUNNERS)})")
+    # iverilog-vz is not in the default list: it comes with verilator (spec §6.2)
     names = list(dict.fromkeys(runner_names)) or [r for r in RUNNERS if r != "iverilog-vz"]
-    if "verilator" in names and "iverilog-vz" in RUNNERS and "iverilog-vz" not in names:
-        names.append("iverilog-vz")  # it exists only to guard the Verilator results
+    names = run_mod.with_companions(names)
 
     root = repo_root()
     cases = discover(root)
