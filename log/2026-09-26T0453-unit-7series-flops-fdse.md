@@ -100,3 +100,7 @@ observed exactly as declared.
   --write-findings`, classify+file the `L0.illegal_init` UNISIM-acceptance gap (and
   any others Task 26 turns up) across all four, and `xut status record` (Ruling
   S39/S40). `status/7series/FDSE.yaml` is intentionally untouched by this task.
+
+## Correction (review of Task 25)
+
+The python row in the table above is wrong. A re-run of the same command gives **python: 11 pass, 3 skip, 0 fail, 0 error**. The three skips are sv_gsr_midsim, sv_x_inputs and cocotb_random, each declared `no` for python in test.yaml. The iverilog and xsim rows are correct. The L0.illegal_init failure on iverilog/xsim affects FDRE as well; Task 24 will classify it.
