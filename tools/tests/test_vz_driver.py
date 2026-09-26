@@ -284,6 +284,17 @@ def test_transform_one_never_overwrites_its_source(tmp_path):
 
 
 # ---- check=True (Task 14): the driver side, with check_model stubbed ----------------------------
+@pytest.fixture
+def tools(monkeypatch):
+    """A stand-in for sim_tools (no container or Vivado needed); set tools.v to change it."""
+
+    class T:
+        v = '{"iverilog": "Icarus Verilog version 12.0"}'
+
+    monkeypatch.setattr(driver, "sim_tools", lambda ms, work: T.v)
+    return T
+
+
 def _fake_check(calls, status=lambda m, key: "pass"):
     from xut.verilatorize.equiv import EquivResult, config_key
 
@@ -295,7 +306,7 @@ def _fake_check(calls, status=lambda m, key: "pass"):
     return check
 
 
-def test_check_records_every_configuration(src, monkeypatch):
+def test_check_records_every_configuration(src, monkeypatch, tools):
     ms, out = src
     calls = []
     monkeypatch.setattr("xut.verilatorize.equiv.check_model", _fake_check(calls))
@@ -309,13 +320,14 @@ def test_check_records_every_configuration(src, monkeypatch):
     assert {str(d) for *_, d in calls} >= {"equiv/VZTRIG/default"}
     assert man.models["VZGEN"].equiv == {"default": "pass", "IS_C_INVERTED=1'b1": "pass"}
     assert man.models["VZTRIG"].equiv_oracle == {"default": "iverilog"}
+    assert man.models["VZTRIG"].equiv_tools == {"default": tools.v}
     assert man.models["VZBADSEL"].equiv == {} and man.models["PLAIN"].equiv == {}
     assert "progress: equiv done=0 total=3 elapsed_s=0" in lines
     assert lines[-1].startswith("progress: equiv done=3 total=3 ")
     assert Manifest.load(out / "manifest.json") == man
 
 
-def test_check_keeps_verdicts_and_redoes_errors(src, monkeypatch):
+def test_check_keeps_verdicts_and_redoes_errors(src, monkeypatch, tools):
     ms, out = src
     calls = []
     verdict = {"VZTRIG": "fail", "VZGEN": "error"}
@@ -333,7 +345,7 @@ def test_check_keeps_verdicts_and_redoes_errors(src, monkeypatch):
     assert sorted(m for m, *_ in calls) == ["VZGEN", "VZGEN", "VZTRIG"]
 
 
-def test_cli_check_summary_and_exit_code(src, monkeypatch):
+def test_cli_check_summary_and_exit_code(src, monkeypatch, tools):
     ms, out = src
     monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": ms)
     status = {"VZTRIG": "pass", "VZGEN": "pass"}
@@ -348,3 +360,26 @@ def test_cli_check_summary_and_exit_code(src, monkeypatch):
     (out / "manifest.json").unlink()
     r = CliRunner().invoke(main, ["verilatorize", "--check"])
     assert r.exit_code == 1 and "equiv: 1 pass, 2 fail, 0 error" in r.output
+
+
+def test_a_simulator_change_rechecks_kept_verdicts(src, monkeypatch, tools):
+    """Review minor 1: a pass/fail is kept only while the simulators are unchanged."""
+    ms, out = src
+    calls = []
+    monkeypatch.setattr("xut.verilatorize.equiv.check_model", _fake_check(calls))
+    verilatorize(ms, check=True)
+    calls.clear()
+    verilatorize(ms, check=True)
+    assert calls == []
+    tools.v = '{"iverilog": "Icarus Verilog version 13.0"}'
+    verilatorize(ms, check=True)
+    assert len(calls) == 3
+
+
+def test_sim_tools_names_every_simulator(tmp_path, monkeypatch):
+    monkeypatch.setattr("xut.runners.xsim.settings_available", lambda: False)
+    monkeypatch.setattr("xut.container.sim_tool_versions", lambda ex, d: {"iverilog": "IV 12"})
+    monkeypatch.setattr("xut.container.image_digest", lambda image: "sha256:abc")
+    ms = ModelSource("test-src", tmp_path / "src")
+    got = json.loads(driver.sim_tools(ms, tmp_path / "w"))
+    assert got == {"iverilog": "IV 12", "image": "sha256:abc", "xsim": "unavailable"}
