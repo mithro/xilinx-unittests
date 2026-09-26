@@ -876,3 +876,12 @@ def record(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(HEADER + yaml.safe_dump(status, sort_keys=False, default_flow_style=False))
     return status
+
+
+def render_portability(root: Path) -> str | None:
+    """``status/PORTABILITY.md`` from the full smoke runs in ``build/portability/*.json``
+    (``xut portability``), or None when there is none."""
+    from xut.portability import load_results, render
+
+    rows, meta = load_results(root)
+    return render(rows, meta) if rows else None
