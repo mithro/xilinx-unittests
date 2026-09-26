@@ -456,3 +456,38 @@ def run_cmd(
         click.echo(f"skip: {why} ({n} result{'s' if n > 1 else ''})")
     if bad:
         raise SystemExit(1)
+
+
+@main.command("verilatorize")
+@click.argument("models", nargs=-1)
+@click.option("--model-source", default="auto", show_default=True)
+@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+def verilatorize_cmd(models: tuple[str, ...], model_source: str, jobs: int) -> None:
+    """Rewrite procedural assign/deassign in UNISIM models for Verilator (spec §6.2).
+
+    Writes build/verilatorized/<model-source>/<MODEL>.v and manifest.json (never
+    committed). Incremental: a model is redone only when its source changed. MODEL
+    restricts the run (default: every model of the source).
+    """
+    from xut import modelsrc
+    from xut.verilatorize.driver import STATUSES, verilatorize, vz_dir
+
+    ms = modelsrc.resolve(model_source)
+    man = verilatorize(ms, list(models) or None, jobs=jobs, progress=click.echo)
+    shown = {m: e for m, e in man.models.items() if not models or m in models}
+    counts = Counter(e.status for e in shown.values())
+    click.echo(
+        f"{ms.name}: "
+        + ", ".join(f"{counts.get(s, 0)} {s}" for s in STATUSES)
+        + f" (output: {vz_dir(ms)})"
+    )
+    for m, e in sorted(shown.items()):
+        if e.status == "transformed":
+            click.echo(
+                f"transformed: {m}: triggers={','.join(e.triggers)} "
+                f"enablers={','.join(e.enablers) or '-'} configs={len(e.generate_configs)}"
+            )
+    for m, e in sorted(shown.items()):
+        if e.status == "unsupported":
+            why = e.reason.splitlines()[0]
+            click.echo(f"unsupported: {m}: {why.removeprefix(f'{m}: ')}")
