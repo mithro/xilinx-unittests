@@ -4,7 +4,7 @@
 - `xut status record PRIM... | --unit NAME [--model-source NAME]` fills `status/<family>/<PRIM>.yaml` from `xut run`'s `result.json` files:
   - `results` keys are `<level>/<runner>/<flow>` for python, xsim, iverilog, verilator and hw, for every flow a test declares. A declared flow that has not run yet (vivado, yosys, openxc7, vpr) is `not-run`.
   - The golden model (`python`) only has `rtl` keys. `hw` never has `rtl` keys.
-  - A cell's value is the worst over the primitive's tests, in the order `fail > error > pass > not-run > unsupported > n/a > skip`.
+  - A cell's value is the worst over the primitive's tests, in the order `fail > error > not-run > pass > skip > unsupported > n/a` (ruling S22: a declared test that has not run is never hidden by another test's pass).
   - `measured.tree_hash` covers the primitive's tests, `_shared/<unit>`, both golden-model files and the catalog overrides. `record` refuses to run while any of these has uncommitted changes.
   - `coverage.covered` has two parts:
     - vector `exercises` that the golden model confirms in `bins_reached`;
