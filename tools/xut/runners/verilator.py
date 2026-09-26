@@ -84,7 +84,8 @@ cannot see (code that a define such as ``XIL_TIMING`` enables); the runner repor
 of the model is driven. For a model the manifest records with ``zcmp`` among its
 ``rewrites``, ``drive_guard`` makes the configuration an ``error`` (both runners) when the
 wrapper leaves an input unconnected or the stimulus drives z (an sv testbench: when an
-instance of the primitive does not connect every input by name).
+instance of the primitive leaves an input open, ties it to z, or connects it to a net that
+can float z, such as a wire nothing drives: ``xut.runners.sv_nets``).
 
 ``IverilogVzRunner`` (``iverilog-vz``) is Icarus on the verilatorized models: every test
 that runs on ``verilator`` also runs here (spec §6.2; ``xut run`` adds it). Its
@@ -102,7 +103,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
@@ -136,6 +137,7 @@ from xut.runners.sim import (
     sv_seed_define,
     vector_check,
 )
+from xut.runners.sv_nets import Nets
 from xut.testspec import TestCase
 from xut.validate import validate
 from xut.verilatorize import zcmp
@@ -263,6 +265,9 @@ class SvInstance:
     attrs: dict[str, str]  # every non-local parameter, as a Verilog literal
     undriven: list[str]  # input ports with no connection
     zdriven: list[str]  # input ports connected to a constant holding a z bit
+    #: input ports connected to something that can float z: "<port> (net <path> has no
+    #: driver)", or another z source (``xut.runners.sv_nets``; Task 15 re-review N1)
+    floating: list[str] = field(default_factory=list)
 
 
 def _literal(kind: str, value: object) -> object:
@@ -284,8 +289,10 @@ def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[
     testbench's directory) and defines, so an instance in an included ``.svh`` or named
     through a macro (``FLOP_PRIM``) is found (review I1), and elaborated with glbl and the
     primitive's hierarchy (originals) to read each instance's parameters and connections.
-    Raises ``XutError`` (fail closed) when it does not elaborate cleanly or no instance of
-    ``prim`` is found."""
+    An input connected to a testbench net that can float z (a net with no driver, also
+    bound by ``.*``: ``xut.runners.sv_nets``) is listed in ``floating``. Raises
+    ``XutError`` (fail closed) when it does not elaborate cleanly or no instance of ``prim``
+    is found."""
     from xut.catalog.unisim import _is_benign
     from xut.verilatorize.driver import hierarchy, model_files, parsed
 
@@ -333,6 +340,7 @@ def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[
         return True
 
     comp.getRoot().visit(visit)
+    nets = Nets(comp.getRoot())
     if not found:
         raise XutError(
             f"{source.name}: no instance of {prim} found in the elaborated testbench (ruling "
@@ -345,7 +353,7 @@ def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[
             for p in inst.body.parameters
             if not p.isLocalParam
         }
-        undriven, zdriven = [], []
+        undriven, zdriven, floating = [], [], []
         for c in inst.portConnections:
             if c.port.direction != pyslang.ast.ArgumentDirection.In:
                 continue
@@ -356,7 +364,17 @@ def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[
             v = e.eval(pyslang.ast.EvalContext(inst))  # a constant (literal, parameter)
             if v is not None and v.hasUnknown() and "z" in str(v).lower():
                 zdriven.append(c.port.name)
-        out.append(SvInstance(inst.hierarchicalPath, attrs, sorted(undriven), sorted(zdriven)))
+                continue
+            for why in nets.floats(e):
+                floating.append(
+                    f"{c.port.name} (net {why} has no driver)" if why in nets.nets
+                    else f"{c.port.name} ({why})"
+                )  # fmt: skip
+        out.append(
+            SvInstance(
+                inst.hierarchicalPath, attrs, sorted(undriven), sorted(zdriven), sorted(floating)
+            )
+        )
     return out
 
 
@@ -383,8 +401,8 @@ def gate_config(
        with ``verdicts``, a non-pass verdict is an error (``blocked``).
     3. The z-compare validity condition, every input driven (ruling S38), when the model's
        ``effective_rewrites`` hold ``zcmp``: a wrapper input left unconnected (per bit,
-       review M3), a stimulus driving z, or an sv instance input unconnected or tied to z
-       is an error."""
+       review M3), a stimulus driving z, or an sv instance input unconnected, tied to z or
+       connected to a net that can float z (Task 15 re-review N1) is an error."""
     from xut.verilatorize.equiv import config_key  # equiv imports xut.runners: late
 
     ms, prim = ctx.model_source, case.prim
@@ -423,8 +441,10 @@ def _undriven(case: TestCase, cfg: str, ctx: RunContext, insts: list[SvInstance]
     ms, prim = ctx.model_source, case.prim
     if case.style == "sv":
         for i in insts:
-            if i.undriven or i.zdriven:
-                what = ", ".join([*i.undriven, *(f"{p} (tied to z)" for p in i.zdriven)])
+            if i.undriven or i.zdriven or i.floating:
+                what = ", ".join(
+                    [*i.undriven, *(f"{p} (tied to z)" for p in i.zdriven), *i.floating]
+                )
                 return (
                     f"{i.path}: input port(s) {what} of {prim} not driven by the testbench: "
                     "the z-compare rewrite (ruling S38) is valid only with every input driven"
