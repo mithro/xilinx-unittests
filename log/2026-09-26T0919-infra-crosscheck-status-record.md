@@ -31,3 +31,12 @@
 
 ## Next
 - The committed status stubs predate S19. Each gains the new bins when its unit first records.
+
+## Review fix round 1 (rulings S20, S21)
+- `xut status init --refresh-bins` rewrites the bins of stubs that have never been recorded. Recorded status files stay byte-identical. The orchestrator should run it on main after merging.
+- Every `result.json` from `xut run` now carries `tree_hash`, `head` and `dirty`. `status record` refuses a result that is stale or was measured on a dirty tree.
+- Each model source keeps its own tree hash and tools. PROGRESS.md marks a source recorded at another tree hash with `~gh`, and a runner that passed some flows but not all with `◐`.
+- A vector test's bins now count only if a simulator also passed it.
+- A gap accounts for a bin only when its leading token is exactly that bin. A blank gap is an error.
+- `crosscheck --model-source` refuses a model source it does not know.
+- Fast suite: 1223 passed.
