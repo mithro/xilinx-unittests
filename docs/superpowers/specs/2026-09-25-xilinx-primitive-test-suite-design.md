@@ -1,6 +1,6 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3.2 (2026-09-26). Rev 2 incorporated the technical and
+- Status: revision 3.4 (2026-09-26). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
@@ -19,6 +19,15 @@
   marking is all-or-nothing (S6). In §5.1, `hw_renderable` means
   order-renderable on the stepped harness, under the conditions listed there
   (S8′).
+  Rev 3.4 records the step-2 cross-check and status rulings S17 and S19–S23:
+  - §8: an `expected_divergence` matches only its exact finding id and must
+    name an open finding; agreement needs a shared configuration; results
+    from mixed or dirty trees are not compared; `xut crosscheck` exit codes;
+  - §9: port × class bins, and coverage credited per configuration that
+    passed on the golden model and on a simulator;
+  - §11: a tree hash per model source, stamped by `xut run` and checked by
+    `xut status record`; the PROGRESS.md marks and precedence;
+    `xut status init --refresh-bins`.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -544,12 +553,43 @@ classified:
 
 - **Recording.** Each finding goes in `findings/<PRIM>-<slug>.md`, is linked
   from the primitive's README, and may be referenced by an
-  `expected_divergence` entry in `test.yaml`.
+  `expected_divergence` entry in `test.yaml`. Its id (the file stem) is
+  `<PRIM>-<cls>-<level>-<name>`, from the test id and the class.
+  `xut crosscheck --write-findings` writes a stub for each unlisted finding and
+  never overwrites one. A later occurrence of the same finding on another flow
+  or model source is appended as an `- Also seen:` line.
 - **An expected divergence never masks.** Expected bits stay defined, and the
   disagreement is still computed and reported, classified `known-divergence`
   with the finding id. It shows in PROGRESS.md and TODO.md while the finding
   is open. `xut crosscheck` fails only on disagreements that no
   `expected_divergence` lists.
+- **Matching an expected divergence** (ruling S17). An entry matches a finding
+  only when all of these hold:
+  - it names the finding's exact id;
+  - its `cls` is the finding's class;
+  - its `runners` include every runner of the finding;
+  - the finding is within its optional `model_sources` and `flows` scope.
+
+  An entry that is in scope under another id is reported as an issue, never a
+  match. An entry must name a finding whose `Status:` is `open` (S23). A
+  closed finding no longer shows in PROGRESS.md or TODO.md, so an entry naming
+  one is a `xut crosscheck` issue and an `xut lint` error: reopen the finding
+  or remove the entry.
+- **No agreement without evidence** (S21, S23).
+  - Only configurations a runner ran (`pass` or `fail`) are compared, and only
+    where both sides ran them.
+  - A test counts as compared only when two results share at least one such
+    configuration. Traces that share none are an issue, never `agree`.
+  - A `pass` or `fail` result that ran no configuration is not evidence: it is
+    an issue.
+  - All results of one model source must carry one tree hash (§11), measured
+    on a clean tree. Otherwise that model source is not compared, and
+    `--write-findings` writes nothing for the test.
+- **Exit codes** (S23): `xut crosscheck` exits 0 when clean, 3 for any
+  finding no `expected_divergence` lists (this wins over 4), and 4 when the
+  evidence is incomplete (an error, an unexplained fail, results with no shared
+  configuration or of mixed trees, or no two traces at all). 1 stays a user
+  error and 2 a usage error.
 - **Weakening tests is forbidden.** A test is never made weaker to hide a
   finding.
 
@@ -557,8 +597,8 @@ classified:
 
 - **Functional bins** are generated from the catalog: ports × classes,
   attribute values (§4.2), declared crosses, and behavioural claims. A test's
-  `exercises:` list marks bins as covered, and simulation of the golden model
-  confirms that the stimulus actually reaches them.
+  `exercises:` list marks bins as covered. For a vector test, simulation of
+  the golden model confirms that the stimulus actually reaches them.
 - **Port × class bins** (rulings S19, S21) come from the applied stimulus:
   - data inputs get `port:<P>:0` and `:1`, per bit for a multi-bit port. A value bin
     is reached only by a `set` that explicitly writes that value; the power-on 0 of
@@ -567,10 +607,22 @@ classified:
   - async and gate inputs get `port:<P>:assert` and `:release` when the catalog
     declares the port's `active` level, and `:rise` and `:fall` otherwise.
   - inouts get `drive0`, `drive1` and `release`.
+  - pad, drp and clock_out ports, and outputs, get no class bins; they keep
+    `port:<P>`. An output's `port:<P>` is reached by any sample, so claims
+    carry the output behaviour.
   - Declared crosses give `cross:<A>=<a>,<B>=<b>` bins. One counts as covered when
-    a configuration that ran and passed has those values.
-  - A vector test's bins count only when the golden model passed and at least one
-    simulator passed the test against the reference model source.
+    a credited configuration (below) has those values. An attribute the
+    configuration does not set takes its catalog default.
+- **Crediting** (rulings S21, S23) is per configuration, against the reference
+  model source:
+  - A vector test's configuration is credited only when it passed on the golden
+    model **and** on at least one UNISIM simulator. Only the bins that this
+    configuration reached (its own `bins_reached`) count. A configuration that
+    only the golden model ran covers nothing.
+  - An sv or cocotb test's `exercises` are declared and passed, not measured:
+    they count once the test passed on a simulator, because those harnesses do
+    not report reach. Its cross bins come from the configurations a simulator
+    passed.
 - **Model code coverage.** UNISIM line/branch coverage (Verilator `--coverage`)
   shows which model branches no test reaches. It is reported in status and
   first added in step 5.
@@ -621,6 +673,12 @@ tests:
     flows: [rtl, vivado, yosys, openxc7, vpr]
     related: [7series.FDSE.L1.set_over_ce]   # a missing target is a lint warning
     gaps: ["setup/hold timing out of scope"]
+    expected_divergence:           # optional; §8 "Matching an expected divergence"
+      - finding: findings/FDRE-doc-gap-L1-reset_over_ce.md
+        cls: doc-gap
+        runners: [xsim, iverilog]
+        model_sources: [unisim-gh-2020.1]   # optional scope
+        flows: [rtl]                        # optional scope
 ```
 
 Runner values are always the quoted strings `"yes"`, `"no"` or
@@ -629,11 +687,48 @@ Runner values are always the quoted strings `"yes"`, `"no"` or
 
 `status/7series/<PRIM>.yaml` records:
 
-- results per level × runner × flow;
-- the **tree hash** of the test directory and the tool/model versions it was
-  measured with (tree hashes survive rebases, commit SHAs do not);
+- results per level × runner × flow, for the reference model source
+  (`unisim-2025.2`). Each other source's results go in
+  `results_by_model_source.<source>`;
+- the **tree hash** and the tool versions the results were measured with,
+  per model source (`measured.tree_hash_by_model_source`,
+  `measured.tools_by_model_source`; `measured.tree_hash` and `measured.tools`
+  are the reference source's). Tree hashes survive rebases; commit SHAs do not;
 - open findings;
-- covered and uncovered bins.
+- covered and uncovered bins (§9).
+
+**The tree hash** (ruling S21) covers the primitive's unit-owned inputs:
+- `tests/<family>/<group>/<PRIM>/` and the unit's
+  `tests/<family>/<group>/_shared/<unit>/`;
+- the golden model, `<prim>.py` and `_common/<unit>.py`;
+- `<PRIM>.overrides.yaml`.
+
+It does not cover the generated catalog entry, `tools/xut` or the UNISIM
+submodule. The tools are recorded in `measured.tools`.
+
+- `xut run` stamps `tree_hash`, `head` and `dirty` into every `result.json`.
+- `xut status record` refuses to hash uncommitted inputs.
+- It also refuses any result measured at another tree hash or on a dirty tree.
+  Re-run after committing; there is no override.
+- Recording one model source never changes another's results, hash or tools.
+
+**Aggregation** (ruling S22). Within one level/runner/flow key, a primitive's
+tests aggregate as fail > error > not-run > pass > skip > unsupported > n/a.
+A declared test that did not run is never hidden by another test's pass.
+
+**PROGRESS.md cells.** Each level cell has one mark per runner, in the order
+python, xsim, iverilog, verilator, hw. Across one runner's flows the cell
+shows fail > error > pass > skip > not-run > unsupported > n/a, except that
+`◐` marks a pass on some flows and not-run or skip on others (fail and error
+still win). The marks are for the reference source:
+- `+gh` flags a level where `unisim-gh-2020.1` passes what the reference
+  fails or errors, or the reverse;
+- `~gh` means the gh results were recorded at another tree hash. They are
+  stale and are not compared.
+
+**New bins** (ruling S20). `xut status init --refresh-bins` rewrites the bins
+of stubs that were never recorded (no tree hash of any source) to the current
+catalog's. It never touches a recorded status file.
 
 **Generated files.** `xut status` builds PROGRESS.md (the matrix), TODO.md
 (every uncovered bin, unsupported cell and open finding) and LOG.md (the
