@@ -58,7 +58,10 @@ any other ``glbl.*`` raises ``TransformError``), with ``async_`` for an async/ga
    ``activity(2)``, deassert, sample, ``activity(1)``;
 2. ``_coincident``: each non-clock trigger with each clock: assert together with a rising
    edge (``simultaneous``), sample, fall, sample, ``activity(1)``, deassert together with
-   the next rising edge, sample, fall, sample;
+   the next rising edge, sample, fall, sample. Rising edges only, as the brief specifies: a
+   pulse coincident with a *falling* edge (the active edge of an ``IS_C_INVERTED=1``
+   configuration) is not generated; such configurations see triggers near falling edges
+   only through the activity of phases 1 and 3, at the builder's separation;
 3. ``_pairs``: each pair (a, b), with a sample and ``activity(1)`` after each step:
    a↑ b↑ a↓ b↓ (overlap), a↑ b↑ b↓ a↓ (nested), and a↑b↑ then a↓b↓ together
    (coincident, ``simultaneous``);
@@ -144,11 +147,17 @@ class EquivResult:
     oracle: str = ""  # iverilog | xsim; "" when the original never ran
 
 
+def _esc(v: str) -> str:
+    return v.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
+
+
 def config_key(attrs: dict[str, str] | None) -> str:
-    """``"default"``, or the sorted ``NAME=value`` pairs joined by ``,``."""
+    """``"default"``, or the sorted ``NAME=value`` pairs joined by ``,``. A ``\\``, ``,`` or
+    ``=`` inside a name or value is escaped with ``\\``, so two configurations never share a
+    key (``{"A": "1,B=2"}`` is ``A=1\\,B\\=2``, ``{"A": "1", "B": "2"}`` is ``A=1,B=2``)."""
     if not attrs:
         return "default"
-    return ",".join(f"{k}={attrs[k]}" for k in sorted(attrs))
+    return ",".join(f"{_esc(k)}={_esc(attrs[k])}" for k in sorted(attrs))
 
 
 def config_dir(key: str) -> str:
@@ -370,9 +379,18 @@ def _ended_early(what: str, rc: int | None, run_text: str, d: Path) -> _Run:
 
 
 def _icarus(
-    ex: Executor, d: Path, out: Path, libs: Sequence[Path], ms: ModelSource, timeout: int
+    ex: Executor,
+    d: Path,
+    out: Path,
+    model_file: Path,
+    libs: Sequence[Path],
+    ms: ModelSource,
+    timeout: int,
 ) -> _Run:
-    """Compile and run the vector testbench on Icarus in ``d`` against ``libs``."""
+    """Compile and run the vector testbench on Icarus in ``d``. ``model_file`` (the
+    original or the transformed copy) is compiled explicitly, so the model under test can
+    never be resolved from another directory; ``libs`` (``-y``) serve only the models it
+    instantiates."""
     d.mkdir()
     shutil.copy(out / "stim.memh", d / "stim.memh")
     log = d / "run.log"
@@ -380,13 +398,14 @@ def _icarus(
         "iverilog", "-g2012", "-o", "sim.vvp", "-s", "xut_vector_tb", "-s", "glbl",
         "-I", ex.guest(out), "-I", ex.guest(out / "dut"),
         *(a for lib in libs for a in ("-y", ex.guest(lib))), "-Y", ".v",
-        ex.guest(TB), ex.guest(out / "dut" / "xut_dut.v"), ex.guest(ms.glbl),
+        ex.guest(TB), ex.guest(out / "dut" / "xut_dut.v"), ex.guest(model_file),
+        ex.guest(ms.glbl),
     ]  # fmt: skip
-    rc, ctext = IverilogRunner._step(ex, argv, d, log, timeout)
+    rc, ctext = IverilogRunner.step(ex, argv, d, log, timeout)
     bad = [ln for ln in ctext.splitlines() if _UNCLEAN.search(ln)]
     if rc != 0 or bad:
         return _Run(False, f"compile failed (exit {rc}): {(bad or ['no diagnostic'])[0].strip()}")
-    rc, rtext = IverilogRunner._step(ex, ["vvp", "-n", "sim.vvp"], d, log, timeout)
+    rc, rtext = IverilogRunner.step(ex, ["vvp", "-n", "sim.vvp"], d, log, timeout)
     bad = [ln for ln in rtext.splitlines() if _SORRY.search(ln)]
     if bad:
         return _Run(False, f"run reported: {bad[0].strip()}")
@@ -399,10 +418,9 @@ def _xsim(d: Path, out: Path, an: Subject, ms: ModelSource, timeout: int) -> _Ru
     """The original model on xsim in ``d`` (Vivado sourced only in the script's subshell)."""
     d.mkdir()
     shutil.copy(out / "stim.memh", d / "stim.memh")
-    files = [str(TB), str(out / "dut" / "xut_dut.v"), str(an.path)]
     text = xsim.render_script(
         d,
-        files,
+        [str(TB)],
         "xut_vector_tb",
         [str(out), str(out / "dut")],
         {},
@@ -410,6 +428,7 @@ def _xsim(d: Path, out: Path, an: Subject, ms: ModelSource, timeout: int) -> _Ru
         glbl=str(ms.glbl),
         libs=(),
         sourcelibdirs=[str(p) for p in ms.search],
+        verilog_files=[str(out / "dut" / "xut_dut.v"), str(an.path)],
     )
     (d / "xsim.sh").write_text(text)
     rc = xsim.run_script(d, timeout)
@@ -445,36 +464,50 @@ def check_model(
 ) -> EquivResult:
     """Equivalence-check ``an``'s transformed model (in ``lib``, default ``vz_dir(ms)``)
     against its original for one attribute configuration, in ``out_dir`` (emptied first).
-    Never raises for a model problem: anything that goes wrong is an ``error`` result, with
-    the traceback in ``error.log``. ``result.json`` and ``mismatches.txt`` go in
-    ``out_dir``."""
-    from xut.verilatorize import driver  # driver imports this module lazily
-
+    Never raises: anything that goes wrong is an ``error`` result, with the traceback in
+    ``error.log`` (when it can be written). ``result.json`` and ``mismatches.txt`` go in
+    ``out_dir``; a result that cannot be recorded there is an ``error``. The transformed
+    copy ``lib/<MODEL>.v`` must exist and differ from the original, else ``error``: the
+    check never falls back to comparing the original with itself."""
     attrs = dict(attrs or {})
-    key = config_key(attrs)
-    res = EquivResult(an.model, "error", config=key, triggers=list(an.triggers))
+    res = EquivResult(an.model, "error", triggers=list(an.triggers))
     res.enablers = list(an.enablers)
     out = Path(out_dir)
-    if out.exists():
-        shutil.rmtree(out)
-    out.mkdir(parents=True)
     info: dict[str, object] = {}
     try:
+        from xut.verilatorize import driver  # driver imports this module lazily
+
+        res.config = config_key(attrs)
+        if out.exists():
+            shutil.rmtree(out)
+        out.mkdir(parents=True)
         _check(an, ms, out, attrs, lib or driver.vz_dir(ms), seed, force_xsim, res, info)
     except Exception as e:  # an error result, never a pass
-        (out / "error.log").write_text(traceback.format_exc())
         res.status, res.reason = "error", f"{type(e).__name__}: {e}"
-    (out / "mismatches.txt").write_text("".join(f"{m}\n" for m in res.mismatches))
-    doc = {
-        **asdict(res),
-        "mismatches": len(res.mismatches),
-        "model_source": ms.name,
-        "attrs": attrs,
-        "seed": seed,
-        **info,
-    }
-    (out / "result.json").write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
+        _write(out / "error.log", traceback.format_exc())
+    try:
+        (out / "mismatches.txt").write_text("".join(f"{m}\n" for m in res.mismatches))
+        doc = {
+            **asdict(res),
+            "mismatches": len(res.mismatches),
+            "model_source": ms.name,
+            "attrs": attrs,
+            "seed": seed,
+            **info,
+        }
+        (out / "result.json").write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
+    except Exception as e:  # a verdict that cannot be recorded is not a verdict
+        res.status = "error"
+        res.reason = f"cannot record the result in {out}: {type(e).__name__}: {e}"
     return res
+
+
+def _write(path: Path, text: str) -> None:
+    """Best effort (the error result is returned either way)."""
+    try:
+        path.write_text(text)
+    except OSError:
+        return
 
 
 def _check(
@@ -502,11 +535,18 @@ def _check(
     if need_xsim and not xsim.settings_available():
         res.reason = f"xsim oracle needed ({need_xsim}) but Vivado 2025.2 is unavailable"
         return
+    copy = Path(lib) / f"{an.model}.v"
+    if not copy.is_file():
+        res.reason = f"no transformed copy of {an.model} at {copy}"
+        return
+    if copy.read_bytes() == Path(an.path).read_bytes():
+        res.reason = f"the transformed copy {copy} is identical to the original {an.path}"
+        return
     ex = executor_for(ms, lib)
     tools = {"iverilog": sim_tool_versions(ex, out)["iverilog"]}
-    vz = _icarus(ex, out / "vz", out, [lib, *ms.search], ms, _TIMEOUT_S)
+    vz = _icarus(ex, out / "vz", out, copy, [lib, *ms.search], ms, _TIMEOUT_S)
     if not need_xsim:
-        orig = _icarus(ex, out / "orig", out, ms.search, ms, _TIMEOUT_S)
+        orig = _icarus(ex, out / "orig", out, Path(an.path), ms.search, ms, _TIMEOUT_S)
         res.oracle = "iverilog"
         if not orig.ok:
             need_xsim = f"Icarus does not run the original cleanly: {orig.why}"

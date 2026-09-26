@@ -139,6 +139,9 @@ def test_config_key_and_dir():
     assert config_key({}) == config_key(None) == "default" == config_dir("default")
     k = config_key({"B": '"X Y"', "A": "1'b1"})
     assert k == 'A=1\'b1,B="X Y"'
+    # injective (review minor 2): separators inside a value are escaped
+    assert config_key({"A": "1,B=2"}) == "A=1\\,B\\=2" != config_key({"A": "1", "B": "2"})
+    assert config_key({"A": "x\\,"}) != config_key({"A": "x\\", "": ""})
     d = config_dir(k)
     assert re.fullmatch(r"A_1_b1_B_X_Y-[0-9a-f]{8}", d)
     assert config_dir(config_key({"A": "1'b0"})) != config_dir(config_key({"A": "1_b0"}))
@@ -346,3 +349,34 @@ def test_a_model_that_stops_itself_is_an_error_naming_its_message(tmp_path):
     assert (r.status, r.oracle) == ("error", "xsim"), r.reason
     assert "both models stopped before the end of the stimulus" in r.reason, r.reason
     assert "DRC Error : BAD is set" in r.reason and "0 of " in r.reason, r.reason
+
+
+def _plain_source(tmp_path, fname, model):
+    ms, an = _source(tmp_path, fname, model)
+    lib = tmp_path / "vz"
+    lib.mkdir()
+    return ms, an, lib
+
+
+def test_missing_transformed_copy_is_an_error_not_a_self_comparison(tmp_path):
+    """Review Important 1: with no lib/<MODEL>.v, Icarus -y would find the original."""
+    ms, an, lib = _plain_source(tmp_path, "vz_retain.v", "VZRETAIN")
+    r = check_model(an, ms, lib / "equiv" / "VZRETAIN" / "default", lib=lib)
+    assert (r.status, r.oracle) == ("error", ""), r.reason
+    assert "no transformed copy of VZRETAIN" in r.reason
+
+
+def test_transformed_copy_identical_to_the_original_is_an_error(tmp_path):
+    ms, an, lib = _plain_source(tmp_path, "vz_retain.v", "VZRETAIN")
+    shutil.copy(an.path, lib / "VZRETAIN.v")
+    r = check_model(an, ms, lib / "equiv" / "VZRETAIN" / "default", lib=lib)
+    assert r.status == "error" and "is identical to the original" in r.reason, r.reason
+
+
+def test_check_model_never_raises(tmp_path):
+    """Review minor 4: even the output directory failing is an error result."""
+    ms, an, lib = _plain_source(tmp_path, "vz_retain.v", "VZRETAIN")
+    blocker = tmp_path / "file"
+    blocker.write_text("not a directory")
+    r = check_model(an, ms, blocker / "out", lib=lib)
+    assert r.status == "error" and "cannot record the result" in r.reason, r.reason
