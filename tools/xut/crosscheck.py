@@ -41,6 +41,7 @@ from pathlib import Path
 
 from xut.formats.xtr import Mismatch, Trace, XtrError, compare, diff, load
 from xut.golden import bit_prov
+from xut.results import RAN, read_result
 from xut.testspec import (
     SIMULATORS,
     TestCase,
@@ -74,7 +75,6 @@ X_OBSERVABLE = {
 #: At most this many points are kept per finding (the count of the rest is noted).
 MAX_POINTS = 200
 REPORT_FORMAT = "xut-crosscheck 1"
-_RAN = ("pass", "fail")
 
 
 @dataclass
@@ -96,7 +96,7 @@ class View:
         cfgs = self.result.get("configs")
         if cfgs is None:
             return None
-        return {c["cfg"] for c in cfgs if c.get("status") in _RAN}
+        return {c["cfg"] for c in cfgs if c.get("status") in RAN}
 
 
 @dataclass(frozen=True)
@@ -151,32 +151,29 @@ def _error_view(flow: str, runner: str, ms: str, data: dict, reason: str) -> Vie
 
 
 def _view(d: Path, flow: str, runner: str, ms: str, test_id: str) -> View:
-    try:
-        data = json.loads((d / "result.json").read_text())
-    except (OSError, ValueError) as e:
-        return _error_view(flow, runner, ms, {}, f"unreadable result.json: {e}")
-    if not isinstance(data, dict):
-        return _error_view(flow, runner, ms, {}, "result.json is not an object")
-    got = tuple(data.get(k) for k in ("flow", "runner", "model_source", "test_id"))
-    if got != (flow, runner, ms, test_id):
-        return _error_view(flow, runner, ms, data, f"result.json {got} does not match its path {d}")
+    rf = read_result(d, flow, runner, ms, test_id)
+    if rf is None:
+        return _error_view(flow, runner, ms, {}, f"trace.xtr without result.json in {d}")
+    if rf.problem is not None:
+        return _error_view(flow, runner, ms, rf.data, rf.problem)
+    data = rf.data
     trace = None
     if (d / "trace.xtr").is_file():
         try:
             trace = load(d / "trace.xtr")
         except XtrError as e:
             return _error_view(flow, runner, ms, data, f"malformed trace.xtr: {e}")
-    ran = sorted(c.get("cfg") for c in data.get("configs") or [] if c.get("status") in _RAN)
-    if trace is None and data.get("status") in _RAN and ran:
+    ran = sorted(c["cfg"] for c in data["configs"] if c["status"] in RAN)
+    if trace is None and data["status"] in RAN and ran:
         return _error_view(
             flow,
             runner,
             ms,
             data,
-            f"reported {data.get('status')} for configuration(s) {', '.join(ran)} "
+            f"reported {data['status']} for configuration(s) {', '.join(ran)} "
             "but wrote no trace.xtr",
         )
-    return View(flow, runner, str(data.get("status")), ms, trace, data)
+    return View(flow, runner, data["status"], ms, trace, data)
 
 
 def gather(root: Path, test_id: str) -> dict[str, dict[tuple[str, str], View]]:
@@ -190,12 +187,7 @@ def gather(root: Path, test_id: str) -> dict[str, dict[tuple[str, str], View]]:
     }
     for d in sorted(dirs):
         ms, runner, flow = d.parent.name, d.parent.parent.name, d.parent.parent.parent.name
-        if (d / "result.json").is_file():
-            out[ms][(flow, runner)] = _view(d, flow, runner, ms, test_id)
-        else:
-            out[ms][(flow, runner)] = _error_view(
-                flow, runner, ms, {}, f"trace.xtr without result.json in {d}"
-            )
+        out[ms][(flow, runner)] = _view(d, flow, runner, ms, test_id)
     return dict(out)
 
 
@@ -629,7 +621,7 @@ def _config_coverage(ms: str, views: dict[tuple[str, str], View]) -> tuple[list[
     in every other result. One a runner skipped (``config_exclusions``) is a coverage
     note; one missing from its result entirely is an issue."""
     exp = views.get(("rtl", "python"))
-    golden = sorted(exp.ran or ()) if exp is not None and exp.status in _RAN else []
+    golden = sorted(exp.ran or ()) if exp is not None and exp.status in RAN else []
     notes: list[str] = []
     issues: list[str] = []
     for (flow, runner), v in sorted(views.items()):

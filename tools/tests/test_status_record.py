@@ -391,6 +391,17 @@ def test_results_by_model_source_schema_rejects_bad_entries(by):
         validate(_status(results_by_model_source=by))
 
 
+def test_an_unusable_result_is_an_error_warned_once(repo):
+    """Review (a) #11: each result.json is read (and validated) once per record."""
+    _results(repo)
+    p = repo / "build/rtl/xsim" / REFERENCE_MODEL_SOURCE / TESTS[0]["id"] / "result.json"
+    p.write_text("{not json")
+    warnings: list[str] = []
+    s = record(repo, "FDRE", warn=warnings.append)
+    assert s["results"]["L1/xsim/rtl"] == "error"
+    assert sum("unreadable result.json" in w for w in warnings) == 1
+
+
 def test_record_without_any_result_is_an_error(repo):
     with pytest.raises(XutError, match="no result.json"):
         record(repo, "FDRE", model_source="unisim-typo", warn=lambda m: None)
