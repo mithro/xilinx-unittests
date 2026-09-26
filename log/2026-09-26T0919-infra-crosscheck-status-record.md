@@ -21,7 +21,13 @@
 - CI's `sim` job runs the flops L0/L1 vector tests on iverilog against `unisim-gh-2020.1`, then crosschecks them. Both steps do nothing until PR E.
 
 ## Tests
-- `-m "not slow" -n 8`: 1183 passed (was 1153). ruff and `xut lint` (plain and `--branch --base infra/sim-runners`) report no issues.
+- `-m "not slow" -n 8`: 1194 passed (was 1153). ruff and `xut lint` (plain and `--branch --base infra/sim-runners`) report no issues.
+
+## Ruling S19 (port × class and declared-cross bins)
+- `coverage_bins` adds a `port:<P>:<event>` bin for each port class, and `cross:<A>=<a>,<B>=<b>` bins for the `crosses` a catalog override declares.
+- The golden replay's `Reach` reports these port events.
+- `status record` counts a cross bin as covered when a configuration that ran and passed has those values.
+- FDRE now has 20 bins, or 28 once the pilot adds its 8 claims.
 
 ## Next
-- Port × class and declared-cross coverage bins (Ruling 20) need a design decision. The FDRE pilot plan expects 21 bins, which is the current bin set, and the golden model's `Reach` records neither kind.
+- The committed status stubs predate S19. Each gains the new bins when its unit first records.
