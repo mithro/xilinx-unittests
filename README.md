@@ -1,5 +1,8 @@
 # xilinx-unittests
 
+> [!WARNING]
+> AI in use, use at own risk
+
 A comprehensive, cross-checked test suite for the design primitives documented
 in the Xilinx/AMD libraries guides, starting with 7-series
 ([UG953](https://docs.amd.com/r/en-US/ug953-vivado-7series-libraries)).
