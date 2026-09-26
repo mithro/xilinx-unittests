@@ -20,6 +20,11 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
   only its exact finding id (``xut.testspec.finding_id``), the class, a superset of
   the finding's runners, and its optional ``model_sources``/``flows`` scope (ruling
   S17); an in-scope entry with another id is an issue.
+- **One tree per comparison.** Every result carries the ``tree_hash``/``dirty`` that
+  ``xut run`` stamped (ruling S21). A model source whose results disagree on
+  ``tree_hash``, or include one measured on a dirty tree (or outside git), is not
+  compared at all: an issue ("mixed/stale provenance"), and ``--write-findings``
+  writes nothing for the test (``Report.provenance_ok``).
 - **Coverage gaps.** ``compare`` ignores ports only the actual trace has (the golden
   model may leave an output unmodelled); ``check`` lists them instead of dropping them.
 
@@ -555,6 +560,9 @@ class Report:
     coverage_gaps: list[str] = field(default_factory=list)
     unmatched_expected: list[str] = field(default_factory=list)
     compared: bool = False
+    #: False when some model source's results were measured at mixed or dirty trees:
+    #: nothing of this test may be recorded as a finding.
+    provenance_ok: bool = True
 
     @property
     def unlisted(self) -> list[Finding]:
@@ -673,7 +681,9 @@ def _explained(v: View, findings: list[Finding]) -> bool:
     )
 
 
-def _result_issues(ms: str, v: View, findings: list[Finding]) -> list[str]:
+def _result_issues(ms: str, v: View, findings: list[Finding], classified: bool = True) -> list[str]:
+    """Errors (per configuration, else the result's), and a fail that no value finding
+    explains; the latter only when the views were ``classified``."""
     where = f"{ms} {v.flow}/{v.runner}"
     cfg_errors = [
         f"{where}: cfg {c.get('cfg')}: error: {c.get('reason') or 'no reason recorded'}"
@@ -685,26 +695,60 @@ def _result_issues(ms: str, v: View, findings: list[Finding]) -> list[str]:
     reason = v.result.get("reason") or "no reason recorded"
     if v.status == "error":
         return [f"{where}: error: {reason}"]
-    if v.status == "fail" and not _explained(v, findings):
+    if classified and v.status == "fail" and not _explained(v, findings):
         return [f"{where}: fail not explained by any disagreement: {reason}"]
     return []
 
 
+def _provenance_issues(ms: str, views: dict[tuple[str, str], View]) -> list[str]:
+    """Why ``views`` (one model source) were not all measured at one clean tree: a
+    result without a tree hash or not stamped ``dirty: false``, or results at
+    different tree hashes. Synthetic not-run views and unreadable results carry no
+    stamp and are skipped (the latter is an issue of its own)."""
+    stamped = {k: v for k, v in sorted(views.items()) if "tree_hash" in v.result}
+    out = []
+    for (flow, runner), v in stamped.items():
+        th, dirty = v.result.get("tree_hash"), v.result.get("dirty")
+        if th is None or dirty is not False:
+            out.append(
+                f"{ms} {flow}/{runner}: mixed/stale provenance: measured with tree_hash "
+                f"{th}, dirty {dirty}; re-run it on a clean, committed tree"
+            )
+    by_hash: dict[str, list[str]] = defaultdict(list)
+    for (flow, runner), v in stamped.items():
+        if v.result.get("tree_hash") is not None:
+            by_hash[v.result["tree_hash"]].append(f"{flow}/{runner}")
+    if len(by_hash) > 1:
+        at = "; ".join(f"{', '.join(rs)} at {h}" for h, rs in sorted(by_hash.items()))
+        out.append(
+            f"{ms}: mixed/stale provenance: results measured at different trees ({at}); "
+            "re-run them together"
+        )
+    return out
+
+
 def check(root: Path, case: TestCase, model_source: str | None = None) -> Report:
     """Gather, classify per model source and account for every result of ``case``;
-    only ``model_source``'s results when it is given."""
+    only ``model_source``'s results when it is given. A model source whose results
+    were not all measured at one clean tree is not classified (``_provenance_issues``)."""
     gathered = gather(root, case.id)
     if model_source is not None:
         gathered = {ms: v for ms, v in gathered.items() if ms == model_source}
     rep = Report(case, gathered)
     matched: set[str] = set()
     for ms, views in sorted(gathered.items()):
+        stale = _provenance_issues(ms, views)
         for flow in dict.fromkeys(["rtl", *case.flows]):
             for r in declared_runners(case, flow):
                 if (flow, r) not in views:
                     views[(flow, r)] = View(
                         flow, r, "not-run", ms, None, {"reason": "declared, but no result.json"}
                     )
+        if stale:
+            rep.issues += stale
+            rep.provenance_ok = False
+            rep.issues += [i for v in views.values() for i in _result_issues(ms, v, [], False)]
+            continue
         found = classify(case.id, views, case.expected_divergence, rep.issues)
         rep.findings += found
         matched |= {f.finding for f in found if f.finding}

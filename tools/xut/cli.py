@@ -583,8 +583,8 @@ def crosscheck_cmd(
     Exit status (ruling S23):
       0  clean: every compared result agrees, or disagrees only as listed
       3  a finding not listed in the test's expected_divergence (wins over 4)
-      4  incomplete: an error, a fail no disagreement explains, or no two traces
-         to compare
+      4  incomplete: an error, a fail no disagreement explains, results measured at
+         mixed or dirty trees, or no two traces to compare
       1  a user error (e.g. a selector matching no test); 2  a usage error
     """
     from xut import crosscheck as xc
@@ -610,7 +610,11 @@ def crosscheck_cmd(
         reports.append(rep)
         xc.write_report(root, rep)
         click.echo(xc.render(rep))
-        if write_findings:
+        if write_findings and not rep.provenance_ok:
+            click.echo(
+                f"{case.id}: not writing findings: its results are not all from one clean tree"
+            )
+        elif write_findings:
             for f in rep.unlisted:
                 action, p = xc.record_finding(root, case.prim, f)
                 if p is not None:
