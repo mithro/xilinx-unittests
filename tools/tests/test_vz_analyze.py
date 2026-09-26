@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import functools
 import re
 from pathlib import Path
 
@@ -73,6 +74,16 @@ def test_self_referencing_read_is_not_a_write():
         ("vz_bad_blackbox.v", "VZBLACKBOX", "driven by an instance output"),
         ("vz_bad_genparam.v", "VZBADGEN", "cannot enumerate generate configurations"),
         ("vz_bad_nestgen.v", "VZNESTGEN", "nested generate conditions"),
+        # review fix round 1: silent-miss paths now refused
+        (
+            "vz_bad_helpgen.v",
+            "VZG3",
+            r"generate branch at line 13 \(module VZG3_HLP\): no generate configuration",
+        ),
+        ("vz_bad_wrap.v", "VZWRAP", "cannot determine statically which override of r"),
+        ("vz_bad_looptask.v", "VZLOOPT", "cannot determine statically which override of r"),
+        ("vz_bad_hier.v", "VZHIER", "hierarchical write to VZHIER.en"),
+        ("vz_bad_fork.v", "VZFORK", "fork/join"),
     ],
 )
 def test_refusals(fname, module, msg):
@@ -193,7 +204,10 @@ def test_generate_configs_literals_localparams_case_and_chains(tmp_path):
 
 def test_untaken_generate_branch_writing_a_forced_reg_is_refused():
     # choices restricted to the default: g_neg is never elaborated, and it writes r
-    with pytest.raises(TransformError, match="generate branch at line 12 mentions forced reg r"):
+    with pytest.raises(
+        TransformError,
+        match=r"generate branch at line 12 \(module VZGEN\): no generate configuration",
+    ):
         analyze(FIX / "vz_generate.v", "VZGEN", GLBL, {"IS_C_INVERTED": ["1'b0"]})
 
 
@@ -276,11 +290,12 @@ EXPECT_NOTES = {
 PILOT = ("FDRE", "FDSE", "FDCE", "FDPE")
 
 
+@functools.cache
 def _forced_models(ms):
     out = []
     for d in ms.search:
         for f in sorted(d.glob("*.v")):
-            if re.search(rb"\bdeassign\b", f.read_bytes()) and has_procedural_assign(f):
+            if has_procedural_assign(f):
                 out.append(f)
     return out
 
@@ -312,6 +327,7 @@ def _check_model(ms, f):
         assert {x.type for x in a.forced.values()} == {"reg", "integer", "real"}
 
 
+@pytest.mark.slow  # parses all 249 models with pyslang (~30 s)
 def test_submodule_has_40_forced_models():
     # spec §6.2: "The construct appears in 40 of 249 UNISIM models" (the submodule's count)
     ms = _source("unisim-gh-2020.1")
@@ -487,3 +503,39 @@ endmodule
     a = analyze(f, "VZHG", GLBL)
     assert len(a.submodules["VZHG_CORE"].forced["q"].overrides) == 2
     assert a.triggers == ["R"]
+
+
+def test_hierarchical_write_defeats_never_written(tmp_path):
+    # even without the writer being analysed (a module not instantiated here), a dotted
+    # name ending in the variable anywhere in the file means it may be written
+    src = (FIX / "vz_bad_hier.v").read_text().replace("  VZHIER_HLP h (.i(S));\n", "")
+    (tmp_path / "vz_hier2.v").write_text(src)
+    with pytest.raises(TransformError, match="cannot resolve the driver of en"):
+        analyze(tmp_path / "vz_hier2.v", "VZHIER", GLBL)
+
+
+def test_procedural_assign_to_hierarchical_reference_is_refused(tmp_path):
+    src = (FIX / "vz_single.v").read_text().replace("assign q = 1'b0;", "assign VZSINGLE.q = 1'b0;")
+    (tmp_path / "vz_hassign.v").write_text(src)
+    with pytest.raises(TransformError, match="hierarchical reference"):
+        analyze(tmp_path / "vz_hassign.v", "VZSINGLE", GLBL)
+
+
+def test_deassign_only_configuration_contributes_no_sensitivity(tmp_path):
+    f = tmp_path / "vz_donly.v"
+    f.write_text("""// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps/1ps
+module VZDONLY (output Q, input C, input D, input A, input B);
+  parameter [0:0] P = 1'b0;
+  reg r;
+  assign Q = r;
+  generate if (P) begin : g1
+    always @(A) if (A) assign r = 1'b0; else deassign r;
+  end else begin : g0
+    always @(B) deassign r;
+  end endgenerate
+  always @(posedge C) r <= D;
+endmodule
+""")
+    x = analyze(f, "VZDONLY", GLBL).forced["r"]
+    assert x.sensitivity == {"A"} and x.triggers == {"A"} and len(x.deassigns) == 2
