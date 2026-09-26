@@ -67,7 +67,6 @@ def test_self_referencing_read_is_not_a_write():
         ("vz_bad_select.v", "VZBADSEL", "select or concatenation"),
         ("vz_bad_local.v", "VZLOCAL", "reads local"),
         ("vz_bad_self.v", "VZSELF", "reads r"),
-        ("vz_bad_rao.v", "VZRAO", "read after its procedural assign"),
         ("vz_bad_ansi.v", "VZANSI", "ANSI output reg"),
         ("vz_bad_macro.v", "VZMACRO", "macro expansion"),
         ("vz_bad_undriven.v", "VZUNDRIVEN", "cannot resolve the driver of en"),
@@ -198,7 +197,7 @@ def test_untaken_generate_branch_writing_a_forced_reg_is_refused():
         analyze(FIX / "vz_generate.v", "VZGEN", GLBL, {"IS_C_INVERTED": ["1'b0"]})
 
 
-def test_procedural_assign_in_another_module_is_refused(tmp_path):
+def test_procedural_assign_in_another_module(tmp_path):
     src = (
         (FIX / "vz_sub.v")
         .read_text()
@@ -208,8 +207,16 @@ def test_procedural_assign_in_another_module_is_refused(tmp_path):
         )
     )
     (tmp_path / "vz_sub2.v").write_text(src)
-    with pytest.raises(TransformError, match="is in module VZSUB_INV, not VZSUB"):
-        analyze(tmp_path / "vz_sub2.v", "VZSUB", GLBL)
+    # instantiated helper: analysed as its own module, triggers traced through the instance
+    a = analyze(tmp_path / "vz_sub2.v", "VZSUB", GLBL)
+    assert set(a.submodules) == {"VZSUB_INV"}
+    assert a.submodules["VZSUB_INV"].forced["r"].triggers == {"CLR"}
+    # a module the analysed model never instantiates is refused
+    (tmp_path / "vz_sub3.v").write_text(
+        src.replace("VZSUB_INV u (.o(clr_n), .i(CLR));", "assign clr_n = ~CLR;")
+    )
+    with pytest.raises(TransformError, match="is in module VZSUB_INV, which VZSUB does not"):
+        analyze(tmp_path / "vz_sub3.v", "VZSUB", GLBL)
 
 
 def test_uncalled_task_with_procedural_assign_is_refused(tmp_path):
@@ -228,18 +235,7 @@ def test_uncalled_task_with_procedural_assign_is_refused(tmp_path):
 # silently drop. Refusals are pinned so a change in coverage is a visible test change.
 # (Reasons: task-12 report, "Model sweep".)
 EXPECT_REFUSED = {
-    "CFGLUT5": "data is read after its procedural assign",
-    "SRL16E": "data is read after its procedural assign",
-    "SRLC16E": "data is read after its procedural assign",
-    "SRLC32E": "data is read after its procedural assign",
-    "FIFO18E1": "is in module FF18_INTERNAL_VLOG, not FIFO18E1",
-    "FIFO36E1": "is in module FF36_INTERNAL_VLOG, not FIFO36E1",
-    "ISERDESE1": "is in module bscntrl_iserdese1_vlog, not ISERDESE1",
-    "OSERDESE1": "is in module plg_oserdese1_vlog, not OSERDESE1",
-    "MMCME2_ADV": "clkfbout_frac_ht_rl: forced variable of type `real`",
-    "MMCME3_ADV": "clkfbout_frac_ht_rl: forced variable of type `real`",
-    "MMCME4_ADV": "clkfbout_frac_ht_rl: forced variable of type `real`",
-    "PLLE2_ADV": "cannot resolve the driver of clk0_div_fint_odd",
+    # known limitation (ruling S18.5): nested generate conditions
     "RAMB18E1": "nested generate conditions",
     "RAMB36E1": "nested generate conditions",
 }
@@ -254,6 +250,28 @@ EXPECT_TRIGGERS = {
     "ODDR": (["R", "S", "glbl.GSR"], []),
     "ODDRE1": (["SR", "glbl.GSR"], ["C"]),
     "PLLE3_ADV": (["PWRDWN", "RST"], ["CLKIN"]),
+    # ruling S18: formerly refused
+    "SRL16E": (["CLK"], []),
+    "SRLC32E": (["CLK"], []),
+    "CFGLUT5": (["CLK"], []),
+    "FIFO18E1": (["RDEN", "RST", "WREN", "glbl.GSR"], ["RDCLK", "WRCLK"]),
+    "ISERDESE1": (["glbl.GSR"], []),
+    "OSERDESE1": (["glbl.GSR"], []),
+}
+# MMCME2_ADV, the spec's worked example: rst_int (RST|PWRDWN, registered on the selected
+# input clock) forces these regs, so both RST and PWRDWN are triggers, the clock enablers.
+EXPECT_REG_TRIGGERS = {
+    ("MMCME2_ADV", "clkout_en0"): ({"PWRDWN", "RST"}, {"CLKIN1", "CLKIN2", "CLKINSEL"}),
+    ("MMCME2_ADV", "pll_locked_tmp2"): (
+        {"PWRDWN", "RST", "glbl.GSR"},
+        {"CLKIN1", "CLKIN2", "CLKINSEL"},
+    ),
+}
+EXPECT_NOTES = {
+    "PLLE2_ADV": [
+        "PLLE2_ADV.clk0_div_fint_odd: never written; treated as constant",
+        "PLLE2_ADV.clkfb_div_fint_odd: never written; treated as constant",
+    ],
 }
 PILOT = ("FDRE", "FDSE", "FDCE", "FDPE")
 
@@ -282,9 +300,16 @@ def _check_model(ms, f):
             analyze(f, f.stem, ms.glbl)
         return
     a = analyze(f, f.stem, ms.glbl)
-    assert a.forced and a.triggers
+    assert (a.forced or a.submodules) and a.triggers
     if f.stem in EXPECT_TRIGGERS:
         assert (a.triggers, a.enablers) == EXPECT_TRIGGERS[f.stem]
+    for (model, reg), (trig, en) in EXPECT_REG_TRIGGERS.items():
+        if model == f.stem:
+            assert (a.forced[reg].triggers, a.forced[reg].enablers) == (trig, en)
+    if f.stem in EXPECT_NOTES:
+        assert [n for n in a.notes if "never written" in n] == EXPECT_NOTES[f.stem]
+    if f.stem.startswith("MMCME"):
+        assert {x.type for x in a.forced.values()} == {"reg", "integer", "real"}
 
 
 def test_submodule_has_40_forced_models():
@@ -336,3 +361,129 @@ endmodule
 """)
     a = analyze(f, "VZTOUT", GLBL)
     assert a.triggers == ["P", "R"] and a.enablers == []
+
+
+# ---- ruling S18 --------------------------------------------------------------------------------
+def test_stale_reads_after_assign_and_deassign_are_recorded():
+    a = analyze(FIX / "vz_stale.v", "VZSTALE", GLBL)
+    x = a.forced["r"]
+    assert a.triggers == ["S"]
+    ((ovr, _),) = x.overrides
+    got = {
+        (a.text[r.span.start : r.span.end], a.text[r.span.start - 4 : r.span.start], r.active)
+        for r in x.stale_reads
+    }
+    assert got == {("r", "x = ", ovr), ("r", "y = ", None)}
+    assert a.text[ovr.start : ovr.end] == "assign r = A;"
+
+
+def test_stale_read_with_ambiguous_active_override_is_refused(tmp_path):
+    src = (FIX / "vz_stale.v").read_text().replace("      y = r;\n", "")
+    src = src.replace(
+        "  always @(posedge C) r <= D;",
+        "  always @(S) begin\n    if (S) assign r = A;\n    x = r;\n  end\n"
+        "  always @(posedge C) r <= D;",
+    )
+    (tmp_path / "vz_amb.v").write_text(src)
+    with pytest.raises(TransformError, match="cannot determine statically which override of r"):
+        analyze(tmp_path / "vz_amb.v", "VZSTALE", GLBL)
+
+
+def test_stale_read_in_an_event_control_or_override_is_refused(tmp_path):
+    src = (FIX / "vz_stale.v").read_text().replace("      x = r;", "      @(r) x = 1'b0;")
+    (tmp_path / "vz_ev.v").write_text(src)
+    with pytest.raises(TransformError, match="r is read in an event control"):
+        analyze(tmp_path / "vz_ev.v", "VZSTALE", GLBL)
+
+
+def test_initialisation_force_polls_the_clock():
+    a = analyze(FIX / "vz_initforce.v", "VZINIT", GLBL)
+    assert a.triggers == ["C"] and a.enablers == []
+    assert a.forced["data"].stale_reads == set()  # the deassign captures, it does not read
+
+
+def test_real_forced_reg_keeps_its_type():
+    a = analyze(FIX / "vz_real.v", "VZREAL", GLBL)
+    x = a.forced["rv"]
+    assert (x.type, x.dims) == ("real", "")
+    assert a.triggers == ["S"]
+    v = analyze(FIX / "vz_loopwait.v", "VZLOOPWAIT", GLBL).forced
+    assert (v["r"].type, v["cnt"].type) == ("reg", "integer")
+
+
+def test_never_written_variable_is_a_constant():
+    a = analyze(FIX / "vz_constvar.v", "VZCONST", GLBL)
+    assert a.triggers == ["S"]
+    assert a.notes == ["VZCONST.never: never written; treated as constant"]
+
+
+def test_undriven_net_is_still_refused():
+    with pytest.raises(TransformError, match="cannot resolve the driver of en"):
+        analyze(FIX / "vz_bad_undriven.v", "VZUNDRIVEN", GLBL)
+
+
+def test_same_file_helper_module():
+    a = analyze(FIX / "vz_helper.v", "VZHELPER", GLBL)
+    assert a.forced == {} and set(a.submodules) == {"VZHELPER_CORE"}
+    sub = a.submodules["VZHELPER_CORE"]
+    assert sub.model == "VZHELPER_CORE" and sub.text[sub.endmodule :].startswith("endmodule")
+    assert sub.forced["q"].triggers == {"PWR", "RST"} and sub.forced["q"].enablers == {"C"}
+    assert (a.triggers, a.enablers) == (["PWR", "RST"], ["C"])
+
+
+def test_read_after_assign_is_substituted_not_refused():
+    a = analyze(FIX / "vz_rao.v", "VZRAO", GLBL)
+    x = a.forced["r"]
+    ((ovr, _),) = x.overrides
+    ((read,),) = [[r for r in x.stale_reads]]
+    assert read.active == ovr and a.text[read.span.start - 4 : read.span.end] == "x = r"
+
+
+def test_non_ansi_output_reg_port():
+    a = analyze(FIX / "vz_portreg.v", "VZPORTREG", GLBL)
+    x = a.forced["Q"]
+    assert x.is_port and x.dims == "[1:0] " and x.type == "reg"
+    assert a.text[x.reg_keyword.start : x.reg_keyword.end] == "reg"
+    assert a.text[x.decl_name.start : x.decl_end] == "Q;"
+    assert a.triggers == ["S"]
+
+
+def test_deassign_of_a_never_assigned_reg_is_a_noop():
+    a = analyze(FIX / "vz_noopdeassign.v", "VZNOOP", GLBL)
+    assert a.forced == {}
+    ((d,),) = [a.noop_deassigns]
+    assert a.text[d.start : d.end] == "deassign q;"
+    assert a.notes == ["VZNOOP.q: deassigned but never assigned; deassign is a no-op"]
+
+
+def test_helper_generate_branches_are_enumerated_through_the_model_parameter(tmp_path):
+    f = tmp_path / "vz_helpgen.v"
+    f.write_text("""// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps/1ps
+module VZHG_CORE (Q, C, D, R);
+  parameter MODE = "A";
+  output Q;
+  input C, D, R;
+  reg q;
+  assign Q = q;
+  generate
+    case (MODE)
+      "B": begin : g_b
+        always @(R) if (R) assign q = 1'b0; else deassign q;
+      end
+      default: begin : g_a
+        always @(R) if (R) assign q = 1'b1; else deassign q;
+      end
+    endcase
+  endgenerate
+  always @(posedge C) q <= D;
+endmodule
+module VZHG (output Q, input C, input D, input R);
+  parameter MODE = "A";
+  VZHG_CORE #(.MODE(MODE)) u (.Q(Q), .C(C), .D(D), .R(R));
+endmodule
+""")
+    assert generate_configs(f, "VZHG") == [{}, {"MODE": '"B"'}]
+    a = analyze(f, "VZHG", GLBL)
+    assert len(a.submodules["VZHG_CORE"].forced["q"].overrides) == 2
+    assert a.triggers == ["R"]

@@ -23,7 +23,7 @@ from __future__ import annotations
 import itertools
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,6 +67,44 @@ _RELATIONAL = {
     _SX.GreaterThanEqualExpression,
 }
 _INTEGER_TYPES = {"integer": "signed [31:0]", "time": "[63:0]"}
+_REAL_TYPES = ("real", "realtime")
+# System functions that only read their arguments (for the never-written-variable check).
+_READ_ONLY_SYSTEM = frozenset(
+    {
+        "$display",
+        "$write",
+        "$strobe",
+        "$monitor",
+        "$info",
+        "$warning",
+        "$error",
+        "$fatal",
+        "$finish",
+        "$stop",
+        "$time",
+        "$stime",
+        "$realtime",
+        "$rtoi",
+        "$itor",
+        "$realtobits",
+        "$bitstoreal",
+        "$signed",
+        "$unsigned",
+        "$abs",
+        "$clog2",
+        "$ceil",
+        "$floor",
+        "$pow",
+        "$sqrt",
+        "$ln",
+        "$log10",
+        "$exp",
+        "$bits",
+        "$isunknown",
+        "$countones",
+        "$onehot",
+    }
+)
 _ONE_BIT_TYPE = re.compile(r"(?:(?:bit|logic|reg)\s*)?(?:\[\s*(\d+)\s*:\s*\1\s*\])?", re.S)
 
 
@@ -84,36 +122,69 @@ class Span:
     end: int
 
 
+@dataclass(frozen=True)
+class StaleRead:
+    """A procedural read of forced reg X after an assign/deassign of X in the same block, with
+    no delay or event control between them (ruling S18). The rewrite substitutes the active
+    value for it: ``active`` is the statement span of the active ``assign X = e_k;``, or
+    ``None`` after a ``deassign X;`` (X__base then holds the value)."""
+
+    span: Span
+    active: Span | None
+
+
+# Sentinel for an override state that differs between the paths reaching a read.
+_AMBIGUOUS = Span(-1, -1)
+
+
 @dataclass
 class ForcedReg:
     name: str
     dims: str  # declaration text between the type keyword and the name, e.g. "signed [4:1] "
+    type: str  # declared type keyword: reg | logic | bit | integer | time | real | realtime
     decl_name: Span
     decl_end: int
     is_port: bool
+    # Set for a non-ANSI `output reg X;`: the span of the `reg`/`logic` keyword, which the
+    # rewrite deletes (X becomes the port net). decl_name is then NOT renamed: the rewrite
+    # declares `reg <dims>X__base;` next to the port declaration instead.
+    reg_keyword: Span | None = None
     overrides: list[tuple[Span, Span]] = field(default_factory=list)  # (statement, rhs)
     deassigns: list[Span] = field(default_factory=list)
     writes: set[Span] = field(default_factory=set)
     sensitivity: set[str] = field(default_factory=set)
     triggers: set[str] = field(default_factory=set)
     enablers: set[str] = field(default_factory=set)
+    stale_reads: set[StaleRead] = field(default_factory=set)
 
 
 @dataclass
 class Analysis:
+    """One module's forced regs. For the analysed model, ``submodules`` holds the same-file
+    helper modules it instantiates that force regs too (each rewritten in place); their
+    triggers and enablers are already traced to the model's own ports and glbl."""
+
     model: str
     path: Path
     text: str
     endmodule: int
     forced: dict[str, ForcedReg]
+    submodules: dict[str, Analysis] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    # `deassign X;` of a reg that is never procedurally assigned: a no-op in Verilog, so the
+    # rewrite replaces each with a null statement `;` (FF18_INTERNAL_VLOG ALMOSTFULL).
+    noop_deassigns: list[Span] = field(default_factory=list)
+
+    def _regs(self) -> list[ForcedReg]:
+        return [*self.forced.values(), *(x for a in self.submodules.values() for x in a._regs())]
 
     @property
     def triggers(self) -> list[str]:
-        return sorted(set().union(*(f.triggers for f in self.forced.values())))
+        return sorted(set().union(*(f.triggers for f in self._regs())))
 
     @property
     def enablers(self) -> list[str]:
-        en = set().union(*(f.enablers for f in self.forced.values()))
+        en = set().union(*(f.enablers for f in self._regs()))
         return sorted(en - set(self.triggers))
 
 
@@ -171,6 +242,12 @@ def has_procedural_assign(path: Path) -> bool:
     """True if the file contains a procedural ``assign``/``deassign`` (syntax only)."""
     tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
     return any(n.kind in _SYNTAX_FORCE for n in _walk_syntax(tree.root))
+
+
+def _module_names(tree: SyntaxTree) -> list[str]:
+    return [
+        n.header.name.valueText for n in _walk_syntax(tree.root) if n.kind == _SX.ModuleDeclaration
+    ]
 
 
 def _module_decl(tree: SyntaxTree, module: str) -> SyntaxNode:
@@ -366,14 +443,22 @@ def generate_configs(
     module_name = module
     tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
     params = _module_parameters(tree, module_name)
-    local = _localparams(tree, module_name)
     constructs, nested = _generate_constructs(tree, module_name)
     if nested:
         raise TransformError(
             module_name, f"nested generate conditions are not supported: `{nested[0]}`"
         )
+    work = [(c, _localparams(tree, module_name), True) for c in constructs]
+    # Same-file helper modules (ruling S18): their generate conditions usually name a
+    # parameter the model passes down under the same name (FF18_INTERNAL_VLOG SIM_DEVICE).
+    # Enumerate the model's parameter of that name; a helper branch this cannot reach is
+    # caught by analyze()'s coverage check if it matters.
+    for other in _module_names(tree):
+        if other != module_name:
+            helper, _ = _generate_constructs(tree, other)
+            work += [(c, _localparams(tree, other), False) for c in helper]
     out: list[dict[str, str]] = [{}]
-    for c in constructs:
+    for c, local, own in work:
         nodes = _expand_localparams(c.conds, local)
         names = sorted(set().union(*(_identifiers(n) for n in nodes)) & set(params))
         cands: dict[str, list[str]] = {}
@@ -388,12 +473,13 @@ def generate_configs(
                 or lits
             )
         empty = [n for n, v in cands.items() if not v]
-        if empty:
+        if empty and own:
             raise TransformError(
                 module_name,
                 f"cannot enumerate generate configurations: no "
                 f"candidate values for {empty} in `{_plain(c.conds[0])}`",
             )
+        names = [n for n in names if cands[n]]
         for combo in itertools.product(*(cands[n] for n in names)):
             cfg = {n: v for n, v in zip(names, combo, strict=True) if v != params[n]}
             if cfg not in out:
@@ -407,8 +493,21 @@ def generate_configs(
 
 # ---- elaborated-AST walker -------------------------------------------------------------------
 class _Walker:
-    def __init__(self, model: str, inst: ast.InstanceSymbol, src: _Source) -> None:
+    def __init__(
+        self, model: str, inst: ast.InstanceSymbol, src: _Source, parent: _Walker | None = None
+    ) -> None:
         self.model, self.inst, self.body, self.src = model, inst, inst.body, src
+        self.parent = parent
+        self.defname = inst.body.definition.name
+        self.children: list[_Walker] = []
+        # instance path -> input port name -> signals (in this module) its connection reads
+        self.port_inputs: dict[str, dict[str, set[str]]] = {}
+        self.variables: set[str] = set()  # module-level variables (never-written check)
+        self.notes: list[str] = []
+        self.always_forced: set[str] = set()  # forced from an always block (not only initial)
+        self._stale: dict[str, dict[Span, Span | None]] = defaultdict(dict)
+        self._proc = ast.ProceduralBlockKind.Always
+        self._dry = False  # loop fixpoint pre-pass: compute states without recording
         self.text = src.text
         self.buffer = inst.body.location.buffer
         self.prefix = inst.body.hierarchicalPath + "."
@@ -422,7 +521,13 @@ class _Walker:
 
     # ---- helpers ---------------------------------------------------------------------------
     def err(self, msg: str) -> TransformError:
-        return TransformError(self.model, msg)
+        where = f"in {self.defname} ({self.inst.hierarchicalPath}): " if self.parent else ""
+        return TransformError(self.model, where + msg)
+
+    def all(self) -> Iterator[_Walker]:
+        yield self
+        for c in self.children:
+            yield from c.all()
 
     def key(self, sym: ast.Symbol) -> str:
         path = sym.hierarchicalPath
@@ -502,23 +607,6 @@ class _Walker:
             for op in e.operands:
                 self.select_reads(op, out)
 
-    def rvalue_names(self, stmt: ast.Statement) -> set[str]:
-        """Names a statement reads (lvalue roots of its assignments excluded). The lvalue of
-        a ``deassign`` counts as a read: its rewrite reads the reg."""
-        lv: set[int] = set()
-        names: list[tuple[str, int]] = []
-
-        def v(n: _AstNode) -> ast.VisitAction:
-            k = n.kind
-            if k == _EK.Assignment:
-                lv.update(x.sourceRange.start.offset for x in self.lvalues(n.left))
-            elif k in (_EK.NamedValue, _EK.HierarchicalValue):
-                names.append((self.key(n.symbol), n.sourceRange.start.offset))
-            return ast.VisitAction.Advance
-
-        stmt.visit(v)
-        return {name for name, off in names if off not in lv}
-
     def written_names(self, stmt: _AstNode) -> set[str]:
         out: set[str] = set()
 
@@ -582,8 +670,30 @@ class _Walker:
         if sym.kind != _SY.Variable or sym.type.isUnpackedArray:
             raise self.err(f"{name}: only plain packed reg variables can be transformed")
         decl = sym.syntax.parent if sym.syntax is not None else None
-        if decl is None or decl.kind != _SX.DataDeclaration:
+        reg_keyword = None
+        if decl is not None and decl.kind == _SX.PortDeclaration:
+            # non-ANSI `output reg X;` (FF18_INTERNAL_VLOG): the rewrite deletes the `reg`
+            # keyword, so X becomes the port net, and declares X__base itself
+            dtype = decl.header.dataType if decl.header.kind == _SX.VariablePortHeader else None
+            if (
+                dtype is None
+                or dtype.kind not in (_SX.RegType, _SX.LogicType)
+                or len(_nodes(decl.declarators)) != 1
+            ):
+                raise self.err(
+                    f"{name}: port declaration `{_plain(decl)}` cannot be split into a net "
+                    "port and a shadow reg (one `output reg`/`output logic` name per line)"
+                )
+            kw = dtype.keyword
+            if kw.location.buffer != self.buffer:
+                raise self.err(f"{name}: port declaration is inside a macro expansion")
+            start = self.src.char(kw.location.offset)
+            reg_keyword = Span(start, start + len(kw.rawText))
+            type_node = dtype
+        elif decl is None or decl.kind != _SX.DataDeclaration:
             raise self.err(f"{name}: declared as an ANSI output reg; rewrite the port by hand")
+        else:
+            type_node = decl.type
         is_port = any(
             p.internalSymbol is not None and p.internalSymbol.name == sym.name
             for p in self.body.portList
@@ -591,23 +701,28 @@ class _Walker:
         loc = self.src.char(sym.location.offset)
         # Keep the packed range exactly as declared ([4:1], [0:3], signed), so every existing
         # X[i] / X[a:b] read indexes the new net the same way (review #5).
-        t = self.span(decl.type)
-        typ = self.text[t.start : t.end]
-        m = re.match(r"^\s*(?:reg|logic|bit)\b\s*(.*)$", typ, re.S)
+        t = self.span(type_node)
+        typ = self.text[t.start : t.end].strip()
+        m = re.match(r"^(reg|logic|bit)\b\s*(.*)$", typ, re.S)
         if m is not None:
-            dims = m.group(1).strip()
-        elif typ.strip() in _INTEGER_TYPES:  # the same 4-state vector, spelled explicitly
-            dims = _INTEGER_TYPES[typ.strip()]
+            kind, dims = m.group(1), m.group(2).strip()
+        elif typ in _INTEGER_TYPES:  # the same 4-state vector, spelled explicitly
+            kind, dims = typ, _INTEGER_TYPES[typ]
+        elif typ in _REAL_TYPES:  # ruling S18: X__base/X__ovr_k are declared real too
+            kind, dims = typ, ""
         else:
             raise self.err(
-                f"{name}: forced variable of type `{typ.strip()}` is not reg/logic/bit/integer/time"
+                f"{name}: forced variable of type `{typ}` is not "
+                "reg/logic/bit/integer/time/real/realtime"
             )
         self.regs[name] = ForcedReg(
             name,
             dims + " " if dims else "",
+            kind,
             Span(loc, loc + len(sym.name)),
             self.span(decl).end,
             is_port,
+            reg_keyword,
         )
 
     # ---- pass 2: drivers, writes, forcing sites --------------------------------------------
@@ -641,6 +756,8 @@ class _Walker:
                 for nv in self.lvalues(a.left):
                     self.drive(nv, reads, frozenset())
                 return ast.VisitAction.Skip
+            if k == _SY.Variable:
+                self.variables.add(self.key(n))
             if k in (_SY.Net, _SY.Variable) and n.initializer is not None:
                 self.drivers[self.key(n)].append(
                     _Driver(frozenset(self.reads(n.initializer, set())), frozenset())
@@ -692,16 +809,16 @@ class _Walker:
         (over-approximation adds triggers, it never drops one)."""
         ins: set[str] = set()
         outs = []
+        ports = self.port_inputs.setdefault(inst.hierarchicalPath, {})
         for conn in inst.portConnections:
             e = conn.expression
             if e is None:
                 continue
-            if conn.port.direction == _AD.In:
-                self.reads(e, ins)
-            else:
+            if conn.port.direction in (_AD.In, _AD.InOut):
+                ports[conn.port.name] = self.reads(e, set())
+                ins |= ports[conn.port.name]
+            if conn.port.direction != _AD.In:
                 outs.append(e)
-                if conn.port.direction == _AD.InOut:
-                    self.reads(e, ins)
         for e in outs:
             for nv in self.lvalues(e):
                 if self.key(nv.symbol) in self.forced_names:
@@ -710,6 +827,30 @@ class _Walker:
                         f"output of instance {inst.name}"
                     )
                 self.drive(nv, ins, frozenset())
+        # A same-file helper module may force regs itself (ruling S18): analyse its body too.
+        child = _Walker(self.model, inst, self.src, parent=self)
+        child.prescan()
+        child.walk()
+        self.children.append(child)
+
+    def lift(self, trig: set[str], en: set[str]) -> tuple[set[str], set[str]]:
+        """Map roots that are this module's input ports up through the instance
+        connections to the analysed model's own ports (and glbl)."""
+        w = self
+        while w.parent is not None:
+            p = w.parent
+            conns = p.port_inputs.get(w.inst.hierarchicalPath, {})
+            nt: set[str] = set()
+            ne: set[str] = set()
+            for t in trig:
+                tr, e = ({t}, set()) if t.startswith("glbl.") else p.trace(conns.get(t, set()))
+                nt |= tr
+                ne |= e
+            for x in en:
+                tr, e = ({x}, set()) if x.startswith("glbl.") else p.trace(conns.get(x, set()))
+                ne |= tr | e
+            trig, en, w = nt, ne - nt, p
+        return trig, en
 
     def block(self, pb: ast.ProceduralBlockSymbol) -> None:
         body, edges, levels = pb.body, set(), set()
@@ -727,7 +868,9 @@ class _Walker:
             implicit |= self.inner_waits(body, edges, levels)
         if implicit:  # @* / always_comb / always_latch: sensitive to everything read
             levels |= self.reads(stmt, set())
+        self._proc = pb.procedureKind
         self.stmt(stmt, frozenset(), _Ctx(frozenset(edges), frozenset(levels)))
+        self.track(stmt, {})
 
     def inner_waits(self, body: ast.Statement, edges: set[str], levels: set[str]) -> bool:
         implicit = False
@@ -759,18 +902,48 @@ class _Walker:
         raise self.err(f"unsupported timing control {k.name}")
 
     def seq(self, stmts: list[ast.Statement], conds: frozenset[str], ctx: _Ctx) -> None:
-        pending: set[str] = set()
         for s in stmts:
-            if s.kind == _SK.Timed and s.timing.kind in _DELAYS:
-                pending.clear()
-            hit = pending & self.rvalue_names(s)
-            if hit:
-                raise self.err(
-                    f"{sorted(hit)[0]} is read after its procedural assign/deassign "
-                    "in the same block without an intervening delay"
-                )
             self.stmt(s, conds, ctx)
-            pending |= self.forced_in(s)
+            ctx = self.after_wait(s, ctx)
+
+    def after_wait(self, s: ast.Statement, ctx: _Ctx) -> _Ctx:
+        """Statements that follow a wait in a sequence run when it ends: `@(x);`, `wait(c);`
+        and a polling loop (`while (c) #d;`, SRL16E's initialisation) add their signals."""
+        edges, levels = set(ctx.edges), set(ctx.levels)
+        if s.kind == _SK.Timed and s.timing.kind not in _DELAYS:
+            if self.events(s.timing, edges, levels):
+                levels |= self.reads(s.stmt, set())
+        elif s.kind == _SK.Wait:
+            self.reads(s.cond, levels)
+        elif s.kind in _LOOPS and self.has_timing(s.body):
+            for part in self.loop_header(s):
+                self.reads(part, levels)
+        else:
+            return ctx
+        return _Ctx(frozenset(edges), frozenset(levels))
+
+    def has_timing(self, s: ast.Statement) -> bool:
+        found = False
+
+        def v(n: _AstNode) -> ast.VisitAction:
+            nonlocal found
+            found |= n.kind in (_SK.Timed, _SK.Wait)
+            return ast.VisitAction.Advance
+
+        s.visit(v)
+        return found
+
+    def loop_header(self, s: ast.Statement) -> list[_AstNode]:
+        k = s.kind
+        if k == _SK.ForLoop:
+            return [*s.initializers, *([s.stopExpr] if s.stopExpr is not None else []), *s.steps]
+        if k in (_SK.WhileLoop, _SK.DoWhileLoop):
+            return [s.cond]
+        if k == _SK.RepeatLoop:
+            return [s.count]
+        if k == _SK.ForeachLoop:
+            return [s.arrayRef]
+        return []
 
     def stmt(self, s: ast.Statement, conds: frozenset[str], ctx: _Ctx) -> None:
         k = s.kind
@@ -914,6 +1087,164 @@ class _Walker:
 
     def _site(self, name: str, ctx: _Ctx) -> None:
         self.regs[name].sensitivity |= ctx.edges | ctx.levels
+        if self._proc != ast.ProceduralBlockKind.Initial:
+            self.always_forced.add(name)
+
+    # ---- reads of a forced reg right after its assign/deassign (ruling S18) --------------
+    def track(
+        self, s: ast.Statement, st: dict[str, Span | None], in_task: str | None = None
+    ) -> dict[str, Span | None]:
+        """Walk a block in execution order with the override state of each forced reg
+        assigned/deassigned since the last delay or event control; record (or refuse) every
+        read of such a reg. Returns the state after ``s``."""
+        k = s.kind
+        if k == _SK.Block:
+            return self.track(s.body, st, in_task)
+        if k == _SK.List:
+            for x in s.list:
+                st = self.track(x, st, in_task)
+            return st
+        if k == _SK.Timed:
+            self.stale(s.timing, st, in_task, "an event control")
+            return self.track(s.stmt, {}, in_task)  # suspended: every net has propagated
+        if k == _SK.Wait:
+            self.stale(s.cond, st, in_task, "a wait condition")
+            # may or may not suspend: another process may change the override meanwhile
+            return self.track(s.stmt, {n: _AMBIGUOUS for n in st}, in_task)
+        if k == _SK.ProceduralAssign:
+            self.stale(s.assignment.right, st, in_task, "an override expression")
+            return {**st, self.key(s.assignment.left.symbol): self.span(s)}
+        if k == _SK.ProceduralDeassign:
+            # the rewrite captures the active override value itself: not a read of X
+            return {**st, self.key(s.lvalue.symbol): None}
+        if k == _SK.Conditional:
+            for c in s.conditions:
+                self.stale(c.expr, st, in_task)
+            a = self.track(s.ifTrue, st, in_task)
+            b = self.track(s.ifFalse, st, in_task) if s.ifFalse is not None else st
+            return _merge(a, b)
+        if k == _SK.Case:
+            self.stale(s.expr, st, in_task)
+            for item in s.items:
+                for e in item.expressions:
+                    self.stale(e, st, in_task)
+            outs = [self.track(item.stmt, st, in_task) for item in s.items]
+            outs.append(self.track(s.defaultCase, st, in_task) if s.defaultCase else st)
+            return _merge(*outs)
+        if k == _SK.ExpressionStatement:
+            return self.track_expr(s.expr, st, in_task)
+        if k in _LOOPS:
+            if not st and not self.forced_in(s.body):
+                return st
+            dry, self._dry = self._dry, True
+            try:  # fixpoint: the body may run any number of times, including zero
+                cur = st
+                while True:
+                    nxt = _merge(st, self.track(s.body, cur, in_task))
+                    if nxt == cur:
+                        break
+                    cur = nxt
+            finally:
+                self._dry = dry
+            for part in self.loop_header(s):
+                self.stale(part, cur, in_task)
+            self.track(s.body, cur, in_task)
+            return cur
+        if k == _SK.VariableDeclaration:
+            if s.symbol.initializer is not None:
+                self.stale(s.symbol.initializer, st, in_task)
+            return st
+        if k in _NOOPS:
+            return st
+        self.stale(s, st, in_task)
+        return st
+
+    def track_expr(
+        self, e: ast.Expression, st: dict[str, Span | None], in_task: str | None
+    ) -> dict[str, Span | None]:
+        if e.kind == _EK.Assignment:
+            self.stale(e.right, st, in_task)
+            self._select_nodes(e.left, lambda n: self.stale(n, st, in_task))
+            if not e.isNonBlocking and e.timingControl is not None:
+                return {}  # `x = #d y;` suspends the process
+            return st
+        if e.kind == _EK.Call and not e.isSystemCall:
+            for a in e.arguments:
+                self.stale(a.right if a.kind == _EK.Assignment else a, st, in_task)
+            return self.track(e.subroutine.body, st, e.subroutine.name)
+        self.stale(e, st, in_task)
+        return st
+
+    def _select_nodes(self, e: ast.Expression, fn: Callable[[ast.Expression], None]) -> None:
+        k = e.kind
+        if k == _EK.ElementSelect:
+            fn(e.selector)
+            self._select_nodes(e.value, fn)
+        elif k == _EK.RangeSelect:
+            fn(e.left)
+            fn(e.right)
+            self._select_nodes(e.value, fn)
+        elif k == _EK.Concatenation:
+            for op in e.operands:
+                self._select_nodes(op, fn)
+
+    def stale(
+        self,
+        node: _AstNode,
+        st: dict[str, Span | None],
+        in_task: str | None,
+        where: str | None = None,
+    ) -> None:
+        if not st:
+            return
+
+        def v(n: _AstNode) -> ast.VisitAction:
+            if n.kind in (_EK.NamedValue, _EK.HierarchicalValue):
+                name = self.key(n.symbol)
+                if name in st:
+                    self.stale_read(name, n, st[name], in_task, where)
+            elif n.kind == _EK.Call and not n.isSystemCall:
+                hit = self.reads(n.subroutine.body, set()) & set(st)
+                if hit:
+                    raise self.err(
+                        f"{sorted(hit)[0]} is read inside function {n.subroutine.name} right "
+                        "after its procedural assign/deassign; the read cannot be substituted"
+                    )
+            return ast.VisitAction.Advance
+
+        node.visit(v)
+
+    def stale_read(
+        self,
+        name: str,
+        n: ast.Expression,
+        active: Span | None,
+        in_task: str | None,
+        where: str | None,
+    ) -> None:
+        line = self.src.line(n.sourceRange.start.offset)
+        if where is not None:
+            raise self.err(
+                f"{name} is read in {where} at line {line} right after its procedural "
+                "assign/deassign; the read cannot be substituted"
+            )
+        if in_task is not None:
+            raise self.err(
+                f"{name} is read in task {in_task} at line {line} right after its procedural "
+                "assign/deassign in the caller; the read cannot be substituted"
+            )
+        if active == _AMBIGUOUS:
+            raise self.err(
+                f"cannot determine statically which override of {name} is active at the read "
+                f"at line {line} (paths from different assign/deassign/delays meet)"
+            )
+        if self._dry:
+            return
+        span = self.span(n)
+        seen = self._stale[name]
+        if seen.get(span, active) != active:
+            raise self.err(f"the read of {name} at line {line} sees different overrides")
+        seen[span] = active
 
     def _generic_writes(self, s: ast.Statement, reads: frozenset[str], ctx: _Ctx) -> None:
         def v(n: _AstNode) -> ast.VisitAction:
@@ -923,6 +1254,31 @@ class _Walker:
             return ast.VisitAction.Advance
 
         s.visit(v)
+
+    def never_written(self, name: str) -> bool:
+        """Syntax-level proof that module-level variable ``name`` is never a write target:
+        not an assignment lvalue, not incremented, not passed to a task/function or port,
+        not procedurally assigned. Its value is then its type default, a constant."""
+        decl = self.body.definition.syntax
+        for n in _walk_syntax(decl):
+            if n.kind != _SX.IdentifierName or n.identifier.valueText != name:
+                continue
+            off = n.sourceRange.start.offset
+            a = n.parent
+            while a is not None and a is not decl:
+                kn = a.kind.name
+                if kn.endswith("AssignmentExpression"):
+                    r = a.left.sourceRange
+                    if r.start.offset <= off < r.end.offset:
+                        return False
+                elif "crement" in kn or "PortConnection" in kn or kn.startswith("Procedural"):
+                    return False
+                elif kn == "InvocationExpression":
+                    callee = _plain(a.left)
+                    if callee not in _READ_ONLY_SYSTEM:
+                        return False
+                a = a.parent
+        return True
 
     # ---- cone tracing ------------------------------------------------------------------------
     def trace(self, start: set[str]) -> tuple[set[str], set[str]]:
@@ -943,6 +1299,11 @@ class _Walker:
                     f"cannot trace {s}: it is driven by an instance output "
                     "of a module that is not in the model's file"
                 )
+            if not self.drivers.get(s) and s in self.variables and self.never_written(s):
+                note = f"{self.defname}.{s}: never written; treated as constant"
+                if note not in self.notes:
+                    self.notes.append(note)
+                continue
             if not self.drivers.get(s):
                 raise self.err(
                     f"cannot resolve the driver of {s} while tracing triggers "
@@ -952,6 +1313,17 @@ class _Walker:
                 work += [(r, via_clock) for r in d.reads]
                 work += [(c, True) for c in d.clocks]
         return trig, en - trig
+
+
+def _merge(*states: dict[str, Span | None]) -> dict[str, Span | None]:
+    """The state where paths meet: a reg keeps its override only if every path agrees."""
+    names = set().union(*states)
+    missing = object()
+    out: dict[str, Span | None] = {}
+    for n in names:
+        vals = {st.get(n, missing) for st in states}
+        out[n] = next(iter(vals)) if len(vals) == 1 else _AMBIGUOUS
+    return out
 
 
 def _compile(
@@ -978,13 +1350,20 @@ def _compile(
 
 
 def _check_coverage(
-    path: Path, module: str, src: _Source, forced: dict[str, ForcedReg], elaborated: set[int]
+    path: Path,
+    module: str,
+    src: _Source,
+    forced: dict[str, dict[str, ForcedReg]],
+    elaborated: set[int],
 ) -> None:
-    """Backstops: every procedural assign/deassign in the file was analysed, and no
-    generate branch that never elaborated mentions a forced reg."""
+    """Backstops: every procedural assign/deassign in the file was analysed (in the model or
+    a helper module it instantiates), and no generate branch that never elaborated mentions
+    a forced reg of its module."""
     tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
-    seen = {o[0].start for x in forced.values() for o in x.overrides}
-    seen |= {d.start for x in forced.values() for d in x.deassigns}
+    regs = [x for m in forced.values() for x in m.values()]
+    seen = {o[0].start for x in regs for o in x.overrides} | {
+        d.start for x in regs for d in x.deassigns
+    }
     buffer = _module_decl(tree, module).header.name.location.buffer
     for n in _walk_syntax(tree.root):
         if n.kind not in _SYNTAX_FORCE:
@@ -993,9 +1372,8 @@ def _check_coverage(
         if r.start.buffer != buffer:
             raise TransformError(
                 module,
-                "a procedural assign/deassign is inside a macro "
-                "expansion or include; the transform only rewrites the "
-                "model's own text",
+                "a procedural assign/deassign is inside a macro expansion or include; the "
+                "transform only rewrites the model's own text",
             )
         if src.char(r.start.offset) in seen:
             continue
@@ -1004,67 +1382,115 @@ def _check_coverage(
         while owner is not None and owner.kind != _SX.ModuleDeclaration:
             owner = owner.parent
         other = owner.header.name.valueText if owner is not None else None
-        if other != module:
+        if other != module and other not in forced:
             raise TransformError(
                 module,
-                f"procedural assign/deassign at line {line} is in "
-                f"module {other}, not {module}; only the analysed module is "
-                "transformed",
+                f"procedural assign/deassign at line {line} is in module {other}, which "
+                f"{module} does not instantiate; only instantiated modules are transformed",
             )
         raise TransformError(
             module,
-            f"procedural assign/deassign at line {line} was never "
+            f"procedural assign/deassign at line {line} (module {other}) was never "
             "elaborated (an untaken generate branch or an uncalled task)",
         )
-    constructs, _ = _generate_constructs(tree, module)
-    for c in constructs:
-        for arm in c.arms:
-            if arm.sourceRange.start.offset in elaborated:
-                continue
-            hit = _identifiers(arm) & set(forced)
-            if hit:
-                line = src.line(arm.sourceRange.start.offset)
-                raise TransformError(
-                    module,
-                    f"generate branch at line {line} mentions forced "
-                    f"reg {sorted(hit)[0]} but no generate configuration "
-                    "elaborates it",
-                )
+    for name, regs_of in forced.items():
+        constructs, nested = _generate_constructs(tree, name)
+        if name != module and nested:
+            raise TransformError(
+                module,
+                f"nested generate conditions are not supported (in helper module {name}): "
+                f"`{nested[0]}`",
+            )
+        for c in constructs:
+            for arm in c.arms:
+                if arm.sourceRange.start.offset in elaborated:
+                    continue
+                hit = _identifiers(arm) & set(regs_of)
+                if hit:
+                    line = src.line(arm.sourceRange.start.offset)
+                    raise TransformError(
+                        module,
+                        f"generate branch at line {line} mentions forced reg "
+                        f"{sorted(hit)[0]} but no generate configuration elaborates it",
+                    )
+
+
+def _copy(x: ForcedReg) -> ForcedReg:
+    """An empty ForcedReg with ``x``'s declaration facts, to merge configurations into."""
+    return ForcedReg(x.name, x.dims, x.type, x.decl_name, x.decl_end, x.is_port, x.reg_keyword)
+
+
+def _merge_reg(m: ForcedReg, x: ForcedReg, model: str) -> None:
+    m.overrides = sorted(set(m.overrides) | set(x.overrides), key=lambda o: o[0].start)
+    m.deassigns = sorted(set(m.deassigns) | set(x.deassigns), key=lambda d: d.start)
+    m.writes |= x.writes
+    m.sensitivity |= x.sensitivity
+    m.triggers |= x.triggers
+    m.enablers |= x.enablers
+    active = {r.span: r.active for r in m.stale_reads}
+    for r in x.stale_reads:
+        if active.get(r.span, r.active) != r.active:
+            raise TransformError(
+                model,
+                f"the read of {x.name} at offset {r.span.start} sees different "
+                "overrides under different generate configurations",
+            )
+    m.stale_reads |= x.stale_reads
 
 
 def analyze(
     path: Path, module: str, glbl: Path, choices: dict[str, list[str]] | None = None
 ) -> Analysis:
-    """Analyse ``module`` in ``path`` under every generate configuration (the union)."""
+    """Analyse ``module`` in ``path`` (and every same-file helper module it instantiates)
+    under every generate configuration, taking the union."""
     src = _Source(Path(path))
-    merged: dict[str, ForcedReg] = {}
+    merged: dict[str, dict[str, ForcedReg]] = {module: {}}
+    ends: dict[str, int] = {}
+    notes: list[str] = []
     elaborated: set[int] = set()
-    end = -1
     for overrides in generate_configs(path, module, choices):
         _, inst = _compile(path, module, glbl, overrides)
-        w = _Walker(module, inst, src)
-        w.prescan()
-        w.walk()
-        elaborated |= w.generate_blocks
-        for x in w.regs.values():
+        top = _Walker(module, inst, src)
+        top.prescan()
+        top.walk()
+        for w in top.all():
+            elaborated |= w.generate_blocks
+            ends[w.defname] = src.char(w.body.definition.syntax.endmodule.location.offset)
+            for x in w.regs.values():
+                if not x.overrides:  # deassign-only here; see noop_deassigns below
+                    x.sensitivity = set()
+                    _merge_reg(
+                        merged.setdefault(w.defname, {}).setdefault(x.name, _copy(x)), x, module
+                    )
+                    continue
+                trig, en = w.lift(*w.trace(x.sensitivity))
+                if not trig and x.name in w.always_forced:
+                    raise w.err(
+                        f"{x.name}: no trigger found (the forcing block has no sensitivity "
+                        "list or its cone has no primitive input)"
+                    )
+                if not trig:
+                    note = f"{w.defname}.{x.name}: forced only by initial blocks; no triggers"
+                    if note not in notes:
+                        notes.append(note)
+                x.triggers, x.enablers = trig, en
+                x.stale_reads = {StaleRead(sp, a) for sp, a in w._stale[x.name].items()}
+                m = merged.setdefault(w.defname, {}).setdefault(x.name, _copy(x))
+                _merge_reg(m, x, module)
+        for w in top.all():  # notes are added while tracing, including the lifts above
+            notes += [n for n in w.notes if n not in notes]
+    subs = {n: r for n, r in merged.items() if n != module and r}
+    _check_coverage(Path(path), module, src, {module: merged[module], **subs}, elaborated)
+
+    def build(name: str, regs: dict[str, ForcedReg]) -> Analysis:
+        noop = sorted(d for x in regs.values() if not x.overrides for d in x.deassigns)
+        for x in regs.values():
             if not x.overrides:
-                raise TransformError(module, f"{x.name} is deassigned but never assigned")
-            trig, en = w.trace(x.sensitivity)
-            if not trig:
-                raise TransformError(
-                    module,
-                    f"{x.name}: no trigger found (the forcing block has "
-                    "no sensitivity list or its cone has no primitive input)",
-                )
-            m = merged.setdefault(
-                x.name, ForcedReg(x.name, x.dims, x.decl_name, x.decl_end, x.is_port)
-            )
-            m.overrides = sorted(set(m.overrides) | set(x.overrides), key=lambda o: o[0].start)
-            m.deassigns = sorted(set(m.deassigns) | set(x.deassigns), key=lambda d: d.start)
-            m.writes |= x.writes
-            m.sensitivity |= x.sensitivity
-            m.triggers |= trig
-            m.enablers |= en
-        end = src.char(inst.body.definition.syntax.endmodule.location.offset)
-    _check_coverage(Path(path), module, src, merged, elaborated)
-    return Analysis(module, Path(path), src.text, end, merged)
+                notes.append(f"{name}.{x.name}: deassigned but never assigned; deassign is a no-op")
+        forced = {n: x for n, x in regs.items() if x.overrides}
+        return Analysis(name, Path(path), src.text, ends[name], forced, noop_deassigns=noop)
+
+    a = build(module, merged[module])
+    a.submodules = {n: build(n, r) for n, r in sorted(subs.items())}
+    a.notes = sorted(set(notes))
+    return a
