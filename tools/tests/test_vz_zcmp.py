@@ -155,12 +155,16 @@ def test_other_z_compares_are_refused_loudly(tmp_path, what):
 
 def test_guard_helpers():
     class M:
-        bits = [type("B", (), {"vec": v, "port": p})() for v, p in (("clk", "C"), ("in", "D"))]
+        bits = [
+            type("B", (), {"vec": v, "port": p, "role": r})()
+            for v, p, r in (("clk", "C", ""), ("in", "D", ""), ("in", "D", ""),
+                            ("in", "IO", "drive_en"))
+        ]  # fmt: skip
 
     class V:
         events = [Event(0, "set", "in", 0, 0, "1"), Event(5, "set", "in", 1, 0, "z0")]
 
-    assert zcmp.connected(M()) == {"C", "D"}
+    assert zcmp.connected(M()) == {"C": 1, "D": 2}  # per bit; inout drive bits excluded
     assert zcmp.drives_z(V())
     V.events = V.events[:1]
     assert not zcmp.drives_z(V())
@@ -183,9 +187,10 @@ def test_equivalence_refuses_an_undriven_input_or_a_z_stimulus(tmp_path, monkeyp
     lib = tmp_path / "vz"
     lib.mkdir()
     transform_one(ms.unisims / "VZZCMP.v", ms.glbl, lib)
-    monkeypatch.setattr(zcmp, "connected", lambda m: {"C", "D"})
+    # S is 2 bits wide: one driven bit leaves it undriven too (review M3)
+    monkeypatch.setattr(zcmp, "connected", lambda m: {"C": 1, "D": 1, "S": 1})
     r = check_model(_subject(ms), ms, tmp_path / "a", {}, lib=lib)
-    assert r.status == "error" and "CE, CLR, R, S of VZZCMP left unconnected" in r.reason
+    assert r.status == "error" and "CE, CLR, R, S of VZZCMP left unconnected" in r.reason, r
     monkeypatch.undo()
     monkeypatch.setattr(zcmp, "drives_z", lambda vec: True)
     r = check_model(_subject(ms), ms, tmp_path / "b", {}, lib=lib)

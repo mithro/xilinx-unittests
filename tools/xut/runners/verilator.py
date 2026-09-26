@@ -89,9 +89,12 @@ instance of the primitive does not connect every input by name).
 ``IverilogVzRunner`` (``iverilog-vz``) is Icarus on the verilatorized models: every test
 that runs on ``verilator`` also runs here (spec §6.2; ``xut run`` adds it). Its
 ``lib_first`` puts ``vz_dir`` before the model source. A primitive the transform
-refused is ``skip "model not transformed: <reason>"``. It lives in this module, not in
-``iverilog.py``: the transform's tool hash covers every module the verilatorize package
-imports (``iverilog.py`` among them), and it must not change with the runner.
+refused (or a model of its hierarchy) is ``skip "model not transformed: <reason>"``.
+
+The transform's tool hash (``driver.tool_sources``) covers every module the verilatorize
+package imports. The equivalence check imports ``xut.runners``, whose ``__init__`` imports
+this module, so the hash covers this runner too (review M2): editing it re-transforms and
+re-checks every model once. That errs on the safe side (a redo, never a stale copy).
 """
 
 from __future__ import annotations
@@ -99,6 +102,7 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
@@ -106,6 +110,7 @@ import pyslang
 
 from xut.catalog import model as catalog_model
 from xut.container import Executor, executor_for
+from xut.errors import XutError
 from xut.formats import xtr, xvec
 from xut.runners.base import (
     ConfigResult,
@@ -134,7 +139,6 @@ from xut.runners.sim import (
 from xut.testspec import TestCase
 from xut.validate import validate
 from xut.verilatorize import zcmp
-from xut.verilatorize.analyze import _walk_syntax
 from xut.verilatorize.driver import (
     ModelEntry,
     ensure_model,
@@ -184,13 +188,26 @@ def config_attrs(case: TestCase, cfg: str, ctx: RunContext) -> tuple[dict, bool]
     return cfg_attrs(case, cfg), False
 
 
-def blocked(e: ModelEntry, prim: str, key: str) -> str | None:
-    """Why ``e`` blocks a Verilator result for configuration ``key`` (ruling S35.1), or
-    None. Only an equivalence ``pass`` lets a transformed model through."""
+def refused(e: ModelEntry, prim: str) -> str | None:
+    """Why no Verilator result can exist for ``prim``: verilatorize refused it, or a model
+    of its hierarchy (which Verilator would then read unmodified; ruling S45)."""
     if e.status == "unsupported":
         return f"verilatorize cannot transform {prim}: {e.reason}"
-    if e.status != "transformed":
-        return None
+    if e.depends_on_unsupported:
+        return (
+            f"verilatorize cannot transform {', '.join(e.depends_on_unsupported)} in the "
+            f"hierarchy of {prim} (see the manifest; ruling S45)"
+        )
+    return None
+
+
+def blocked(e: ModelEntry, prim: str, key: str) -> str | None:
+    """Why ``e`` blocks a Verilator result for configuration ``key`` (rulings S35.1, S45),
+    or None. Only an equivalence ``pass`` lets a gated model (transformed, or over a
+    transformed dependency) through."""
+    why = refused(e, prim)
+    if why is not None or not e.gated:
+        return why
     status, why = e.equiv.get(key), e.equiv_reason.get(key, "")
     if status == "pass":
         return None
@@ -238,21 +255,181 @@ def _x_inputs(src: Path) -> bool:
     return validate(xvec.load(src / "stim.xvec"), m).x_inputs
 
 
-def drive_guard(case: TestCase, cfg: str, ctx: RunContext, e: ModelEntry) -> str | None:
-    """The z-compare rewrite's validity condition (ruling S38), for a model that has it:
-    every input of the primitive driven. An error reason when the configuration's wrapper
-    leaves an input unconnected or its stimulus drives z; None otherwise.
+@dataclass(frozen=True)
+class SvInstance:
+    """One instance of the primitive in an elaborated sv testbench (rulings S38, S45)."""
 
-    - vector: the python run's wrapper map and stimulus;
-    - cocotb: the ``xut_cocotb_top`` wrapper built from the catalog (``XutDut`` drives
-      integers only, so a cocotb test cannot drive z);
-    - sv: the testbench instantiates the primitive itself; every instance of it in the
-      testbench source must connect every input by name to something (``sv_undriven``).
-      A value the testbench drives at run time is not visible here: an sv test that drives
-      z must declare verilator unsupported (as x-input tests already do)."""
-    if zcmp.REWRITE not in e.rewrites:
-        return None
+    path: str
+    attrs: dict[str, str]  # every non-local parameter, as a Verilog literal
+    undriven: list[str]  # input ports with no connection
+    zdriven: list[str]  # input ports connected to a constant holding a z bit
+
+
+def _literal(kind: str, value: object) -> object:
+    """A pyslang ``ConstantValue`` as a value ``render_attr`` takes for a parameter of
+    ``kind``; a value with x/z bits stays a literal (refused later, fail closed)."""
+    v = value.value  # type: ignore[attr-defined]
+    if isinstance(v, float) or kind == "real":
+        return float(v)
+    if value.hasUnknown():  # type: ignore[attr-defined]
+        return str(value)
+    if kind == "string":
+        return '"' + str(value.convertToStr()).strip('"') + '"'  # type: ignore[attr-defined]
+    return int(v)
+
+
+def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[SvInstance]:
+    """Every instance of ``prim`` in the elaborated sv testbench of ``case``: its source is
+    preprocessed with the runner's include dirs (``hdl/``, ``case.shared_dirs``, the
+    testbench's directory) and defines, so an instance in an included ``.svh`` or named
+    through a macro (``FLOP_PRIM``) is found (review I1), and elaborated with glbl and the
+    primitive's hierarchy (originals) to read each instance's parameters and connections.
+    Raises ``XutError`` (fail closed) when it does not elaborate cleanly or no instance of
+    ``prim`` is found."""
+    from xut.catalog.unisim import _is_benign
+    from xut.verilatorize.driver import hierarchy, model_files, parsed
+
+    ms, source = ctx.model_source, case.test_dir / str(case.source)
+    pp = pyslang.parsing.PreprocessorOptions()
+    pp.additionalIncludePaths = [str(d) for d in (HDL, *case.shared_dirs, source.parent)]
+    pp.predefines = [
+        *(k if v == "" else f"{k}={v}" for k, v in ctx.defines.items()),
+        f"XUT_SEED={sv_seed_define(seed)}",
+    ]
+    # the tops are found by elaboration (the testbench and glbl): pyslang keeps topModules
+    # as string views, which Python temporaries do not outlive
+    bag = pyslang.Bag([pp])
+    sm = pyslang.SourceManager()  # a fresh one: never a cached text of the file
+    comp = pyslang.ast.Compilation(bag)
+    files = [source, ms.glbl, *(model_files(ms)[m] for m in hierarchy(ms, [prim]))]
+    for f in files:
+        comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromFile(str(f), sm, bag))
+    models = {str(Path(f).resolve()) for f in files[1:]}
+
+    def benign(d: object) -> bool:
+        # a model's benign diagnostics (e.g. an unknown secureip module inside UNISIM);
+        # never the testbench's: an unknown module there fails closed
+        where = str(Path(sm.getFullPath(d.location.buffer)).resolve())  # type: ignore[attr-defined]
+        return _is_benign(d) and (d.code != pyslang.Diags.UnknownModule or where in models)  # type: ignore[attr-defined]
+
+    errors = [d for d in comp.getAllDiagnostics() if d.isError() and not benign(d)]
+    if errors:
+        report = pyslang.DiagnosticEngine.reportAll(sm, errors).strip().splitlines()
+        raise XutError(
+            f"{source.name}: the testbench does not elaborate, so its {prim} instances cannot "
+            f"be checked (ruling S45, fail closed): {' | '.join(report[:2])}"
+        )
+    kinds = {p.name: p.kind for p in parsed(ms, prim).params}
+    found: list[pyslang.ast.InstanceSymbol] = []
+
+    def visit(o: object) -> bool:
+        # below the testbench only: the model file's own module elaborates as a top too
+        if (
+            isinstance(o, pyslang.ast.InstanceSymbol)
+            and o.definition.name == prim
+            and o.hierarchicalPath.startswith(f"{source.stem}.")
+        ):
+            found.append(o)
+        return True
+
+    comp.getRoot().visit(visit)
+    if not found:
+        raise XutError(
+            f"{source.name}: no instance of {prim} found in the elaborated testbench (ruling "
+            "S45, fail closed): its parameterisations and connections cannot be checked"
+        )
+    out = []
+    for inst in found:
+        attrs = {
+            p.name: _literal(kinds.get(p.name, "bits"), p.value)
+            for p in inst.body.parameters
+            if not p.isLocalParam
+        }
+        undriven, zdriven = [], []
+        for c in inst.portConnections:
+            if c.port.direction != pyslang.ast.ArgumentDirection.In:
+                continue
+            e = c.expression
+            if e is None:
+                undriven.append(c.port.name)
+                continue
+            v = e.eval(pyslang.ast.EvalContext(inst))  # a constant (literal, parameter)
+            if v is not None and v.hasUnknown() and "z" in str(v).lower():
+                zdriven.append(c.port.name)
+        out.append(SvInstance(inst.hierarchicalPath, attrs, sorted(undriven), sorted(zdriven)))
+    return out
+
+
+def gate_config(
+    case: TestCase,
+    cfg: str,
+    ctx: RunContext,
+    seed: int,
+    log: Callable[[str], None],
+    *,
+    verdicts: bool,
+    reject: bool = False,
+) -> tuple[str, str] | None:
+    """The model gate of one configuration, shared by both runners: ``("skip" | "error",
+    reason)``, or None to run it.
+
+    1. ``ensure_model(prim, check=False)`` transforms the primitive's hierarchy. Refused
+       (``refused``): ``("skip", ...)`` for iverilog-vz (``verdicts=False``), ``("error",
+       ...)`` for Verilator. A model that is not gated needs nothing more.
+    2. The configuration's parameterisations: the vector stimulus's attributes (the
+       ``default`` configuration for ``expect=reject``), the cocotb ``configs`` entry, or,
+       for sv, those of every instance of the primitive in the elaborated testbench
+       (``sv_instances``, review I2; fail closed). Each is ensured (equivalence-checked);
+       with ``verdicts``, a non-pass verdict is an error (``blocked``).
+    3. The z-compare validity condition, every input driven (ruling S38), when the model's
+       ``effective_rewrites`` hold ``zcmp``: a wrapper input left unconnected (per bit,
+       review M3), a stimulus driving z, or an sv instance input unconnected or tied to z
+       is an error."""
+    from xut.verilatorize.equiv import config_key  # equiv imports xut.runners: late
+
     ms, prim = ctx.model_source, case.prim
+    try:
+        e = ensure_model(ms, prim, {}, root=ctx.root, log=log, check=False)
+        why = refused(e, prim)
+        if why is not None and verdicts:
+            return ("error", why)
+        if why is not None:  # iverilog-vz: the brief's "model not transformed: <reason>"
+            return ("skip", e.reason if e.status == "unsupported" else why)
+        if not e.gated:
+            return None
+        insts: list[SvInstance] = []
+        if case.style == "vector":
+            attrs_list = [{} if reject else config_attrs(case, cfg, ctx)[0]]
+        elif case.style == "cocotb":
+            attrs_list = [cfg_attrs(case, cfg)]
+        else:
+            insts = sv_instances(case, ctx, prim, seed)
+            attrs_list = [i.attrs for i in insts]
+        for attrs in attrs_list:
+            e = ensure_model(ms, prim, attrs, root=ctx.root, log=log)
+            why = blocked(e, prim, config_key(model_attrs(ms, prim, attrs)))
+            if why is not None and verdicts:
+                return ("error", why)
+        if zcmp.REWRITE not in (e.effective_rewrites or e.rewrites):
+            return None
+        why = _undriven(case, cfg, ctx, insts)
+        return None if why is None else ("error", why)
+    except XutError as err:
+        return ("error", str(err))
+
+
+def _undriven(case: TestCase, cfg: str, ctx: RunContext, insts: list[SvInstance]) -> str | None:
+    """The every-input-driven check of ``gate_config`` step 3."""
+    ms, prim = ctx.model_source, case.prim
+    if case.style == "sv":
+        for i in insts:
+            if i.undriven or i.zdriven:
+                what = ", ".join([*i.undriven, *(f"{p} (tied to z)" for p in i.zdriven)])
+                return (
+                    f"{i.path}: input port(s) {what} of {prim} not driven by the testbench: "
+                    "the z-compare rewrite (ruling S38) is valid only with every input driven"
+                )
+        return None
     if case.style == "vector":
         src = python_dir(ctx, case) / f"cfg-{cfg}"
         if not (src / "stim.xvec").is_file():
@@ -262,43 +439,10 @@ def drive_guard(case: TestCase, cfg: str, ctx: RunContext, e: ModelEntry) -> str
         if missing:
             return zcmp.undriven_reason(prim, missing)
         return zcmp.Z_STIMULUS if zcmp.drives_z(xvec.load(src / "stim.xvec")) else None
-    if case.style == "cocotb":
-        entry = catalog_model.load_entry(case.family, prim, ctx.root)
-        m = build_map(spec_from_catalog(entry, cfg, cfg_attrs(case, cfg)))
-        missing = undriven_inputs(ms, prim, zcmp.connected(m))
-        return zcmp.undriven_reason(prim, missing) if missing else None
-    return sv_undriven(case.test_dir / str(case.source), prim, undriven_inputs(ms, prim, set()))
-
-
-def sv_undriven(source: Path, prim: str, inputs: list[str]) -> str | None:
-    """Why an sv testbench's instance of ``prim`` may leave an input undriven: an input not
-    connected by name, an empty ``.P()``, a connection to a z literal, or a connection
-    style that cannot be checked (ordered or ``.*``). None when every instance connects
-    every input in ``inputs``, or the testbench does not instantiate ``prim``."""
-    tree = pyslang.syntax.SyntaxTree.fromFile(str(source))
-    for n in _walk_syntax(tree.root):
-        if n.kind != _SX.HierarchyInstantiation or n.type.valueText != prim:
-            continue
-        for inst in n.instances:
-            if not isinstance(inst, pyslang.syntax.SyntaxNode):
-                continue
-            named: dict[str, pyslang.syntax.SyntaxNode | None] = {}
-            for c in inst.connections:
-                if not isinstance(c, pyslang.syntax.SyntaxNode):
-                    continue
-                if c.kind != _SX.NamedPortConnection:
-                    return (
-                        f"{source.name}: an instance of {prim} connects its ports by "
-                        f"position or .*: the z-compare rewrite (ruling S38) needs every "
-                        "input driven, and only named connections can be checked"
-                    )
-                named[c.name.valueText] = c.expr
-            missing = [p for p in inputs if named.get(p) is None]
-            zs = [p for p in inputs if p in named and named[p] is not None and "z" in
-                  str(named[p]).split("'")[-1].lower() and "'" in str(named[p])]  # fmt: skip
-            if missing or zs:
-                return f"{source.name}: " + zcmp.undriven_reason(prim, missing + zs)
-    return None
+    entry = catalog_model.load_entry(case.family, prim, ctx.root)
+    m = build_map(spec_from_catalog(entry, cfg, cfg_attrs(case, cfg)))
+    missing = undriven_inputs(ms, prim, zcmp.connected(m))
+    return zcmp.undriven_reason(prim, missing) if missing else None
 
 
 def _log(path: Path) -> Callable[[str], None]:
@@ -340,25 +484,20 @@ class VerilatorRunner(ContainerSim, Runner):
         if case.style == "vector":
             return self._vector(case, cfg, cd, ctx, ex, timeout, seeds)
         attrs = cfg_attrs(case, cfg)
-        why = self._gate(case, cfg, cd, ctx, attrs)
+        why = self._gate(case, cfg, cd, ctx)
         if why is not None:
             return ConfigResult(cfg, "error", why)
         if case.style == "cocotb":
             return self._cocotb(case, cfg, cd, ctx, ex, timeout, seeds, attrs)
         return self._sv(case, cfg, cd, ctx, ex, timeout, seeds, attrs)
 
-    def _gate(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext, attrs: dict) -> str | None:
-        """``blocked`` for this configuration, after ``ensure_model`` (logged to run.log),
-        then the z-compare rewrite's validity condition (``drive_guard``)."""
-        ms = ctx.model_source
-        e = ensure_model(ms, case.prim, attrs, root=ctx.root, log=_log(cd / "run.log"))
-        if e.status != "transformed":
-            return blocked(e, case.prim, "")
-        # equiv imports xut.runners (xsim), which imports this module: import it late
-        from xut.verilatorize.equiv import config_key
-
-        why = blocked(e, case.prim, config_key(model_attrs(ms, case.prim, attrs)))
-        return why if why is not None else drive_guard(case, cfg, ctx, e)
+    def _gate(
+        self, case: TestCase, cfg: str, cd: Path, ctx: RunContext, reject: bool = False
+    ) -> str | None:
+        """``gate_config`` with verdicts required (every refusal is an error)."""
+        seed = self.stimulus_seed(case, ctx)
+        got = gate_config(case, cfg, ctx, seed, _log(cd / "run.log"), verdicts=True, reject=reject)
+        return None if got is None else got[1]
 
     def _build(
         self, ex: Executor, cd: Path, argv: list[str], timeout: int
@@ -400,7 +539,7 @@ class VerilatorRunner(ContainerSim, Runner):
             return ConfigResult(cfg, "error", X_STIMULUS)
         vec, m, comp, exp, header = prepare_vector(cd, case, cfg, ctx, self.name)
         reject = vec.expect == "reject"
-        why = self._gate(case, cfg, cd, ctx, {} if reject else dict(vec.attrs))
+        why = self._gate(case, cfg, cd, ctx, reject)
         if why is not None:
             return ConfigResult(cfg, "error", why)
         vz = vz_dir(ctx.model_source, ctx.root)
@@ -509,7 +648,8 @@ class VerilatorRunner(ContainerSim, Runner):
 
     def finish(self, case: TestCase, ctx: RunContext, d: Path, res: RunResult) -> None:
         stim = res.seeds.get("stimulus")
-        res.seeds["x"] = list(x_seeds(stim if isinstance(stim, int) else 0))
+        # no stimulus seed: no X seeds were derived or used, so none is recorded (review M4)
+        res.seeds["x"] = list(x_seeds(stim)) if isinstance(stim, int) else []
         flags = [
             json.loads(p.read_text())["x_dependence"] for p in sorted(d.glob("cfg-*/xdep.json"))
         ]
@@ -521,26 +661,28 @@ class IverilogVzRunner(IverilogRunner):
 
     name = "iverilog-vz"
 
-    def _entry(
-        self, case: TestCase, cfg: str, ctx: RunContext, log: Callable[[str], None]
-    ) -> ModelEntry:
-        attrs, reject = config_attrs(case, cfg, ctx)
-        return ensure_model(
-            ctx.model_source, case.prim, {} if reject else attrs, root=ctx.root, log=log
-        )
-
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
-        e = self._entry(case, cfg, ctx, _log(cd / "run.log"))
-        if e.status == "unsupported":
-            return ConfigResult(cfg, "skip", f"model not transformed: {e.reason}")
-        why = drive_guard(case, cfg, ctx, e)
-        if why is not None:
-            return ConfigResult(cfg, "error", why)
+        """``gate_config`` without requiring verdicts (this run is the guard itself; every
+        parameterisation is still ensured, so a verdict exists): a refused hierarchy is
+        ``skip "model not transformed: ..."``, a validity-condition failure an error."""
+        reject = case.style == "vector" and config_attrs(case, cfg, ctx)[1]
+        got = gate_config(
+            case,
+            cfg,
+            ctx,
+            self.stimulus_seed(case, ctx),
+            _log(cd / "run.log"),
+            verdicts=False,
+            reject=reject,
+        )
+        if got is not None:
+            status, why = got
+            return ConfigResult(
+                cfg, status, f"model not transformed: {why}" if status == "skip" else why
+            )
         return super().run_config(case, cfg, cd, ctx)
 
     def lib_first(self, case: TestCase, cfg: str, ctx: RunContext) -> tuple[Path, ...]:
-        """``vz_dir`` first. ``ensure_model`` (cached: ``run_config`` already did the work)
-        makes sure the primitive's copy is current; the value is a local of the caller,
-        never stored on ``self``: runner jobs are threads."""
-        self._entry(case, cfg, ctx, print)
+        """``vz_dir`` first (``run_config`` already made its hierarchy current); the value is a
+        local of the caller, never stored on ``self``: runner jobs are threads."""
         return (vz_dir(ctx.model_source, ctx.root),)

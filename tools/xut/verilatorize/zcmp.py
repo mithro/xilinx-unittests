@@ -197,7 +197,66 @@ def find(path: Path, model: str) -> list[ZCompare]:
             if not re.search(rb"[=!]==", raw[s:e]):  # a macro expansion: spans not the text
                 raise TransformError(model, f"z-literal comparison not in the source text: {where}")
             out.append(ZCompare(s, e, op, port, line(s), const))
+        _refuse_hidden(mod, model, name, {(z.start, z.end) for z in out}, line)
     return out
+
+
+def _zparams(mod: pyslang.syntax.SyntaxNode) -> set[str]:
+    """Parameters (and localparams) of ``mod`` whose value is written with a z literal."""
+    out: set[str] = set()
+    for n in _walk_syntax(mod):
+        if n.kind != _SX.ParameterDeclaration:
+            continue
+        for d in n.declarators:
+            if isinstance(d, pyslang.syntax.SyntaxNode) and d.kind == _SX.Declarator:
+                init = d.initializer
+                if init is not None and any(_zlit(c) for c in _walk_syntax(init)):
+                    out.add(d.name.valueText)
+    return out
+
+
+def _span(n: pyslang.syntax.SyntaxNode) -> tuple[int, int]:
+    return n.sourceRange.start.offset, n.sourceRange.end.offset
+
+
+def _has_z(n: pyslang.syntax.SyntaxNode, handled: set[tuple[int, int]], zparams: set[str]) -> bool:
+    """``n`` holds a z literal or names a z-valued parameter, outside the comparisons the
+    rewrite handles (``handled`` spans)."""
+    if _span(n) in handled:
+        return False
+    if _zlit(n) or (n.kind == _SX.IdentifierName and n.identifier.valueText in zparams):
+        return True
+    return any(_has_z(c, handled, zparams) for c in n if isinstance(c, pyslang.syntax.SyntaxNode))
+
+
+def _refuse_hidden(
+    mod: pyslang.syntax.SyntaxNode,
+    model: str,
+    name: str,
+    handled: set[tuple[int, int]],
+    line: object,
+) -> None:
+    """Refuse every other comparison with z (review M1): a z inside a concatenation or any
+    larger expression operand, a parameter whose value holds z (``P === ZP``), a ``case``
+    whose expression holds z, and ``inside`` with z. Such a form is neither rewritten nor
+    safe to leave: Verilator would fail on it with the tristate error."""
+    zparams = _zparams(mod)
+    for n in _walk_syntax(mod):
+        if n.kind in _CMP or n.kind == _SX.InsideExpression:
+            what = "comparison"
+            parts = [n]
+        elif n.kind == _SX.CaseStatement:
+            what, parts = "case expression", [n.expr]
+        else:
+            continue
+        if any(_has_z(x, handled, zparams) for x in parts if x is not None):
+            s = n.sourceRange.start.offset
+            raise TransformError(
+                model,
+                f"{what} with z at line {line(s)} (module {name}) in a form the z-compare "
+                "rewrite does not handle (only `<input port> ===/!== <z literal>`; ruling "
+                "S38, review M1)",
+            )
 
 
 def apply(path: Path, model: str) -> tuple[bytes, list[ZCompare]]:
@@ -229,13 +288,20 @@ def leftover(text: str) -> int:
 
 
 # ---- the validity condition: every input driven (runners and the equivalence check) -------
-def connected(m: object) -> set[str]:
-    """The ports a wrapper map (``xut.wrap.DutMap``) drives: its clock and input bits."""
-    return {b.port for b in m.bits if b.vec in ("clk", "in")}  # type: ignore[attr-defined]
+def connected(m: object) -> dict[str, int]:
+    """Port -> the number of its bits a wrapper map (``xut.wrap.DutMap``) drives from the
+    clock and input vectors (an inout's drive bits are not the port itself)."""
+    out: dict[str, int] = {}
+    for b in m.bits:  # type: ignore[attr-defined]
+        if b.vec in ("clk", "in") and not b.role:
+            out[b.port] = out.get(b.port, 0) + 1
+    return out
 
 
 def drives_z(vec: object) -> bool:
-    """A stimulus (``xut.formats.xvec.Vec``) sets some input bit to z."""
+    """A stimulus (``xut.formats.xvec.Vec``) sets some input bit to z. Only ``set`` drives
+    ``in_vec``; clock edges and glbl events drive 0/1, and the testbench's own initial
+    ``in_vec`` is x (never z) until the time-0 barrier."""
     return any(e.op == "set" and "z" in e.value.lower() for e in vec.events)  # type: ignore[attr-defined]
 
 
