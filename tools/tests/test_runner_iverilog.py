@@ -23,7 +23,7 @@ from xut.formats import xtr
 from xut.modelsrc import ModelSource
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, workdir
-from xut.runners.iverilog import IverilogRunner, IverilogVzRunner, param_value
+from xut.runners.iverilog import IverilogRunner, param_value
 from xut.runners.python import PythonRunner
 from xut.runners.sim import HDL, ParamError, sv_check
 from xut.testspec import TestCase, discover
@@ -102,8 +102,6 @@ def _copy_toy(root: Path) -> Path:
 def test_registry():
     assert RUNNERS["iverilog"] is IverilogRunner
     assert IverilogRunner.name == "iverilog" and IverilogRunner.x_observable
-    # the iverilog-vz stub exists but nothing can select it until Task 15
-    assert IverilogVzRunner.name == "iverilog-vz" and "iverilog-vz" not in RUNNERS
 
 
 HDR = {"runner": "iverilog", "flow": "rtl", "model": "m", "prim": "TOYFF", "cfg": "c", "seed": "0"}
