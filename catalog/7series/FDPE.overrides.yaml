@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# flops work unit: corrections and claims layered over the generated FDPE.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (FDPE, pp. 372-373).
+#
+# Attributes: no override. The generated INIT/IS_*_INVERTED `allowed` lists are
+# already the 1-bit pair UG953 gives (the "1'b0 to 1'b1" range cells resolve to it).
+#
+# Crosses: none declared. UG953 documents each IS_*_INVERTED and INIT on its own
+# (p373) and describes no interaction between any two attributes, so a pairwise
+# cross would be a bin without a documented behaviour behind it.
+ports:
+  # doc:373: IS_<pin>_INVERTED=1 makes a non-clock pin active-Low "rather than
+  # active-High", so PRE is active-High before inversion; the p372 logic table
+  # agrees (PRE=1 gives Q=1 with C don't-care).
+  PRE: {active: high}
+claims:
+  - {id: FDPE.C1, page: 372, provenance: "doc:372", text: "With CE High and PRE not asserted, Q takes D at the active clock edge."}
+  - {id: FDPE.C2, page: 372, provenance: "doc:372", text: "With CE Low, clock edges are ignored and Q holds."}
+  - {id: FDPE.C3, page: 372, provenance: "doc:372", text: "Active PRE overrides all other inputs, CE and C included, and drives Q High asynchronously, without a clock edge."}
+  - {id: FDPE.C4, page: 372, provenance: "doc:372", text: "While GSR is active (power-up or asserted) Q takes the INIT value."}
+  - {id: FDPE.C5, page: 373, provenance: "doc:373", text: "IS_C_INVERTED=1 makes the register negative-edge triggered."}
+  - {id: FDPE.C6, page: 373, provenance: "doc:373", text: "IS_PRE_INVERTED=1 makes PRE active-Low."}
+  - {id: FDPE.C7, page: 373, provenance: "doc:373", text: "IS_D_INVERTED=1 inverts the D input."}
+  - {id: FDPE.C8, page: 373, provenance: "doc:373", text: "IS_D_INVERTED must stay 0 unless the flop is used as an I/O register."}
