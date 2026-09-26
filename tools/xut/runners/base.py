@@ -90,6 +90,19 @@ class RunResult:
     x_dependence: bool | None = None
     bins_reached: list[str] | None = None
     hw: dict | None = None
+    #: git provenance of the tested primitive (``xut.provenance``, ruling S21)
+    tree_hash: str | None = None
+    head: str | None = None
+    dirty: bool | None = None
+
+    def stamp(self, case: TestCase) -> RunResult:
+        """Fill ``tree_hash``, ``head`` and ``dirty`` from ``case``'s repository."""
+        from xut.provenance import case_state
+
+        st = case_state(case)
+        self.tree_hash, self.head = st.tree_hash, st.head
+        self.dirty = None if st.dirty is None else bool(st.dirty)
+        return self
 
     def to_dict(self) -> dict:
         return {"format": RESULT_FORMAT, **asdict(self)}
@@ -280,7 +293,7 @@ class Runner(ABC):
             model_source=ctx.model_source.name,
             defines=dict(ctx.defines),
             started=_now(),
-        )
+        ).stamp(case)
 
     def _skip(self, case: TestCase, ctx: RunContext, d: Path, reason: str) -> RunResult:
         r = self._new_result(case, ctx, "skip", reason)
@@ -425,6 +438,6 @@ def error_result(
         defines=dict(ctx.defines),
         duration_s=round(duration_s, 3),
         started=_now(),
-    )
+    ).stamp(case)
     r.write(d)
     return r
