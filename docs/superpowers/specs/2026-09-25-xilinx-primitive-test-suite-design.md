@@ -1,6 +1,6 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3.2 (2026-09-26). Rev 2 incorporated the technical and
+- Status: revision 3.3 (2026-09-26). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
@@ -19,6 +19,14 @@
   marking is all-or-nothing (S6). In §5.1, `hw_renderable` means
   order-renderable on the stepped harness, under the conditions listed there
   (S8′).
+  Rev 3.3 records ruling S18 on the §6.2 transform:
+  - a `deassign` captures the active override expression's value, not the
+    net `X`;
+  - reads of `X` right after its `assign`/`deassign` in the same block are
+    substituted;
+  - `real` forced regs keep their type;
+  - a never-written variable in a trigger cone is a constant;
+  - same-file helper modules are analysed and transformed too.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -378,13 +386,27 @@ procedurally-forced reg `X`:
      exactly, so scheduling order is unchanged.
 2. Each `assign X = e_k;` is replaced by `X__ovr_sel = k;`, and each
    `deassign X;` by
-   `begin if (X__ovr_sel != 0) begin X__base = X; X__ovr_sel = 0; end end`.
+   `begin if (X__ovr_sel != 0) begin X__base = <active>; X__ovr_sel = 0; end end`,
+   where `<active>` is the value of the active override expression,
+   `(X__ovr_sel == 1) ? e_1 : (X__ovr_sel == 2) ? e_2 : ...`. It is
+   **not** the net `X`, which may not have propagated yet when the `assign`
+   ran earlier in the same block with no delay in between (the SRL16E
+   initialisation: `assign data = INIT; while (...) #1000; deassign data;`,
+   whose loop may run zero times).
    The second form preserves the Verilog rule that a reg keeps its forced value
    after `deassign`. The guard keeps a `deassign` of a reg that is not forced a
-   no-op, as Verilog requires. Without it, a not-yet-propagated `X` could
-   overwrite an `X__base` written earlier in the same time step. The outer
+   no-op, as Verilog requires. Without it, a stale value could overwrite an
+   `X__base` written earlier in the same time step. The outer
    `begin ... end` makes the replacement a single statement, so an `else` that
    followed the original `deassign` still binds to its own `if`.
+   For the same reason, every procedural **read** of `X` after an
+   `assign`/`deassign` of `X` in the same block, with no delay or event
+   control in between, is substituted: by the active override's value after
+   an `assign X = e_k;`, or by `X__base` after a `deassign X;`. The analysis
+   records each such read, with the override that is active there. It refuses
+   the model if that cannot be determined statically: paths with different
+   overrides meet, or the read is in an event control, an override expression,
+   or a task or function body.
 3. `X` becomes a net:
    `assign X = (X__ovr_sel == 0) ? X__base : (X__ovr_sel == 1) ? e_1 : ...`.
    Because the `e_k` are evaluated continuously, this preserves the
