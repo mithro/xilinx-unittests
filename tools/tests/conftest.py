@@ -6,11 +6,32 @@ for every test module (review A5), instead of a per-module ``needs_image``. Ever
 
 The suite is ``tmp_path``-hermetic and runs in parallel:
 ``uv run pytest -n auto --dist loadfile`` (pytest-xdist; ``loadfile`` keeps each module's
-process-level caches on one worker)."""
+process-level caches on one worker).
 
+Git runs as it does in CI: without the user's global or system config, so a global
+``core.excludesFile`` (commonly ``*.pyc``) cannot hide an untracked file from
+``xut.provenance`` and pass a test locally that fails in CI."""
+
+import os
 import shutil
+from pathlib import Path
 
 import pytest
+
+#: The repository's own ``.gitignore``: a throwaway checkout that ``xut run`` stamps
+#: copies it, so what counts as an untracked (dirty) input is what it is in the repo.
+REPO_GITIGNORE = Path(__file__).resolve().parents[2] / ".gitignore"
+
+
+@pytest.fixture(autouse=True)
+def _ci_like_git(monkeypatch):
+    """No global or system git config (CI has none) and no default global excludes
+    file (``$XDG_CONFIG_HOME/git/ignore``, read even without a global config)."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.excludesFile")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", os.devnull)
 
 
 @pytest.fixture
