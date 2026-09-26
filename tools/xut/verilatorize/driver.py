@@ -10,17 +10,27 @@ Every model file of ``ms.unisims`` (and ``ms.retarget``) is classified:
   construct. The model is then ``verilator: unsupported``.
 
 ``vz_dir(ms)/manifest.json`` records every entry. A model is re-transformed only when its
-source sha256 or ``xut.__version__`` changed (or its transformed copy is missing).
+incremental key changed (its source, glbl, the catalog-derived generate choices, or the
+tool: every ``xut`` module the transform and the check are built from, ``tool_sources``),
+or its transformed copy is missing. A re-transform resets its equivalence results.
+
+``check=True`` then equivalence-checks (``xut.verilatorize.equiv.check_model``) every
+transformed model under the default configuration and every one of its
+``generate_configs``, recording ``pass``/``fail``/``error`` in ``equiv[config_key]`` and the
+oracle in ``equiv_oracle[config_key]``; the work goes in
+``vz_dir(ms)/equiv/<MODEL>/<config_dir>/``. A ``pass`` or ``fail`` is kept until the model
+is re-transformed; a missing result or an ``error`` is (re)checked.
 """
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import multiprocessing
 import time
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -51,13 +61,15 @@ class ModelEntry:
     notes: list[str] = field(default_factory=list)
     #: config key ("default" or sorted "NAME=value,...") -> pass | fail | error (Task 14)
     equiv: dict[str, str] = field(default_factory=dict)
+    #: config key -> the original model's oracle: iverilog | xsim ("" if it never ran)
+    equiv_oracle: dict[str, str] = field(default_factory=dict)
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
     xut_version: str = __version__
     # The rest of the incremental key (ruling S28c): the entry is redone when any changes.
     glbl_sha256: str = ""
-    tool_sha256: str = ""  # analyze/rewrite/driver sources + xut.__version__
+    tool_sha256: str = ""  # tool_sources() + xut.__version__
     choices_sha256: str = ""  # the catalog-derived generate choices
 
     @classmethod
@@ -164,12 +176,57 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _xut_file(name: str) -> Path | None:
+    """The source file of module ``name`` (``xut...``), or None if it is not a module."""
+    base = Path(__file__).resolve().parent.parent.parent.joinpath(*name.split("."))
+    for f in (base.with_suffix(".py"), base / "__init__.py"):
+        if f.is_file():
+            return f
+    return None
+
+
+def _xut_imports(f: Path) -> set[str]:
+    """Every ``xut`` module ``f`` imports, at any depth of the file (function-local
+    imports included), with the packages on the way (their ``__init__`` runs too)."""
+    out: set[str] = set()
+    for node in ast.walk(ast.parse(f.read_bytes(), str(f))):
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module, *(f"{node.module}.{a.name}" for a in node.names)]
+        for n in names:
+            parts = n.split(".")
+            if parts[0] == "xut":
+                out |= {".".join(parts[: i + 1]) for i in range(len(parts))}
+    return out
+
+
+def tool_sources() -> list[Path]:
+    """The files a transform and its equivalence check depend on (review M1): every module
+    of this package, every ``xut`` module they import, transitively, and the vector
+    testbench the check runs."""
+    from xut.stimcompile import TB
+
+    here = Path(__file__).resolve().parent
+    todo = sorted(here.glob("*.py"))
+    seen: set[Path] = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        todo += [p for n in sorted(_xut_imports(f)) if (p := _xut_file(n)) and p not in seen]
+    return [*sorted(seen), TB]
+
+
 def tool_sha256() -> str:
-    """Hash of the transform's own sources and ``xut.__version__``."""
+    """Hash of ``tool_sources()`` (names and contents) and ``xut.__version__``."""
     h = hashlib.sha256(__version__.encode())
-    here = Path(__file__).parent
-    for name in ("analyze.py", "rewrite.py", "driver.py"):
-        h.update((here / name).read_bytes())
+    root = Path(__file__).resolve().parent.parent.parent
+    for f in tool_sources():
+        h.update(str(f.relative_to(root) if f.is_relative_to(root) else f).encode() + b"\0")
+        h.update(f.read_bytes())
     return h.hexdigest()
 
 
@@ -235,9 +292,12 @@ def verilatorize(
     *,
     jobs: int = 1,
     progress: Callable[[str], None] = print,
+    check: bool = False,
 ) -> Manifest:
     """Transform ``ms``'s models (all, or ``models``) into ``vz_dir(ms)``, incrementally, and
-    save ``vz_dir(ms)/manifest.json``. Prints ``progress: done=N total=M elapsed_s=E``."""
+    save ``vz_dir(ms)/manifest.json``. Prints ``progress: done=N total=M elapsed_s=E``, a
+    last line with ``done=M`` even when a model crashed. ``check``: equivalence-check them
+    too (module docstring), printing ``progress: equiv done=N total=M elapsed_s=E``."""
     files = model_files(ms)
     if models:
         unknown = sorted(set(models) - set(files))
@@ -274,11 +334,11 @@ def verilatorize(
                     if crash is None:
                         crash = XutError(f"{m}: verilatorize crashed: {type(e).__name__}: {e}")
                         crash.__cause__ = e
-                    continue
-                for k, v in keys[m].items():
-                    setattr(entry, k, v)
-                man.models[m] = entry
-                done += 1
+                else:
+                    for k, v in keys[m].items():
+                        setattr(entry, k, v)
+                    man.models[m] = entry
+                done += 1  # a crashed model is done too: the last line still reads done=M
                 progress(
                     f"progress: done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
                 )
@@ -286,4 +346,49 @@ def verilatorize(
         man.save(mpath)
     if crash is not None:
         raise crash
+    if check:
+        try:
+            _check_all(ms, man, sorted(files), out_dir, jobs, progress)
+        finally:
+            man.save(mpath)
     return man
+
+
+def _check_all(
+    ms: ModelSource,
+    man: Manifest,
+    models: list[str],
+    out_dir: Path,
+    jobs: int,
+    progress: Callable[[str], None],
+) -> None:
+    """Equivalence-check every configuration of ``models`` that has no pass/fail yet."""
+    from xut.verilatorize.equiv import Checked, check_model, config_dir, config_key
+
+    todo: list[tuple[str, dict[str, str]]] = []
+    for m in models:
+        e = man.models.get(m)
+        if e is None or e.status != "transformed":
+            continue
+        for cfg in e.generate_configs or [{}]:
+            if e.equiv.get(config_key(cfg)) not in ("pass", "fail"):
+                todo.append((m, cfg))
+    files = model_files(ms)
+    total, done, t0 = len(todo), 0, time.monotonic()
+    progress(f"progress: equiv done=0 total={total} elapsed_s=0")
+    # threads: each check waits on its simulator subprocesses
+    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+        futs = {}
+        for m, cfg in todo:
+            e = man.models[m]
+            subject = Checked(m, files[m], e.triggers, e.enablers, e.nonconstant_overrides)
+            work = out_dir / "equiv" / m / config_dir(config_key(cfg))
+            futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
+        for fut in as_completed(futs):
+            r = fut.result()  # check_model returns an error result, it does not raise
+            e = man.models[futs[fut]]
+            e.equiv[r.config], e.equiv_oracle[r.config] = r.status, r.oracle
+            done += 1
+            progress(
+                f"progress: equiv done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
+            )

@@ -199,6 +199,37 @@ def test_tool_sha256_covers_the_transform_sources():
     assert len(driver.tool_sha256()) == 64
 
 
+def test_tool_sources_cover_every_imported_xut_module():
+    """Review M1: the modules the output depends on, not only the transform's own."""
+    root = repo_root() / "tools" / "xut"
+    got = {str(p.relative_to(root)) for p in driver.tool_sources()}
+    assert {
+        "verilatorize/analyze.py",
+        "verilatorize/rewrite.py",
+        "verilatorize/driver.py",
+        "verilatorize/equiv.py",
+        "wrap.py",  # render_attr: the catalog choices' literals
+        "catalog/model.py",  # load_entry, is_enumerated (a function-local import)
+        "catalog/unisim.py",  # imported by analyze
+        "stimgen.py",  # the equivalence stimulus
+        "runners/xsim.py",  # the xsim oracle
+        "hdl/xut_vector_tb.sv",  # the testbench the check runs
+    } <= got
+    assert "cli.py" not in got  # nothing imports it
+
+
+def test_a_change_to_any_tool_source_forces_a_redo(src, monkeypatch, tmp_path):
+    ms, out = src
+    fake = tmp_path / "wrap_copy.py"
+    fake.write_text("# a stand-in for xut/wrap.py\n")
+    real = driver.tool_sources
+    monkeypatch.setattr(driver, "tool_sources", lambda: [*real(), fake])
+    verilatorize(ms)
+    assert _redone(ms) == "done=0"
+    fake.write_text("# a stand-in for xut/wrap.py, changed\n")
+    assert _redone(ms) == "done=4"
+
+
 class _ThreadPool(ThreadPoolExecutor):
     """In-process pool, so a monkeypatched transform_one is the one that runs."""
 
@@ -220,8 +251,10 @@ def test_crash_records_the_other_models_then_raises(src, monkeypatch):
     monkeypatch.setattr(driver, "ProcessPoolExecutor", _ThreadPool)
     monkeypatch.setattr(driver, "transform_one", flaky)
     monkeypatch.setattr(driver, "tool_sha256", lambda: "1" * 64)  # redo everything
+    lines = []
     with pytest.raises(XutError, match="VZGEN: verilatorize crashed: RuntimeError: boom"):
-        verilatorize(ms, jobs=2)
+        verilatorize(ms, jobs=2, progress=lines.append)
+    assert lines[-1].startswith("progress: done=4 total=4 ")  # review M2: a Monitor sees 100%
     man = Manifest.load(out / "manifest.json")
     assert "VZGEN" not in man.models and not (out / "VZGEN.v").exists()
     assert {m: e.tool_sha256 for m, e in man.models.items()} == {
@@ -248,3 +281,70 @@ def test_transform_one_never_overwrites_its_source(tmp_path):
     with pytest.raises(XutError, match="would overwrite the model source"):
         driver.transform_one(tmp_path / "VZTRIG.v", FIX / "glbl.v", tmp_path)
     assert (tmp_path / "VZTRIG.v").is_file()
+
+
+# ---- check=True (Task 14): the driver side, with check_model stubbed ----------------------------
+def _fake_check(calls, status=lambda m, key: "pass"):
+    from xut.verilatorize.equiv import EquivResult, config_key
+
+    def check(an, ms, out_dir, attrs=None, *, lib=None):
+        key = config_key(attrs)
+        calls.append((an.model, key, Path(out_dir).relative_to(lib)))
+        return EquivResult(an.model, status(an.model, key), config=key, oracle="iverilog")
+
+    return check
+
+
+def test_check_records_every_configuration(src, monkeypatch):
+    ms, out = src
+    calls = []
+    monkeypatch.setattr("xut.verilatorize.equiv.check_model", _fake_check(calls))
+    lines = []
+    man = verilatorize(ms, jobs=2, progress=lines.append, check=True)
+    assert sorted((m, k) for m, k, _ in calls) == [
+        ("VZGEN", "IS_C_INVERTED=1'b1"),
+        ("VZGEN", "default"),
+        ("VZTRIG", "default"),
+    ]
+    assert {str(d) for *_, d in calls} >= {"equiv/VZTRIG/default"}
+    assert man.models["VZGEN"].equiv == {"default": "pass", "IS_C_INVERTED=1'b1": "pass"}
+    assert man.models["VZTRIG"].equiv_oracle == {"default": "iverilog"}
+    assert man.models["VZBADSEL"].equiv == {} and man.models["PLAIN"].equiv == {}
+    assert "progress: equiv done=0 total=3 elapsed_s=0" in lines
+    assert lines[-1].startswith("progress: equiv done=3 total=3 ")
+    assert Manifest.load(out / "manifest.json") == man
+
+
+def test_check_keeps_verdicts_and_redoes_errors(src, monkeypatch):
+    ms, out = src
+    calls = []
+    verdict = {"VZTRIG": "fail", "VZGEN": "error"}
+    fake = _fake_check(calls, lambda m, key: verdict[m])
+    monkeypatch.setattr("xut.verilatorize.equiv.check_model", fake)
+    verilatorize(ms, check=True)
+    calls.clear()
+    man = verilatorize(ms, check=True)
+    assert sorted(m for m, *_ in calls) == ["VZGEN", "VZGEN"]  # the fail is a verdict
+    assert man.models["VZTRIG"].equiv == {"default": "fail"}
+    f = ms.unisims / "VZTRIG.v"
+    f.write_text(f.read_text() + "// changed\n")  # a re-transform resets its results
+    calls.clear()
+    verilatorize(ms, check=True)
+    assert sorted(m for m, *_ in calls) == ["VZGEN", "VZGEN", "VZTRIG"]
+
+
+def test_cli_check_summary_and_exit_code(src, monkeypatch):
+    ms, out = src
+    monkeypatch.setattr("xut.modelsrc.resolve", lambda name="auto": ms)
+    status = {"VZTRIG": "pass", "VZGEN": "pass"}
+    fake = _fake_check([], lambda m, key: status[m])
+    monkeypatch.setattr("xut.verilatorize.equiv.check_model", fake)
+    r = CliRunner().invoke(main, ["verilatorize", "--check"])
+    assert r.exit_code == 0, r.output
+    assert "equiv: pass: VZTRIG [default] oracle=iverilog" in r.output
+    assert "equiv: 3 pass, 0 fail, 0 error" in r.output
+    assert "progress: equiv done=3 total=3" in r.output
+    status["VZGEN"] = "fail"
+    (out / "manifest.json").unlink()
+    r = CliRunner().invoke(main, ["verilatorize", "--check"])
+    assert r.exit_code == 1 and "equiv: 1 pass, 2 fail, 0 error" in r.output
