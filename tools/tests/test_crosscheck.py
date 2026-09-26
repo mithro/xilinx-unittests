@@ -1225,3 +1225,70 @@ def test_expected_divergence_naming_a_finding_not_open_is_an_issue(repo, status_
     assert [f.cls for f in rep.findings] == ["known-divergence"]
     assert any(ED["finding"] in i and "not open" in i for i in rep.issues), rep.issues
     assert rep.verdict == "incomplete" and rep.exit_code == 4
+
+
+# --- zero-comparison edge cases (PR D gate follow-up) --------------------------------------
+
+
+def test_golden_compared_with_nothing_is_incomplete(repo):
+    """(a) The simulators agree on cfg b, but the golden model only ran cfg a: the golden
+    model was compared with nothing, so this is never agree."""
+    _test_yaml(repo)
+    skip_a = {"cfg": "a", "status": "skip", "reason": "excl"}
+    _result(
+        repo,
+        "rtl",
+        "python",
+        "ms1",
+        TID,
+        trace=EXP({"a/S1": {"Q": "0"}}),
+        configs=[{"cfg": "a", "status": "pass"}],
+    )
+    for sim in ("iverilog", "xsim"):
+        b = {"b/S1": {"Q": "1"}}
+        _result(
+            repo,
+            "rtl",
+            sim,
+            "ms1",
+            TID,
+            trace=T(b),
+            configs=[{"cfg": "b", "status": "pass"}, skip_a],
+        )
+    rep = xc.check(repo, _case(repo))
+    assert any("rtl/python" in i and "compared with nothing" in i for i in rep.issues), rep.issues
+    assert rep.verdict == "incomplete" and rep.exit_code == 4
+
+
+@pytest.mark.parametrize(
+    ("golden", "runner"),
+    [("x", "verilator"), ("-", "iverilog")],  # 2-state vs x; a don't-care golden
+)
+def test_zero_compared_bits_is_never_agreement(repo, golden, runner):
+    """(b) A pair that compared no defined bit is no evidence: Verilator cannot see the
+    golden model's x, and a don't-care bit is never compared."""
+    _test_yaml(repo, runners={"python": "yes", runner: "yes"})
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP({"c/S1": {"Q": golden}}))
+    _result(repo, "rtl", runner, "ms1", TID, trace=T({"c/S1": {"Q": "1"}}))
+    rep = xc.check(repo, _case(repo))
+    assert rep.findings == [] and not rep.compared
+    assert rep.verdict == "incomplete" and rep.exit_code == 4, rep.issues
+    assert _xc("TOYFF").exit_code == 4
+
+
+def test_reject_configurations_agree_on_the_rejection(repo):
+    """A reject configuration has no samples on any side (the golden trace is header-only;
+    the simulators applied the reject rule): agreement is on the rejection itself."""
+    _test_yaml(repo, runners={"python": "yes", "iverilog": "yes"})
+    for runner, kind in (("python", "expected"), ("iverilog", "actual")):
+        _result(
+            repo,
+            "rtl",
+            runner,
+            "ms1",
+            TID,
+            trace=T({}, kind=kind),
+            configs=[{"cfg": "r", "status": "pass"}],
+        )
+    rep = xc.check(repo, _case(repo))
+    assert rep.verdict == "agree" and rep.exit_code == 0, rep.issues

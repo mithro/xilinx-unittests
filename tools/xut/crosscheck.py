@@ -220,22 +220,66 @@ def _restrict(t: Trace, cfgs: set[str] | None) -> Trace:
     return out
 
 
-#: A comparison ``classify`` made: ``(a, b, shared)``, ``a``/``b`` as ``<flow>/<runner>``,
-#: ``shared`` False when the two ran no configuration in common (nothing compared).
+#: A comparison ``classify`` made: ``(a, b, evidence)``, ``a``/``b`` as ``<flow>/<runner>``,
+#: ``evidence`` False when the pair compared nothing (``_compared_bits``).
 Pair = tuple[str, str, bool]
 
 
-def _pair(a: View, b: View, pairs: list[Pair] | None = None) -> tuple[Trace, Trace]:
+def _compared_bits(ta: Trace, tb: Trace, expected: bool, a_x: bool, b_x: bool) -> int:
+    """How many bits ``compare`` (``expected``: ``ta`` is the golden trace) or ``diff``
+    actually compares between the two restricted traces: a don't-care bit, and an x/z
+    that the other side cannot observe (2-state), are not compared."""
+    n = 0
+    for label, pa in ta.samples.items():
+        pb = tb.samples.get(label)
+        if pb is None:
+            continue
+        for port, va in pa.items():
+            vb = pb.get(port)
+            if vb is None or len(va) != len(vb):
+                continue
+            for ca, cb in zip(va, vb, strict=True):
+                if expected:
+                    n += ca != "-" and (b_x or ca not in "xz")
+                else:
+                    n += not ((ca in "xz" and not b_x) or (cb in "xz" and not a_x))
+    return n
+
+
+def _reject_agreement(ta: Trace, tb: Trace, common: set[str] | None) -> bool:
+    """A shared configuration with no sample on either side: a reject configuration (the
+    golden trace is header-only, and a simulator passes one only on positive evidence of
+    rejection, ``xut.runners.reject``), so the two agree on the rejection itself."""
+    if not common:
+        return False
+    have = {_cfg(lbl) for lbl in (*ta.samples, *tb.samples)}
+    return bool(common - have)
+
+
+def _pair(
+    a: View,
+    b: View,
+    pairs: list[Pair] | None = None,
+    *,
+    expected: bool = False,
+    a_x: bool = True,
+    b_x: bool = True,
+) -> tuple[Trace, Trace]:
     """Both traces, restricted to the configurations both runners ran; the comparison
-    is appended to ``pairs``."""
+    (compared as ``compare`` when ``expected``, else as ``diff``, with those x/z
+    observabilities) is appended to ``pairs``. It is evidence only when it shares a
+    configuration and compares at least one bit, or agrees on a rejection."""
     ra, rb = a.ran, b.ran
     common = ra if rb is None else rb if ra is None else ra & rb
     assert a.trace is not None and b.trace is not None
+    ta, tb = _restrict(a.trace, common), _restrict(b.trace, common)
     if pairs is not None:
-        pairs.append(
-            (f"{a.flow}/{a.runner}", f"{b.flow}/{b.runner}", common is None or bool(common))
+        shared = common is None or bool(common)
+        evidence = shared and (
+            _compared_bits(ta, tb, expected, a_x, b_x) > 0 or _reject_agreement(ta, tb, common)
         )
-    return _restrict(a.trace, common), _restrict(b.trace, common)
+        pairs.append((f"{a.flow}/{a.runner}", f"{b.flow}/{b.runner}", evidence))
+    return ta, tb
 
 
 def _has_trace(v: View | None) -> bool:
@@ -280,7 +324,7 @@ def _golden_vs_sims(
 ) -> list[Finding]:
     per_point: dict[tuple, dict[str, Mismatch]] = defaultdict(dict)
     for r, v in group.items():
-        e, a = _pair(exp, v, pairs)
+        e, a = _pair(exp, v, pairs, expected=True, b_x=X_OBSERVABLE.get(r, True))
         for m in compare(e, a, x_observable=X_OBSERVABLE.get(r, True)):
             per_point[(m.label, m.port, m.bit, m.kind)][r] = m
     doc: list[str] = []
@@ -345,7 +389,7 @@ def classify(
         diverged: set[tuple] = set()
         points: list[str] = []
         for a, b in combinations(sorted(group), 2):
-            ta, tb = _pair(group[a], group[b], pairs)
+            ta, tb = _pair(group[a], group[b], pairs, a_x=X_OBSERVABLE[a], b_x=X_OBSERVABLE[b])
             for m in diff(ta, tb, a_x=X_OBSERVABLE[a], b_x=X_OBSERVABLE[b]):
                 diverged.add((m.label, m.port, m.bit))
                 points.append(f"{a} vs {b}: {m}")
@@ -391,7 +435,7 @@ def classify(
             if _has_trace(ref):
                 assert ref is not None
                 x = X_OBSERVABLE[runner]
-                pts = [str(m) for m in diff(*_pair(ref, v, pairs), a_x=x, b_x=x)]
+                pts = [str(m) for m in diff(*_pair(ref, v, pairs, a_x=x, b_x=x), a_x=x, b_x=x)]
                 if pts:
                     out.append(_f("flow-mismatch", test_id, flow, v.model_source, [runner], pts))
         if runner == "hw":
@@ -411,7 +455,12 @@ def classify(
                     )
                 )
             if exp is not None and _has_trace(exp) and _has_trace(v):
-                pts = [_point(m) for m in compare(*_pair(exp, v, pairs), x_observable=False)]
+                pts = [
+                    _point(m)
+                    for m in compare(
+                        *_pair(exp, v, pairs, expected=True, b_x=False), x_observable=False
+                    )
+                ]
                 if pts:
                     out.append(_f("silicon-mismatch", test_id, flow, None, ["hw"], pts))
     return [_mark(f, tuple(expected_divergence), issues) for f in out]
@@ -708,13 +757,18 @@ def _result_issues(ms: str, v: View, findings: list[Finding], classified: bool =
 def _evidence(
     ms: str, views: dict[tuple[str, str], View], pairs: list[Pair]
 ) -> tuple[bool, list[str], list[str]]:
-    """``(compared, notes, issues)``: whether ``classify`` compared two results on at
-    least one configuration both ran (never agreement by omission). With two or more
-    traces, every configuration only one simulator ran is a note (one only the golden
-    model ran is ``_config_coverage``'s, per runner), and no shared comparison at all
-    is an issue."""
+    """``(compared, notes, issues)``: whether ``classify`` made at least one comparison
+    that is evidence (``_pair``: a shared configuration and at least one compared bit,
+    or an agreed rejection). Never agreement by omission:
+
+    - two or more traces and no such comparison is an issue;
+    - a result every comparison of which compared nothing (the golden model ran only
+      configurations no simulator ran; a golden all x/don't-care seen by a 2-state
+      runner) is an issue, even when other results agree among themselves;
+    - a configuration only one simulator ran is a note (one only the golden model ran
+      is ``_config_coverage``'s, per runner)."""
     traced = {k: v for k, v in sorted(views.items()) if _has_trace(v)}
-    compared = any(s for _, _, s in pairs)
+    compared = any(e for _, _, e in pairs)
     notes: list[str] = []
     issues: list[str] = []
     if len(traced) < 2:
@@ -730,8 +784,23 @@ def _evidence(
         listing = "; ".join(
             f"{f}/{r} ran {', '.join(sorted(c or ())) or 'nothing'}" for (f, r), c in ran.items()
         )
-        why = "share no configuration" if pairs else "are not comparable (no rule pairs them)"
+        why = (
+            "share no configuration or compared no bit"
+            if pairs
+            else "are not comparable (no rule pairs them)"
+        )
         issues.append(f"{ms}: the results with traces {why} ({listing}): nothing was compared")
+        return compared, notes, issues
+    by_view: dict[str, bool] = {}
+    for a, b, e in pairs:
+        for k in (a, b):
+            by_view[k] = by_view.get(k, False) or e
+    for k, e in sorted(by_view.items()):
+        if not e:
+            issues.append(
+                f"{ms} {k}: compared with nothing (no configuration shared with, or no "
+                "defined bit compared against, any result it is paired with)"
+            )
     return compared, notes, issues
 
 
