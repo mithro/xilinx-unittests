@@ -8,7 +8,7 @@
   "required": [
     "format", "test_id", "runner", "flow", "style", "status", "reason", "configs",
     "model_source", "seeds", "defines", "tools", "container", "duration_s", "started",
-    "host", "x_dependence", "bins_reached", "hw"
+    "host", "x_dependence", "bins_reached", "hw", "tree_hash", "head", "dirty"
   ],
   "properties": {
     "format": {"const": "xut-result 1"},
@@ -64,6 +64,16 @@
     "host": {"type": "string"},
     "x_dependence": {"type": ["boolean", "null"]},
     "bins_reached": {"type": ["array", "null"], "items": {"type": "string"}},
+    "tree_hash": {
+      "$comment": "xut.provenance: the tested primitive's tree hash at run time (null outside git). xut status record refuses a result whose tree_hash is not current (ruling S21).",
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "head": {"type": ["string", "null"]},
+    "dirty": {
+      "$comment": "true if the primitive's inputs had uncommitted changes at run time",
+      "type": ["boolean", "null"]
+    },
     "hw": {
       "type": ["object", "null"],
       "$comment": "null until step 3, which records {dna, serial, site}.",
