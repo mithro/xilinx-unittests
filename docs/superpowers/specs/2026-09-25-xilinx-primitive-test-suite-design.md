@@ -249,6 +249,12 @@ t=126000  sample S1
 
 - `settle_ps` is the wait before the first event. It is at least
   max(ROC_WIDTH, GRES_START+GRES_WIDTH) from `glbl`, plus margin.
+- A header value (an `attr.<NAME>` string attribute included, e.g.
+  `attr.IOSTANDARD="LVCMOS33"`) is written double-quoted whenever it contains
+  whitespace, a double quote, a backslash or `#`; a backslash is escaped as
+  `\\` and a double quote as `\"`, backslash first, so either round-trips
+  (ruling S34.3). A control character such as a newline still cannot be
+  represented.
 - A `mode=free` clock runs continuously. Primitives that measure their input
   clock, such as the MMCM and PLL, need one.
 - **Co-timed events (ruling S6).** Several `set` events at the same time
