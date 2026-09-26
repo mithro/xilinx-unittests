@@ -66,3 +66,19 @@ Timestamp is UTC.
   - It is a spec §6.2 change: models that are otherwise `unchanged` would also need the rewrite and an equivalence check.
 - The verilator result for `TOYFF.L0.reject` (INIT=1'bx) passes. Verilator rejected at runtime.
 - Log timestamps: this entry uses UTC (TODO S219).
+
+## Round 2 (ruling S38, concern 2)
+
+- **What changed**
+  - New module `verilatorize/zcmp.py`. It rewrites an input port compared with z (`P ===/!== <z literal>`, either operand order, whole port or a select) to the constant a driven input gives. The rewrite is unconditional. Any other z-literal comparison is refused.
+  - A model that needs only this rewrite is now `transformed`. `ModelEntry.rewrites` records which rewrites were applied: `shadow` and/or `zcmp`.
+  - The validity condition (every input driven) is guarded: the equivalence check, the runners and sv testbench instances all make an undriven input or a z stimulus an `error`.
+  - The equivalence stimulus has a new `_inputs` phase for zcmp models.
+  - `ensure_model` now records `sim_tools` with each on-demand verdict, and rechecks a missing, errored or stale verdict the same way `--check` does.
+- **Sweep with `--check`**
+  - unisim-2025.2: 157 transformed (zcmp 130, shadow 17, both 10), 1166 unchanged, 52 unsupported (34 of them new z-compare refusals). Verdicts: 113 pass on the Icarus oracle, 18 pass on xsim, 1 fail (ODELAYE5), 89 error.
+  - unisim-gh-2020.1: 94 transformed, 125 unchanged, 30 unsupported. Verdicts: 88 pass on Icarus, 17 pass on xsim, 0 fail, 49 error.
+- **The ODELAYE5 fail is an Icarus-vs-xsim divergence, not the transform.** The transformed copy, both shadow-only and with S38, matches the original on xsim at all 134 samples.
+- **Verilator lint:** 154/157 and 92/94 models are clean. In the wrapper lint, 110/140 and 61/77 models are clean, and every remaining failure is secureip or a refused dependency. No "tristate in top-level IO" error remains.
+- **FDRE hand check:** verilator 7/7 pass with x_dependence false; iverilog-vz 7/7 pass.
+- **Tests:** fast suite 1349 passed; runner/vz/container suites 619 passed; the sweep 2 passed. ruff and `xut lint` report 0 issues.
