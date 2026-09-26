@@ -127,7 +127,10 @@ class StaleRead:
     """A procedural read of forced reg X after an assign/deassign of X in the same block, with
     no delay or event control between them (ruling S18). The rewrite substitutes the active
     value for it: ``active`` is the statement span of the active ``assign X = e_k;``, or
-    ``None`` after a ``deassign X;`` (X__base then holds the value)."""
+    ``None`` after a ``deassign X;`` (X__base then holds the value), or ``FRESH`` after an
+    ordinary blocking write of X on some path (X__base changed, the net X has not
+    propagated yet: the rewrite reads X's current value from X__base / the active override
+    at the read itself, which is right whatever the override state)."""
 
     span: Span
     active: Span | None
@@ -135,6 +138,8 @@ class StaleRead:
 
 # Sentinel for an override state that differs between the paths reaching a read.
 _AMBIGUOUS = Span(-1, -1)
+#: StaleRead.active for a read after an ordinary blocking write (see StaleRead).
+FRESH = Span(-2, -2)
 
 
 @dataclass
@@ -1211,6 +1216,14 @@ class _Walker:
             self._select_nodes(e.left, lambda n: self.stale(n, st, in_task))
             if not e.isNonBlocking and e.timingControl is not None:
                 return {}  # `x = #d y;` suspends the process
+            if not e.isNonBlocking:
+                # An ordinary blocking write changes X__base now; the net X follows later.
+                # Under an assign/deassign of this block the state already names X's value
+                # (the override; X__base), otherwise X must be read fresh.
+                hit = {self.key(x.symbol) for x in self.lvalues(e.left)} & set(self.regs)
+                upd = {n: FRESH for n in hit if st.get(n, _AMBIGUOUS) in (_AMBIGUOUS, FRESH)}
+                if upd:
+                    return {**st, **upd}
             return st
         if e.kind == _EK.Call and not e.isSystemCall:
             for a in e.arguments:
@@ -1267,15 +1280,16 @@ class _Walker:
         where: str | None,
     ) -> None:
         line = self.src.line(n.sourceRange.start.offset)
+        after = "a blocking write" if active == FRESH else "its procedural assign/deassign"
         if where is not None:
             raise self.err(
-                f"{name} is read in {where} at line {line} right after its procedural "
-                "assign/deassign; the read cannot be substituted"
+                f"{name} is read in {where} at line {line} right after {after}; the read "
+                "cannot be substituted"
             )
         if in_task is not None:
             raise self.err(
-                f"{name} is read in task {in_task} at line {line} right after its procedural "
-                "assign/deassign in the caller; the read cannot be substituted"
+                f"{name} is read in task {in_task} at line {line} right after {after} in "
+                "the caller; the read cannot be substituted"
             )
         if active == _AMBIGUOUS:
             raise self.err(
@@ -1286,7 +1300,10 @@ class _Walker:
             return
         span = self.span(n)
         seen = self._stale[name]
-        if seen.get(span, active) != active:
+        was = seen.get(span, active)
+        if FRESH in (was, active):
+            active = FRESH  # a fresh read is right in every state
+        elif was != active:
             raise self.err(f"the read of {name} at line {line} sees different overrides")
         seen[span] = active
 
@@ -1366,13 +1383,17 @@ class _Walker:
 
 
 def _merge(*states: dict[str, Span | None]) -> dict[str, Span | None]:
-    """The state where paths meet: a reg keeps its override only if every path agrees."""
+    """The state where paths meet: a reg keeps its override only if every path agrees. A
+    FRESH read is right on every path, so FRESH on any path wins."""
     names = set().union(*states)
     missing = object()
     out: dict[str, Span | None] = {}
     for n in names:
         vals = {st.get(n, missing) for st in states}
-        out[n] = next(iter(vals)) if len(vals) == 1 else _AMBIGUOUS
+        if FRESH in vals:
+            out[n] = FRESH
+        else:
+            out[n] = next(iter(vals)) if len(vals) == 1 else _AMBIGUOUS
     return out
 
 
@@ -1471,13 +1492,18 @@ def _merge_reg(m: ForcedReg, x: ForcedReg, model: str) -> None:
     m.enablers |= x.enablers
     active = {r.span: r.active for r in m.stale_reads}
     for r in x.stale_reads:
-        if active.get(r.span, r.active) != r.active:
+        was = active.get(r.span, r.active)
+        if FRESH in (was, r.active):
+            active[r.span] = FRESH  # a fresh read is right in every state
+        elif was != r.active:
             raise TransformError(
                 model,
                 f"the read of {x.name} at offset {r.span.start} sees different "
                 "overrides under different generate configurations",
             )
-    m.stale_reads |= x.stale_reads
+        else:
+            active[r.span] = r.active
+    m.stale_reads = {StaleRead(sp, a) for sp, a in active.items()}
 
 
 def analyze(

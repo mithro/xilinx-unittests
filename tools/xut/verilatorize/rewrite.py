@@ -22,6 +22,12 @@ instantiates):
   reads ``X__base`` after a ``deassign``, and after ``assign X = e_k;`` reads ``X__now``, a
   variable of ``X``'s type that the rewritten ``assign`` sets to ``e_k`` (the value of the
   active override, typed exactly as the forced value);
+* a read of ``X`` right after an ordinary blocking write of ``X`` in the same block (on some
+  path, no delay between; ``StaleRead`` ``FRESH``) would see the net ``X`` before it follows
+  ``X__base``. It reads ``X__rd`` instead, set right before the innermost statement holding
+  the read to ``(X__ovr_sel == 0) ? X__base : X__active()``: ``X``'s current value in every
+  override state (a read in a loop header, or in a block with implicit sensitivity, is
+  refused);
 * ``X`` itself becomes ``assign X = (X__ovr_sel == 0) ? X__base : (X__ovr_sel == 1) ? X__ovr_1
   : ...;`` at the end of the module.
 
@@ -48,8 +54,10 @@ import pyslang
 
 from xut.verilatorize.analyze import (
     _SYNTAX_FORCE,
+    FRESH,
     Analysis,
     ForcedReg,
+    Span,
     TransformError,
     _compile,
     _Source,
@@ -80,6 +88,13 @@ _SCOPES = {
     _SX.TaskDeclaration,
     _SX.FunctionDeclaration,
 }
+_LOOPS = {
+    _SX.LoopStatement,
+    _SX.ForLoopStatement,
+    _SX.DoWhileStatement,
+    _SX.ForeverStatement,
+    _SX.ForeachLoopStatement,
+}
 _REAL = ("real", "realtime")
 #: Waives Verilator's BLKANDNBLK check for the one variable it wraps (module docstring).
 _WAIVE = "/* verilator lint_off BLKANDNBLK */ {} /* verilator lint_on BLKANDNBLK */"
@@ -108,7 +123,13 @@ class _Syntax:
         self._tree = tree  # keep the tree alive while its nodes are used
         self.blocks: list[tuple[int, int, bool, int]] = []  # (start, end, implicit, line)
         self.by_start: dict[int, pyslang.syntax.SyntaxNode] = {}
+        self.stmts: list[tuple[int, int, pyslang.syntax.SyntaxKind]] = []
         for n in _walk_syntax(tree.root):
+            if isinstance(n, pyslang.syntax.StatementSyntax):
+                r = n.sourceRange
+                self.stmts.append(
+                    (self.src.char(r.start.offset), self.src.char(r.end.offset), n.kind)
+                )
             if n.kind in _BLOCKS:
                 implicit = n.kind in _IMPLICIT_BLOCKS or any(
                     c.kind == _SX.ImplicitEventControl for c in _walk_syntax(n)
@@ -133,6 +154,14 @@ class _Syntax:
             if s <= pos < e and (inner is None or s >= inner[0]):
                 inner = (s, implicit, line)
         return inner[2] if inner is not None and inner[1] else None
+
+    def statement(self, pos: int) -> tuple[int, int, pyslang.syntax.SyntaxKind] | None:
+        """The innermost statement around ``pos``: (start, end, kind)."""
+        inner = None
+        for st in self.stmts:
+            if st[0] <= pos < st[1] and (inner is None or (st[0], -st[1]) > (inner[0], -inner[1])):
+                inner = st
+        return inner
 
     def scoped_names(self, stmt_start: int) -> tuple[set[str], set[str]]:
         """(identifiers the override expression of the ``assign`` at ``stmt_start`` reads,
@@ -191,21 +220,41 @@ def _function(x: ForcedReg, exprs: list[str], w: int) -> str:
 def _module_edits(an: Analysis, syn: _Syntax, names: set[str]) -> list[tuple[int, int, str]]:
     edits: list[tuple[int, int, str]] = [(d.start, d.end, ";") for d in an.noop_deassigns]
     tail: list[str] = []
+    fresh: dict[tuple[int, int], list[str]] = {}  # statement -> refreshes to run before it
     for x in an.forced.values():
-        edits += _reg_edits(an, x, syn, names, tail)
+        edits += _reg_edits(an, x, syn, names, tail, fresh)
+    # A read of X right after an ordinary blocking write (StaleRead FRESH) reads X__rd, set
+    # just before the innermost statement holding the read to X's current value. The
+    # statement becomes `begin <refreshes> <statement> end`: still one statement, so an
+    # `else` after it keeps its `if`. Inner statements close first (same end offset).
+    for (start, end), refs in sorted(fresh.items(), key=lambda kv: -kv[0][0]):
+        edits.append((start, start, "begin " + " ".join(dict.fromkeys(refs)) + " "))
+        edits.append((end, end, " end"))
     if tail:
         edits.append((an.endmodule, an.endmodule, TAIL_COMMENT + "\n".join(tail) + "\n"))
     return edits
 
 
 def _reg_edits(
-    an: Analysis, x: ForcedReg, syn: _Syntax, names: set[str], tail: list[str]
+    an: Analysis,
+    x: ForcedReg,
+    syn: _Syntax,
+    names: set[str],
+    tail: list[str],
+    fresh: dict[tuple[int, int], list[str]],
 ) -> list[tuple[int, int, str]]:
     model, text = an.model, an.text
     n = len(x.overrides)
     if n == 0:
         raise TransformError(model, f"{x.name}: forced reg without an override")
-    for s in ("__base", "__ovr_sel", "__active", "__now", *(f"__ovr_{k}" for k in range(1, n + 1))):
+    for s in (
+        "__base",
+        "__ovr_sel",
+        "__active",
+        "__now",
+        "__rd",
+        *(f"__ovr_{k}" for k in range(1, n + 1)),
+    ):
         if x.name + s in names:
             raise TransformError(model, f"{x.name}: the name {x.name}{s} is already used")
     w = max(1, n.bit_length())
@@ -215,6 +264,9 @@ def _reg_edits(
 
     # Forcing statements and substituted reads must not sit in a block with implicit
     # sensitivity: the rewrite changes what that block reads, hence when it re-runs.
+    # A FRESH read there would make the block depend on X__ovr_sel/X__base: an event-driven
+    # simulator would not re-run it on a release that leaves X unchanged, but Verilator,
+    # which evaluates such a block as combinational logic, would (MMCME2_ADV).
     sites = [s for s, _ in x.overrides] + list(x.deassigns) + [r.span for r in x.stale_reads]
     for sp in sites:
         line = syn.implicit_block_line(sp.start)
@@ -254,9 +306,12 @@ def _reg_edits(
     if not x.is_port:
         decl.append(_net(x, x.name))
     decl += [_net(x, f"{x.name}__ovr_{k}") for k in range(1, n + 1)]
-    snap = {r.active for r in x.stale_reads if r.active is not None}
+    snap = {r.active for r in x.stale_reads if r.active not in (None, FRESH)}
+    fresh_reads = sorted((r.span for r in x.stale_reads if r.active == FRESH), key=_start)
     if snap:
         decl.append(_var(x, now))
+    if fresh_reads:
+        decl.append(_var(x, f"{x.name}__rd"))
     edits.append((x.decl_end, x.decl_end, " " + " ".join(decl)))
 
     edits += [(s.start, s.end, base) for s in sorted(x.writes, key=lambda s: s.start)]
@@ -276,15 +331,33 @@ def _reg_edits(
             )
         )
     for r in sorted(x.stale_reads, key=lambda r: r.span.start):
-        edits.append((r.span.start, r.span.end, base if r.active is None else now))
+        if r.active != FRESH:
+            edits.append((r.span.start, r.span.end, base if r.active is None else now))
+    refresh = f"{x.name}__rd = ({sel} == {w}'d0) ? {base} : {x.name}__active();"
+    for sp in fresh_reads:
+        st = syn.statement(sp.start)
+        line = syn.src.text.count("\n", 0, sp.start) + 1
+        if st is None or st[2] in _LOOPS:
+            where = "a loop header" if st is not None else "no procedural statement"
+            raise TransformError(
+                model,
+                f"{x.name} is read in {where} at line {line} right after a blocking write; "
+                "the read cannot be refreshed",
+            )
+        fresh.setdefault((st[0], st[1]), []).append(refresh)
+        edits.append((sp.start, sp.end, f"{x.name}__rd"))
 
     mux = f"{x.name}__ovr_{n}"
     for k in range(n - 1, 0, -1):
         mux = f"({sel} == {w}'d{k}) ? {x.name}__ovr_{k} : {mux}"
     tail.append(f"  assign {x.name} = ({sel} == {w}'d0) ? {base} : {mux};")
-    if x.deassigns:
+    if x.deassigns or fresh_reads:
         tail.append(_function(x, exprs, w))
     return edits
+
+
+def _start(sp: Span) -> int:
+    return sp.start
 
 
 def rewrite(an: Analysis) -> str:
