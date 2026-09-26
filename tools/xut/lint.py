@@ -376,12 +376,6 @@ def gap_bin(gap: str) -> str:
     return re.split(r"\s|—", gap.strip(), maxsplit=1)[0]
 
 
-def _gap_names(gap: str, b: str) -> bool:
-    """True if ``gap``'s leading token is exactly bin ``b``: ``port:D:0 …`` accounts for
-    ``port:D:0`` only, never for ``port:D``."""
-    return gap_bin(gap) == b
-
-
 def check_bins_accounted(root: Path) -> list[LintIssue]:
     """Spec §12 "every bin is covered or listed as a gap": for each ``test.yaml``, every
     bin of ``xut.status.coverage_bins`` (from the primitive's catalog entry) appears in
@@ -404,7 +398,7 @@ def check_bins_accounted(root: Path) -> list[LintIssue]:
         exercised = {b for t in data["tests"] for b in t["exercises"]}
         gaps = [g for t in data["tests"] for g in t.get("gaps", [])]
         for b in coverage_bins(entry):
-            if b not in exercised and not any(_gap_names(g, b) for g in gaps):
+            if b not in exercised and b not in {gap_bin(g) for g in gaps}:
                 issues.append(
                     LintIssue(
                         rel,

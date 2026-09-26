@@ -52,3 +52,20 @@ def is_port(s: object) -> bool:
 
 def is_header_key(s: object) -> bool:
     return isinstance(s, str) and HEADER_KEY.fullmatch(s) is not None
+
+
+_INT_LITERAL = re.compile(r"\s*(?:\d*'([bodhBODH]))?([0-9a-fA-F_]+)\s*")
+
+
+def int_literal(value: object) -> int | None:
+    """The integer a Verilog literal (``1'b1``, ``'h3F``, ``16'd9``, ``12``) or an int
+    denotes; ``None`` for anything else (a string, x/z digits, a digit the base lacks).
+    The one literal parser of ``xut.golden`` (polarity) and ``xut.status`` (bins)."""
+    m = _INT_LITERAL.fullmatch(str(value))
+    if not m:
+        return None
+    base = {"b": 2, "o": 8, "d": 10, "h": 16}[(m.group(1) or "d").lower()]
+    try:
+        return int(m.group(2).replace("_", ""), base)
+    except ValueError:
+        return None

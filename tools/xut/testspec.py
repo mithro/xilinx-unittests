@@ -9,6 +9,7 @@ that silently drops out of the run.
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +25,12 @@ DECLARED_RUNNERS = ("python", "xsim", "iverilog", "verilator", "hw")
 #: Runners whose declaration is inherited from another: ``iverilog-vz`` only exists to
 #: guard the Verilator results, so it runs exactly where ``verilator`` does.
 DECLARATION_OF = {"iverilog-vz": "verilator"}
+#: The UNISIM simulators. ``iverilog-vz`` runs a transformed copy of the models, so it
+#: only guards the Verilator results (``transform-bug``): it is not one of them.
+SIMULATORS = ("xsim", "iverilog", "verilator")
+#: Every runner, in display order (crosscheck matrix columns; ``xut status`` level
+#: cells use it without ``iverilog-vz``, which is never recorded).
+RUNNER_ORDER = ("python", "xsim", "iverilog", "iverilog-vz", "verilator", "hw")
 
 
 @dataclass(frozen=True)
@@ -145,6 +152,35 @@ def declared(case: TestCase, runner: str) -> tuple[bool, str]:
     return False, case.unsupported_reasons.get(r, f'"{value}" without a reason')
 
 
+def runner_flows(runner: str, flows: list[str]) -> list[str]:
+    """The flows ``runner`` produces a result for, given a test's declared ``flows``:
+    the golden model (``python``) only runs ``rtl``; ``hw`` never runs ``rtl`` (it runs
+    the declared netlist flows); a simulator runs ``rtl`` plus every declared flow. The
+    one rule ``xut crosscheck`` and ``xut status record`` share."""
+    if runner == "python":
+        return ["rtl"]
+    if runner == "hw":
+        return [f for f in dict.fromkeys(flows) if f != "rtl"]
+    return list(dict.fromkeys(["rtl", *flows]))
+
+
+def runner_key(runner: str) -> tuple[int, str]:
+    """Sort key: ``RUNNER_ORDER``, then any other runner by name."""
+    i = RUNNER_ORDER.index(runner) if runner in RUNNER_ORDER else len(RUNNER_ORDER)
+    return (i, runner)
+
+
+def declared_runners(case: TestCase, flow: str) -> list[str]:
+    """The runners declared ``"yes"`` for ``case`` that produce a ``flow`` result
+    (``runner_flows``), ``iverilog-vz`` wherever ``verilator`` is, in ``RUNNER_ORDER``."""
+    out = [
+        r
+        for r in (*DECLARED_RUNNERS, *DECLARATION_OF)
+        if declared(case, r)[0] and flow in runner_flows(r, case.flows)
+    ]
+    return sorted(out, key=runner_key)
+
+
 def exclusions_for(case: TestCase, runner: str) -> dict[str, str]:
     """``{cfg glob: reason}`` excluded for ``runner``; ``iverilog-vz`` inherits
     ``verilator``'s exclusions exactly as it inherits its declaration."""
@@ -159,6 +195,23 @@ def prim_of(test_id: str) -> str:
 def finding_slug(cls: str, test_id: str) -> str:
     """``<cls>-<level>-<name>``, dots in the name as ``-`` (spec §8 "Recording")."""
     return f"{cls}-{test_id.split('.', 2)[2].replace('.', '-')}"
+
+
+_FINDING_STATUS = re.compile(r"^\s*(?:[-*]\s*)?Status:\s*(\S+)", re.IGNORECASE)
+
+
+def finding_status(path: Path) -> str | None:
+    """The lower-cased value of a finding file's first ``Status:`` line (``open``,
+    ``closed``, ...); ``None`` if the file has none or cannot be read."""
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        m = _FINDING_STATUS.match(line)
+        if m:
+            return m.group(1).lower()
+    return None
 
 
 def finding_id(prim: str, cls: str, test_id: str) -> str:

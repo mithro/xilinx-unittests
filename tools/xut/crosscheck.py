@@ -42,12 +42,13 @@ from pathlib import Path
 from xut.formats.xtr import Mismatch, Trace, XtrError, compare, diff, load
 from xut.golden import bit_prov
 from xut.testspec import (
-    DECLARATION_OF,
-    DECLARED_RUNNERS,
+    SIMULATORS,
     TestCase,
+    declared_runners,
     finding_id,
     finding_slug,
     prim_of,
+    runner_key,
 )
 
 FINDING_CLASSES = (
@@ -62,8 +63,6 @@ FINDING_CLASSES = (
     "harness-error",
     "known-divergence",
 )
-#: The UNISIM simulators (``iverilog-vz`` runs a transformed copy: transform-bug only).
-SIMS = ("xsim", "iverilog", "verilator")
 X_OBSERVABLE = {
     "python": True,
     "xsim": True,
@@ -72,8 +71,6 @@ X_OBSERVABLE = {
     "verilator": False,
     "hw": False,
 }
-#: Matrix column order; any other runner follows, sorted.
-RUNNER_ORDER = ("python", "xsim", "iverilog", "iverilog-vz", "verilator", "hw")
 #: At most this many points are kept per finding (the count of the rest is noted).
 MAX_POINTS = 200
 REPORT_FORMAT = "xut-crosscheck 1"
@@ -323,7 +320,7 @@ def classify(
     exp = views.get(("rtl", "python"))
     sims: dict[str, dict[str, View]] = defaultdict(dict)
     for (flow, runner), v in views.items():
-        if runner in SIMS and _has_trace(v):
+        if runner in SIMULATORS and _has_trace(v):
             sims[flow][runner] = v
     for flow, group in sorted(sims.items()):
         ms = next(iter(group.values())).model_source
@@ -371,7 +368,7 @@ def classify(
                         pts,
                     )
                 )
-        if flow != "rtl" and runner in SIMS and _has_trace(v):
+        if flow != "rtl" and runner in SIMULATORS and _has_trace(v):
             ref = views.get(("rtl", runner))
             if _has_trace(ref):
                 assert ref is not None
@@ -446,15 +443,11 @@ def _mark(f: Finding, expected: tuple[dict, ...], issues: list[str]) -> Finding:
 # --- the matrix --------------------------------------------------------------------------
 
 
-def _runner_key(r: str) -> tuple[int, str]:
-    return (RUNNER_ORDER.index(r) if r in RUNNER_ORDER else len(RUNNER_ORDER), r)
-
-
 def matrix(views: dict[tuple[str, str], View]) -> str:
     """One model source's views as a markdown table (flow x runner), then the reason
     of every result that is not a pass."""
     flows = sorted({f for f, _ in views}, key=lambda f: (f != "rtl", f))
-    runners = sorted({r for _, r in views}, key=_runner_key)
+    runners = sorted({r for _, r in views}, key=runner_key)
     lines = [
         "| flow | " + " | ".join(runners) + " |",
         "|---|" + "---|" * len(runners),
@@ -604,22 +597,6 @@ class Report:
         }
 
 
-def _declared_runners(case: TestCase, flow: str) -> list[str]:
-    """Runners declared ``"yes"`` that run ``flow``: the golden model (``python``) only
-    runs rtl, ``hw`` never does; ``iverilog-vz`` follows ``verilator``."""
-    out = [
-        r
-        for r in DECLARED_RUNNERS
-        if case.runners.get(r) == "yes" and r != ("hw" if flow == "rtl" else "python")
-    ]
-    out += [r for r, of in DECLARATION_OF.items() if case.runners.get(of) == "yes"]
-    return sorted(out, key=_runner_key)
-
-
-def _declared_rtl_runners(case: TestCase) -> list[str]:
-    return _declared_runners(case, "rtl")
-
-
 def _coverage_gaps(ms: str, views: dict[tuple[str, str], View]) -> list[str]:
     """Ports a runner observed that the golden model does not model, per flow and per
     configuration (``compare`` ignores them, so they are listed here)."""
@@ -639,7 +616,7 @@ def _coverage_gaps(ms: str, views: dict[tuple[str, str], View]) -> list[str]:
                     extra[(flow, p)][_cfg(lbl)].add(runner)
     out = []
     for (flow, p), by_cfg in sorted(extra.items()):
-        runners = sorted(set().union(*by_cfg.values()), key=_runner_key)
+        runners = sorted(set().union(*by_cfg.values()), key=runner_key)
         out.append(
             f"{ms} {flow}: {p} observed by {', '.join(runners)} in cfg "
             f"{', '.join(sorted(by_cfg))}, not modelled by the golden model"
@@ -722,7 +699,7 @@ def check(root: Path, case: TestCase, model_source: str | None = None) -> Report
     matched: set[str] = set()
     for ms, views in sorted(gathered.items()):
         for flow in dict.fromkeys(["rtl", *case.flows]):
-            for r in _declared_runners(case, flow):
+            for r in declared_runners(case, flow):
                 if (flow, r) not in views:
                     views[(flow, r)] = View(
                         flow, r, "not-run", ms, None, {"reason": "declared, but no result.json"}
@@ -756,7 +733,7 @@ def render(rep: Report, max_points: int = 10) -> str:
     issues, coverage gaps."""
     out = [f"## {rep.case.id}: {rep.verdict}", ""]
     if not rep.views:
-        declared = ", ".join(_declared_rtl_runners(rep.case)) or "none"
+        declared = ", ".join(declared_runners(rep.case, "rtl")) or "none"
         out += [f"not-run: no result under build/ for any runner (declared: {declared})", ""]
     for ms, views in sorted(rep.views.items()):
         out += [f"### model source {ms}", "", matrix(views)]
