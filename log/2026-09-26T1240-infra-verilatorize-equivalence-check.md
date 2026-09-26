@@ -27,3 +27,14 @@
 - A ruling on the VZIFELSE race (class nondeterminism).
 - FIFO and DSP48E1 need per-primitive stimulus constraints, or a ruling. Until then, Verilator is blocked for those configurations.
 - The `.xvec` header cannot hold string attributes. This affects every string-attribute vector test.
+
+## Fix round 1 (review of cee25bd..eab8433)
+- A missing or identical transformed copy is now an error. Both models are compiled explicitly, and `-y` serves only dependencies.
+- The redo key now includes the simulator versions (`equiv_tools`).
+- `config_key` is injective.
+- `check_model` never raises.
+- The Icarus runner's `step()` is public.
+- The xsim oracle compiles the UNISIM originals without `-sv`.
+- The `_coincident` docstring now says it uses rising edges only.
+- Tests: 294 vz/xsim tests (slow, container and vivado) and 1293+6 fast tests pass; lint reports 0 issues.
+- Real check re-run on both sources: 43/19/0/12 and 43/17/0/12. The per-result lines are identical to the earlier run.
