@@ -155,8 +155,11 @@ class SdrFlop(Model):
             # An edge that would be ignored anyway (CE Low, control inactive) needs no
             # retag: UG953 already accounts for it without leaning on the GSR inference
             # (spec §3/§8: keep every disagreement live, never mask it with a needless
-            # ``inferred:``).
-            if self.pin["CE"] or self._ctrl_active():
+            # ``inferred:``). Likewise an active *async* control, whatever CE is: the
+            # logic tables (p369/p372: CLR/PRE=1, CE=X, C=X) make the clock a don't-care
+            # there, so the edge must not overwrite Q's doc: or S30 provenance (R1).
+            ctrl = self._ctrl_active()
+            if not (self.CTRL_ASYNC and ctrl) and (self.pin["CE"] or ctrl):
                 self.q = Out(self.q.bits, _GSR_EDGE)
             return
         if self._ctrl_active():
