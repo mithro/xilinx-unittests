@@ -39,7 +39,8 @@ def test_docker_argv_maps_paths(tmp_path, monkeypatch):
     rc = ex.run(["iverilog", "-V"], cwd=work, log=tmp_path / "l.log", timeout_s=5)
     assert rc == 0
     argv = calls[0]
-    assert argv[:3] == ["docker", "run", "--rm"]
+    assert argv[:2] == ["docker", "run"]
+    assert "--rm" not in argv  # removed by `run` after its OOM check (Ruling S48)
     assert "--network=none" in argv
     assert f"{root}:/work" in argv
     assert "/opt/m:/models/m:ro" in argv
@@ -474,3 +475,139 @@ def test_docker_kill_timeout_still_raises_run_timeout(tmp_path, monkeypatch):
     with pytest.raises(RunTimeout, match="docker kill") as ei:
         ex.run(["sleep", "99"], cwd=tmp_path, log=tmp_path / "l.log", timeout_s=5)
     assert isinstance(ei.value.__cause__, subprocess.TimeoutExpired)
+
+
+# --- Ruling S48: memory-capped containers, OOM kills detected ----------------------------
+
+
+def test_docker_argv_caps_memory_at_4g_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    ex = DockerExecutor(root=tmp_path)
+    assert ex.memory == "4g"
+    argv = ex.argv(["true"], tmp_path, "n", None)
+    assert "--memory=4g" in argv and "--memory-swap=4g" in argv
+    assert argv.index("--memory=4g") < argv.index(SIM_IMAGE)
+
+
+def test_docker_memory_from_env_and_constructor(tmp_path, monkeypatch):
+    monkeypatch.setenv("XUT_CONTAINER_MEMORY", "2g")
+    argv = DockerExecutor(root=tmp_path).argv(["true"], tmp_path, "n", None)
+    assert "--memory=2g" in argv and "--memory-swap=2g" in argv
+    assert "--memory=4g" not in argv
+    argv = DockerExecutor(root=tmp_path, memory="512m").argv(["true"], tmp_path, "n", None)
+    assert "--memory=512m" in argv and "--memory-swap=512m" in argv
+
+
+@pytest.mark.parametrize("bad", ["4G", "4gb", "", "g", "1.5g", "4 g", "-1g", "4t"])
+def test_docker_memory_refuses_a_malformed_cap(tmp_path, monkeypatch, bad):
+    from xut.errors import XutError
+
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    with pytest.raises(XutError, match="memory"):
+        DockerExecutor(root=tmp_path, memory=bad)
+    monkeypatch.setenv("XUT_CONTAINER_MEMORY", bad)
+    with pytest.raises(XutError, match="XUT_CONTAINER_MEMORY"):
+        DockerExecutor(root=tmp_path)
+
+
+def _fake_docker(calls, run_rc=0, oom="false", run_exc=None, rm_exc=None):
+    """A fake `subprocess.run`: `docker run` exits `run_rc` (or raises `run_exc`),
+    `docker inspect` answers `oom`, `docker rm -f` raises `rm_exc` if given."""
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:2] == ["docker", "run"]:
+            if run_exc is not None:
+                raise run_exc(argv, kw.get("timeout"))
+            return subprocess.CompletedProcess(argv, run_rc)
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{oom}\n", stderr="")
+        if argv[:3] == ["docker", "rm", "-f"] and rm_exc is not None:
+            raise rm_exc
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    return fake_run
+
+
+def _name(calls):
+    return calls[0][calls[0].index("--name") + 1]
+
+
+def test_docker_oom_kill_is_logged_and_keeps_rc_137(tmp_path, monkeypatch):
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_rc=137, oom="true"))
+    log = tmp_path / "l.log"
+    rc = DockerExecutor(root=tmp_path).run(["simx"], cwd=tmp_path, log=log, timeout_s=5)
+    assert rc == 137
+    name = _name(calls)
+    assert calls[1] == ["docker", "inspect", "-f", "{{.State.OOMKilled}}", name]
+    assert calls[2] == ["docker", "rm", "-f", name]
+    assert log.read_text().splitlines()[-1] == "xut-container: oom-killed at memory cap 4g"
+    assert container.OOM_MARK in log.read_text()
+
+
+def test_docker_oom_kill_of_a_child_process_is_logged_too(tmp_path, monkeypatch):
+    """The kernel kills the largest process in the cgroup: a `bash` script survives it and
+    exits 0, yet docker still reports OOMKilled=true (measured on docker 26.1)."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_rc=0, oom="true"))
+    log = tmp_path / "l.log"
+    rc = DockerExecutor(root=tmp_path, memory="1g").run(
+        ["bash", "x.sh"], cwd=tmp_path, log=log, timeout_s=5
+    )
+    assert rc == 0
+    assert "xut-container: oom-killed at memory cap 1g\n" in log.read_text()
+
+
+def test_docker_no_oom_no_line_and_container_removed(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_rc=3))
+    log = tmp_path / "l.log"
+    assert DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=log, timeout_s=5) == 3
+    assert "oom-killed" not in log.read_text()
+    assert calls[-1] == ["docker", "rm", "-f", _name(calls)]
+
+
+def test_docker_timeout_still_removes_the_container(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "run", _fake_docker(calls, run_exc=subprocess.TimeoutExpired)
+    )
+    with pytest.raises(RunTimeout):
+        DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+    name = _name(calls)
+    assert calls[1] == ["docker", "kill", name]
+    assert calls[-1] == ["docker", "rm", "-f", name]
+
+
+def test_docker_exception_still_removes_the_container(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+
+    def boom(argv, timeout):
+        return KeyboardInterrupt()
+
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_exc=boom))
+    with pytest.raises(KeyboardInterrupt):
+        DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+    assert calls[-1] == ["docker", "rm", "-f", _name(calls)]
+
+
+def test_docker_rm_failure_does_not_mask_the_result(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess, "run", _fake_docker(calls, run_rc=5, rm_exc=FileNotFoundError("docker"))
+    )
+    log = tmp_path / "l.log"
+    assert DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=log, timeout_s=5) == 5
+    assert "docker rm -f" in log.read_text()
+
+
+@pytest.mark.container
+def test_docker_oom_kill_is_detected_live(tmp_path):
+    log = tmp_path / "oom.log"
+    rc = DockerExecutor(root=tmp_path, memory="64m").run(
+        ["python3", "-c", "a = bytearray(10**9)"], cwd=tmp_path, log=log, timeout_s=120
+    )
+    assert rc == 137, log.read_text()
+    assert "xut-container: oom-killed at memory cap 64m" in log.read_text()
