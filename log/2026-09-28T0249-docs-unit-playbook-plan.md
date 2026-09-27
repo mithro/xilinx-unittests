@@ -96,4 +96,4 @@ These ran in the scratch layout, in 4G scopes:
   guard covers all 702 configurations).
 - The cocotb stand-in run passed.
 - ruff: clean on the Python blocks extracted from the plan.
-- `xut lint --branch`: see below.
+- `xut lint --branch` (4G scope): 0 issues.
