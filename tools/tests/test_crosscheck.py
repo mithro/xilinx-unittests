@@ -1426,3 +1426,39 @@ def test_a_fail_with_no_failed_configuration_is_never_companion_explained():
     )
     found = classify(TID, vs, (ED,))
     assert not xc._companion_explained(vs[("rtl", "iverilog-vz")], found, vs)
+
+
+def _two_tests(root: Path) -> str:
+    """The TOYFF test.yaml with a second vector test (L0) next to TID (L1)."""
+    _test_yaml(root)
+    p = root / "tests/7series/register/TOYFF/test.yaml"
+    doc = yaml.safe_load(p.read_text())
+    other = {**doc["tests"][0], "id": "7series.TOYFF.L0.other", "level": "L0"}
+    doc["tests"].append(other)
+    p.write_text(yaml.safe_dump(doc))
+    return other["id"]
+
+
+def test_cli_strict_flags_a_selected_test_that_was_not_run(repo):
+    """A run killed after one test: non-strict crosscheck is clean, strict exits 4."""
+    other = _two_tests(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    assert _xc("TOYFF").exit_code == 0
+    r = _xc("TOYFF", "--strict")
+    assert r.exit_code == 4, r.output
+    assert f"strict: {other} was not-run" in r.output
+
+
+def test_cli_strict_is_clean_when_the_selection_matches_the_run(repo):
+    _two_tests(repo)
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    r = _xc("TOYFF", "--level", "L1", "--strict")
+    assert r.exit_code == 0, r.output
+
+
+def test_cli_strict_with_nothing_selected_exits_4(repo):
+    _two_tests(repo)
+    assert _xc("TOYFF", "--style", "cocotb", "--strict").exit_code == 4
+    assert _xc("TOYFF", "--style", "cocotb").exit_code == 0
