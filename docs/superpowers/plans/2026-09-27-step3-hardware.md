@@ -69,7 +69,11 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
   - Commands in this plan that run `pytest -n 8`, `xut run`, `xut hw build`, `xut hw sim` or `xut hw smoke` are written out in full with their scope. Caps: `pytest -n 8` 64G (it may start up to 4 capped Vivado scopes of its own, each outside this cap); `xut run` 32G; `xut hw sim` 16G; `xut hw build`/`smoke` 8G (the Vivado children run in their own 16G scopes).
   - An OOM kill is a retryable failure: lower the parallelism and re-run. Never raise a cap.
 - **SRAM-only programming.** The only programming command anywhere is `openFPGALoader -b arty <bitstream>`, which writes the FPGA's SRAM. Never pass `-f`, `--write-flash`, `--external-flash`, `--bulk-erase` or any other flash option, and never use openocd's `program`. The flash keeps whatever the lab put there. `xut.hw.session.PROGRAM_ARGV` is the one definition; a test pins it, and the Pi-side script `hw/pi/xut_work.sh` has no other `openFPGALoader` line (a test greps for it).
-- **The flock rule.** Programming the FPGA, and any reboot of a rig, happen only while holding that rig's lock: `flock` on `/run/lock/<lock>` (per rig, from `hw/rigs.yaml`), taken by `hw/pi/xut_lock.sh`. The holder writes an owner record (`owner=`, `since=`, `ttl=`), runs under `timeout -k 10 <ttl>` so it can never outlive its TTL, and a lock whose owner record is past its TTL (+60 s) is broken once. xut never reboots a Raspberry Pi unless the rig's config names a `reboot_command`, and even then only through the same lock.
+- **The flock rule** (spec §7.5, ruling S49). Programming the FPGA, and any reboot of a rig, happen only while holding that rig's lock: `flock` on `/run/lock/<lock>` (per rig, from `hw/rigs.yaml`), taken by `hw/pi/xut_lock.sh`.
+  - The holder writes an owner record (label `xut.session`, owner, host, boot id, pid, process groups, since, TTL) and runs under `timeout -k 10 <ttl>`, so a holder of ours never outlives its TTL.
+  - **The lock file is never deleted, re-created or unlinked, and a lock is never broken.** A held lock, even one whose owner record looks stale, is waited for up to the rig's `lock_wait_s`. Then the rig is reported `busy`: the job is a retryable harness error, not a result, and moves to the next rig.
+  - The only recovery allowed is killing a holder verified as our own: our label and client owner, the same host and boot id, a live pid in the recorded process group, and past its TTL.
+  - xut never reboots a Raspberry Pi unless the rig's config names a `reboot_command`, and even then only through the same lock.
 - **Transport errors are retried once** (spec §7.5, §14). An error is never retried into a pass: a retry re-runs the whole job, and a second failure is an `error` result.
 - **No hard-coded board access.** Board names, addresses, jump host, key path, UART device and lock names come from `hw/rigs.yaml` (or the file named by `XUT_HW_CONFIG`). No secret is ever committed: the rigs file names the key *path* (`~/.ssh/keys/xilinx-unittests_ed25519`), never key material. SSH runs with a generated `.cache/hw/ssh_config` (`IdentitiesOnly yes`, `BatchMode yes`), so no agent key or user config leaks in.
 - **Vivado** is only ever sourced in a subshell: `bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && ...'`, and never with `XIL_TIMING` (spec §2: timing is out of scope).
@@ -101,7 +105,7 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
 1. **SRAM only, and the lock.**
    - `PROGRAM_ARGV` is exactly `("openFPGALoader", "-b", "arty")` plus the bitstream; a test refuses every flash option.
    - `hw/pi/xut_work.sh` programs only inside `xut_lock.sh`, and has exactly one `openFPGALoader` programming line.
-   - The lock is taken around programming *and* around `reboot()`. The TTL is enforced by `timeout -k 10`, and a stale lock is broken only when its owner record is past its TTL.
+   - The lock is taken around programming *and* around `reboot()`. The TTL is enforced by `timeout -k 10` on our own holder. Nothing ever deletes or re-creates the lock file; a held lock means `busy` (move to the next rig), and only a verified own holder may be killed.
 2. **Correctness by construction** (spec §7.1).
    - The margin is enforced in RTL (`xut_hw_ctrl` `S_WAITM`), not only by the compiler. `xut_hw_tb.sv`'s margin monitor and `xut.hw.interp.margin_violations` both check it.
    - Every constraint in the generated `timing.tcl` goes through `xut_must`, so a constraint that matches no object stops the build (exit 4) instead of silently constraining nothing.
@@ -4321,13 +4325,23 @@ rigs:
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
 # xut_lock.sh LOCK TTL_S WAIT_S OWNER -- CMD [ARG...]
-# The rig lock (spec §7.5; AGENTS.md "Hardware"): runs CMD while holding flock(LOCK).
-# - While held, LOCK.owner records "owner=<OWNER> since=<epoch> ttl=<TTL_S>".
-# - CMD runs under `timeout -k 10 TTL_S`, so no holder outlives its TTL.
-# - If the lock is not free within WAIT_S seconds and LOCK.owner is past its TTL (+60 s),
-#   the stale lock file is removed once (breaking the lock) and the wait is retried.
+# The rig lock (spec §7.5, ruling S49): runs CMD while holding flock(LOCK).
+# - The lock file is never deleted, re-created or unlinked, by this script or anyone.
+# - While held, LOCK.owner holds one line:
+#     xut-lock label=xut.session owner=OWNER host=H boot=B pid=P pgid=G cpgid=C since=S ttl=T
+#   (P and G: this script and its process group; C: timeout's process group, which runs
+#   CMD). OWNER is "<user>@<client-host>:<pid>" and contains no spaces.
+# - CMD runs under `timeout -k 10 TTL_S`, so a holder of ours never outlives its TTL.
+#   CMD inherits the lock descriptor: the lock stays held while any part of the job lives.
+# - A held lock is waited for, up to WAIT_S seconds. Then:
+#   - if LOCK.owner shows OUR OWN stale holder (label xut.session, the same
+#     "<user>@<client-host>" as OWNER, this host and boot id, a live pid in the recorded
+#     process group, and past since + ttl + XUT_LOCK_GRACE_S), both of its process groups
+#     are killed (TERM, then KILL) and the wait is repeated once;
+#   - otherwise exit 75 (busy); a record past its TTL adds "(stale)" to the message.
 # Programming the FPGA and any reboot of the rig happen only under this lock.
-# Exit: CMD's status; 75 (EX_TEMPFAIL) if the lock could not be taken; 124 if CMD timed out.
+# Exit: CMD's status; 75 busy; 124 if timeout(1) stopped CMD at its TTL, or 137 if it had
+# to SIGKILL it (-k 10). The session treats 124 and 137 alike (a transport error).
 set -u
 LOCK=$1
 TTL=$2
@@ -4335,48 +4349,77 @@ WAIT=$3
 OWNER=$4
 shift 4
 [ "${1:-}" = "--" ] && shift
+GRACE=${XUT_LOCK_GRACE_S:-60}
+HOST=$(hostname)
+BOOT=$(cat /proc/sys/kernel/random/boot_id)
 
-take() {
-  if [ ! -e "$LOCK" ]; then
-    (umask 0; : >> "$LOCK") || return 1
-  fi
-  exec 9<"$LOCK" || return 1
-  flock -w "$WAIT" 9
+field() {  # field NAME RECORD
+  printf '%s\n' "$2" | sed -n "s/.* $1=\([^ ]*\).*/\1/p"
+}
+client() {  # "<user>@<client-host>:<pid>" -> "<user>@<client-host>"
+  printf '%s\n' "$1" | sed 's/:[^:]*$//'
+}
+pgid_of() {
+  ps -o pgid= -p "$1" | tr -d ' '
 }
 
-if ! take; then
+if [ ! -e "$LOCK" ]; then
+  (umask 0; : >> "$LOCK") || { echo "xut_lock: cannot create $LOCK" >&2; exit 75; }
+fi
+exec 9<"$LOCK" || { echo "xut_lock: cannot open $LOCK" >&2; exit 75; }
+
+if ! flock -w "$WAIT" 9; then
+  rec=""
   if [ -f "$LOCK.owner" ]; then
     rec=$(cat "$LOCK.owner")
-    since=$(printf '%s\n' "$rec" | sed -n 's/.* since=\([0-9][0-9]*\) ttl=\([0-9][0-9]*\).*/\1/p')
-    ttl=$(printf '%s\n' "$rec" | sed -n 's/.* since=\([0-9][0-9]*\) ttl=\([0-9][0-9]*\).*/\2/p')
-    now=$(date +%s)
-    if [ -n "$since" ] && [ -n "$ttl" ] && [ "$now" -gt $((since + ttl + 60)) ]; then
-      echo "xut_lock: breaking a stale lock: $rec" >&2
-      exec 9<&-
-      rm -f "$LOCK" "$LOCK.owner"
-      if ! take; then
-        echo "xut_lock: still busy after breaking the stale lock" >&2
-        exit 75
-      fi
-    else
-      echo "xut_lock: busy: $rec" >&2
-      exit 75
-    fi
-  else
-    echo "xut_lock: busy (no owner record)" >&2
+  fi
+  since=$(field since "$rec")
+  ttl=$(field ttl "$rec")
+  pid=$(field pid "$rec")
+  pgid=$(field pgid "$rec")
+  cpgid=$(field cpgid "$rec")
+  stale=""
+  if [ -n "$since" ] && [ -n "$ttl" ] && [ "$(date +%s)" -gt $((since + ttl + GRACE)) ]; then
+    stale=" (stale)"
+  fi
+  mine=no
+  if [ -n "$stale" ] && [ "$(field label "$rec")" = xut.session ] \
+    && [ "$(client "$(field owner "$rec")")" = "$(client "$OWNER")" ] \
+    && [ "$(field host "$rec")" = "$HOST" ] && [ "$(field boot "$rec")" = "$BOOT" ] \
+    && [ -n "$pid" ] && [ -n "$pgid" ] && [ -n "$cpgid" ] && kill -0 "$pid" \
+    && [ "$(pgid_of "$pid")" = "$pgid" ] && [ "$pgid" != "$(pgid_of $$)" ]; then
+    mine=yes
+  fi
+  if [ "$mine" != yes ]; then
+    echo "xut_lock: busy$stale: ${rec:-no owner record}" >&2
+    exit 75
+  fi
+  echo "xut_lock: killing our own stale holder (process groups $pgid, $cpgid): $rec" >&2
+  kill -TERM -- "-$cpgid" "-$pgid"
+  sleep 2
+  kill -KILL -- "-$cpgid" "-$pgid"
+  if ! flock -w "$WAIT" 9; then
+    echo "xut_lock: busy after killing our own stale holder: $rec" >&2
     exit 75
   fi
 fi
 
-rm -f "$LOCK.owner"
-if ! (umask 0; printf 'owner=%s since=%s ttl=%s\n' "$OWNER" "$(date +%s)" "$TTL" > "$LOCK.owner"); then
+timeout -k 10 "$TTL" "$@" &
+child=$!
+rec="xut-lock label=xut.session owner=$OWNER host=$HOST boot=$BOOT pid=$$"
+rec="$rec pgid=$(pgid_of $$) cpgid=$child since=$(date +%s) ttl=$TTL"
+if ! (umask 0; printf '%s\n' "$rec" > "$LOCK.owner.$$" && mv -f "$LOCK.owner.$$" "$LOCK.owner"); then
   echo "xut_lock: warning: cannot write $LOCK.owner (the lock is held regardless)" >&2
 fi
-timeout -k 10 "$TTL" "$@"
+wait "$child"
 rc=$?
 rm -f "$LOCK.owner"
 exit $rc
 ```
+
+Notes for the implementer:
+- `timeout` (GNU coreutils) makes itself a process-group leader, so its pid is the process group that runs CMD (`cpgid`); the script's own group is `pgid`. Recovery kills both.
+- Only the owner record is ever removed (by its own holder). `kill -0` and `kill` print an error for a process that is already gone; that goes to the job's log, which is where it belongs.
 
 `hw/pi/xut_work.sh`:
 
@@ -4582,34 +4625,81 @@ def _lock(tmp_path, *cmd, ttl="30", wait="1", owner="me@test"):
 
 def test_lock_runs_the_command_with_an_owner_record(tmp_path):
     r = _lock(tmp_path, "sh", "-c", f"cat {tmp_path}/fpga.lock.owner; exit 7")
-    assert r.returncode == 7 and r.stdout.startswith("owner=me@test since=") and " ttl=30" in r.stdout
+    assert r.returncode == 7 and r.stdout.startswith("xut-lock label=xut.session owner=me@test ")
+    assert " ttl=30" in r.stdout and " boot=" in r.stdout and " cpgid=" in r.stdout
     assert not (tmp_path / "fpga.lock.owner").exists()
+    assert (tmp_path / "fpga.lock").exists()  # never deleted
 
 
-def test_lock_busy_is_75(tmp_path):
-    (tmp_path / "fpga.lock").touch()
-    holder = subprocess.Popen(["flock", str(tmp_path / "fpga.lock"), "sleep", "5"])
+def _foreign_holder(tmp_path):
+    lock = tmp_path / "fpga.lock"
+    lock.touch()
+    holder = subprocess.Popen(["flock", str(lock), "sleep", "30"])
+    threading.Event().wait(0.3)
+    return lock, holder
+
+
+@pytest.mark.parametrize("since", ["now", "1"])
+def test_a_held_lock_is_busy_and_never_broken(tmp_path, since):
+    """A live foreign holder, with a fresh or a long-expired owner record: 75, the holder
+    keeps the lock, and the lock file is the same inode (ruling S49)."""
+    lock, holder = _foreign_holder(tmp_path)
     try:
-        threading.Event().wait(0.3)
-        (tmp_path / "fpga.lock.owner").write_text(f"owner=other since={int(time.time())} ttl=900\n")
+        t0 = int(time.time()) if since == "now" else 1
+        (tmp_path / "fpga.lock.owner").write_text(
+            f"xut-lock label=xut.session owner=other@elsewhere:1 host=x boot=y pid=1 pgid=1 "
+            f"cpgid=1 since={t0} ttl=60\n"
+        )
+        inode = lock.stat().st_ino
         r = _lock(tmp_path, "true")
-        assert r.returncode == 75 and "busy: owner=other" in r.stderr
+        assert r.returncode == 75 and "busy" in r.stderr
+        assert ("(stale)" in r.stderr) == (since == "1")
+        assert lock.stat().st_ino == inode and holder.poll() is None
     finally:
         holder.kill()
         holder.wait()
 
 
-def test_a_stale_lock_is_broken_once(tmp_path):
-    (tmp_path / "fpga.lock").touch()
-    holder = subprocess.Popen(["flock", str(tmp_path / "fpga.lock"), "sleep", "5"])
+def test_busy_without_an_owner_record(tmp_path):
+    lock, holder = _foreign_holder(tmp_path)
     try:
-        threading.Event().wait(0.3)
-        (tmp_path / "fpga.lock.owner").write_text("owner=ghost since=1 ttl=60\n")
         r = _lock(tmp_path, "true")
-        assert r.returncode == 0 and "breaking a stale lock" in r.stderr
+        assert r.returncode == 75 and "no owner record" in r.stderr
     finally:
         holder.kill()
         holder.wait()
+
+
+def test_only_our_own_stale_holder_is_killed(tmp_path):
+    """Our own holder, alive past its TTL (it ignores SIGTERM until timeout's -k KILL):
+    the same client owner recovers it by killing its process groups, never by touching
+    the lock file."""
+    env = {**os.environ, "XUT_LOCK_GRACE_S": "0"}
+    lock = tmp_path / "fpga.lock"
+    holder = subprocess.Popen(
+        ["sh", str(PI / "xut_lock.sh"), str(lock), "1", "1", "me@client:111", "--",
+         "sh", "-c", 'trap "" TERM; while :; do sleep 1; done'],
+        env=env, start_new_session=True,
+    )
+    try:
+        threading.Event().wait(2.5)  # past since + ttl, before timeout's KILL at ttl + 10
+        inode = lock.stat().st_ino
+        other = subprocess.run(
+            ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "you@client:222", "--", "true"],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert other.returncode == 75 and "(stale)" in other.stderr  # not ours: never killed
+        r = subprocess.run(
+            ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "me@client:333", "--", "true"],
+            env=env, capture_output=True, text=True, timeout=60,
+        )
+        assert r.returncode == 0 and "killing our own stale holder" in r.stderr
+        assert lock.stat().st_ino == inode
+        holder.wait(timeout=10)
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
 
 
 def test_ttl_is_enforced(tmp_path):
@@ -4959,17 +5049,19 @@ In `tools/tests/conftest.py`'s `pytest_collection_modifyitems`, add:
   (`xut.hw.session.PROGRAM_ARGV`, run by `hw/pi/xut_work.sh`). Never pass a flash
   option (`-f`, `--write-flash`, `--external-flash`, `--bulk-erase`), and never use
   openocd's `program`.
-- **The rig lock.** Programming and any reboot of a rig happen only inside
-  `hw/pi/xut_lock.sh` (flock on the rig's `lock`, owner record, TTL enforced by
-  `timeout`, stale locks broken only past their TTL). xut never reboots a Pi unless the
-  rig names a `reboot_command`.
+- **The rig lock** (spec §7.5, ruling S49). Programming and any reboot of a rig happen
+  only inside `hw/pi/xut_lock.sh` (flock on the rig's `lock`, an owner record, the TTL
+  enforced by `timeout` on our own holder). Never delete, re-create or unlink a lock
+  file, and never break a lock. A held lock is waited for, then the rig is `busy` and
+  the job moves on; the only recovery is killing a holder verified as our own. xut never
+  reboots a Pi unless the rig names a `reboot_command`.
 - **Access** comes from `hw/rigs.yaml` (or `XUT_HW_CONFIG`) and the key
   `~/.ssh/keys/xilinx-unittests_ed25519`. Never commit key material. Coordinate board
   use with the fpgas.online sessions first.
 - Tests that need a board carry the `hw` pytest marker and run only with `XUT_HW=1`.
 ```
 
-`hw/README.md` gives operators the same rules, plus how to run a command under the rig lock by hand (`sh xut_lock.sh /run/lock/fpga.lock 600 600 "$USER@$(hostname)" -- <cmd>`), how to reboot a rig safely (the same wrapper around the reboot command), and where results come back (`build/vivado/hw/...`).
+`hw/README.md` gives operators the same rules, plus: how to run a command under the rig lock by hand (`sh xut_lock.sh /run/lock/fpga.lock 600 600 "$USER@$(hostname):$$" -- <cmd>`); how to reboot a rig safely (the same wrapper around the reboot command); that a rig reported `busy` is cleared by whoever holds it, never by deleting the lock file; and where results come back (`build/vivado/hw/...`).
 
 - [ ] **Step 9: Run the tests, lint and commit**
 
@@ -5012,7 +5104,7 @@ One job, from the session's point of view:
 
 1. `mkdir -p xut-hw/<job-id>` on the rig;
 2. `scp` into it `top.bit`, `session.json` and the three scripts from `hw/pi/`;
-3. `cd xut-hw/<job-id> && sh ./xut_lock.sh <lock> <ttl> <wait> <owner> -- sh ./xut_work.sh <uart> <baud>`: exit 0, or 75 (busy), 90/92 (board), 91/124/255 or anything else (transport);
+3. `cd xut-hw/<job-id> && sh ./xut_lock.sh <lock> <ttl> <wait> <owner> -- sh ./xut_work.sh <uart> <baud>`: exit 0, or 75 (busy: `BoardBusy`), 90/92 (board), or 91, 124/137 (the TTL: `timeout` stopped or killed the job), 255 or anything else (transport);
 4. `scp` back `resp.json`, `program.log`, `uart.log`, `serial.txt` and `ofl-version.txt` (whatever exists, also on failure: they are the evidence);
 5. `rm -rf xut-hw/<job-id>` (always; a failure here is logged, not raised);
 6. `parse_session`: the `I` reply must name the job's build ID, or it is a `TransportError` (programming did not take). A load `badcrc` or a malformed or CRC-failing run reply is a `TransportError`. Other load statuses are a `HarnessError`. Run statuses are returned for the pool and the runner to judge.
@@ -5117,7 +5209,7 @@ from test_hw_session import rig, selftest_job
 
 from xut.hw.fake import FakeRig, FakeTransport
 from xut.hw.pool import BoardPool, NoBoard, run_job
-from xut.hw.session import SshBoardSession, TransportError
+from xut.hw.session import BoardBusy, SshBoardSession, TransportError
 
 
 def pool(rigs: dict[str, FakeRig]):
@@ -5167,6 +5259,19 @@ def test_board_error_marks_bad_and_moves(tmp_path):
     assert out.result.rig == "b" and "a" in p.bad
 
 
+def test_a_busy_rig_moves_the_job_without_using_the_retry(tmp_path):
+    p, _ = pool({"a": FakeRig(busy=1), "b": FakeRig(fail_transport=1)})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "pass" and out.result.rig == "b" and "a" not in p.bad
+    assert [a.split(":")[1].strip() for a in out.attempts][:2] == ["busy", "transport error"]
+
+
+def test_every_rig_busy_is_a_busy_error(tmp_path):
+    p, _ = pool({"a": FakeRig(busy=1)})
+    with pytest.raises(BoardBusy, match="every usable rig is busy"):
+        run_job(p, selftest_job(tmp_path), tmp_path / "w")
+
+
 def test_no_usable_board(tmp_path):
     p, _ = pool({"a": FakeRig()})
     p.mark_bad("a", "test")
@@ -5214,7 +5319,9 @@ from xut.paths import repo_root
 PROGRAM_ARGV = ("openFPGALoader", "-b", "arty")
 PI_FILES = ("xut_lock.sh", "xut_work.sh", "xut_uart.py")
 FETCH = ("resp.json", "program.log", "uart.log", "serial.txt", "ofl-version.txt")
-RC_BUSY, RC_PROGRAM, RC_UART, RC_NO_UART, RC_TTL, RC_SSH = 75, 90, 91, 92, 124, 255
+RC_BUSY, RC_PROGRAM, RC_UART, RC_NO_UART, RC_SSH = 75, 90, 91, 92, 255
+#: timeout(1) stopped the job at its TTL (124), or had to SIGKILL it (137): transport errors.
+RC_TTL = (124, 137)
 
 
 class TransportError(XutError, RuntimeError):
@@ -5222,8 +5329,10 @@ class TransportError(XutError, RuntimeError):
     another build: retried once (spec §7.5); a second one is an error."""
 
 
-class BoardBusy(TransportError):
-    """The rig lock was held by someone else for longer than lock_wait_s."""
+class BoardBusy(XutError, RuntimeError):
+    """The rig lock stayed held for lock_wait_s (spec §7.5, ruling S49): a retryable harness
+    error, not a result. The job moves to the next rig; it does not use the transport
+    retry, and the rig is not marked bad."""
 
 
 class BoardError(XutError, RuntimeError):
@@ -5466,6 +5575,9 @@ class SshBoardSession:
 it); the rig's own flock (``xut_lock.sh``) protects it from every other user.
 ``run_job``:
 
+- a ``BoardBusy`` (the rig lock stayed held) moves the job to the next rig without using
+  the transport retry; when every usable rig was busy, ``BoardBusy`` is raised (a
+  retryable harness error, never a result; ruling S49);
 - a ``TransportError`` is retried once (spec §7.5, §14); a second one is raised;
 - a ``BoardError`` marks the board bad for the session and moves the job to another
   board, once;
@@ -5485,7 +5597,7 @@ from pathlib import Path
 
 from xut.errors import XutError
 from xut.hw import selftest
-from xut.hw.session import BoardError, BoardSession, HwJob, JobResult, TransportError
+from xut.hw.session import BoardBusy, BoardError, BoardSession, HwJob, JobResult, TransportError
 
 
 class NoBoard(XutError, RuntimeError):
@@ -5544,6 +5656,7 @@ class JobOutcome:
 def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
     attempts: list[str] = []
     avoid: set[str] = set()
+    busy: list[str] = []
     retried = moved = False
     failed: tuple[JobResult, str] | None = None
     n = 0
@@ -5555,11 +5668,18 @@ def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
         except NoBoard:
             if failed is not None:
                 return JobOutcome(failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts)
+            if busy:
+                raise BoardBusy(f"every usable rig is busy (retryable harness error): {'; '.join(busy)}") from None
             raise
         try:
             rig = s.rig.name
             try:
                 res = s.run_job(job, workdir / f"attempt-{n}")
+            except BoardBusy as e:  # ruling S49: move to the next rig; not a transport retry
+                attempts.append(f"attempt {n} on {rig}: busy: {e}")
+                busy.append(str(e))
+                avoid.add(rig)
+                continue
             except TransportError as e:
                 attempts.append(f"attempt {n} on {rig}: transport error: {e}")
                 if retried:
@@ -6843,7 +6963,7 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 - **§7.3 pad harness, §7.4 configuration primitives:** out of step 3 (spec §16: step 5, io and configuration groups). The harness uses no pad-class DUT, and `validate` makes any pad or inout wrapper `hw_renderable: no`.
 - **§7.5 board access.**
   - *SSH to the Pi, scp, `openFPGALoader -b arty`, UART `/dev/ttyUSB1` at 115200:* Tasks 8–9. The UART device is set per rig, with that default.
-  - *Lock file with owner, time and TTL; stale locks broken:* `xut_lock.sh` (Task 8), taken around programming and any reboot.
+  - *Lock file with owner, time and TTL:* `xut_lock.sh` (Task 8), taken around programming and any reboot. Per ruling S49 (spec rev 3.6) the lock file is never deleted and a lock never broken: a held lock is waited for, then the rig is `busy` and the job moves on (`BoardBusy`, Task 9a); only a verified own holder may be killed.
   - *Transport errors retried once; a self-test failure marks the board bad:* `run_job` (Task 9).
   - *`BoardSession` adapter:* Task 9 (Protocol + SSH implementation + fake).
   - *Preflight:* `xut doctor` hw checks and `xut hw rigs` (Task 9).
@@ -6866,7 +6986,7 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 4. **Host-driven protocol.** The harness waits for commands (`I`, `L`, `R`) instead of dumping once after configuration, so the host can never miss the start of a dump, and one programming can run many slots in turn.
 5. **The hw runner's flow and model source.** `hw` runs flow `vivado` (spec §6 lists "bitstream on hw" under the Vivado flow). Its results are recorded only against the reference model source `unisim-2025.2`, so crosscheck groups them with the golden model's; any other source is a skip with the reason.
 6. **Board DNA.** Spec §6 wants "board DNA, serial number and site" in `result.json`. A 7-series device has one DNA_PORT site, which is itself a primitive under test (§7.4: "the host reads the per-die value over JTAG"). The harness therefore must not occupy it, and JTAG DNA readback arrives with the configuration unit. Step 3 records the Arty's USB serial (FT2232), the rig and the site; `hw.dna` stays an optional field.
-7. **The lock's mechanics.** Spec §7.5 asks for a lock file with owner, time and TTL, broken past its TTL. Here: `flock` on the rig's `lock` path under `/run/lock`, an owner record beside it, the holder run under `timeout -k 10 <ttl>` (so it cannot outlive its TTL), and a stale lock broken by removing the lock file once its owner record is past TTL + 60 s. The same wrapper guards any reboot. xut reboots a rig only through a configured `reboot_command`, and never by default. The lock path must match whatever the other fpgas.online users take; Task 12 checks this before any programming.
+7. **The lock's mechanics** (ruling S49; spec rev 3.6 §7.5). `flock` on the rig's `lock` path under `/run/lock`, an owner record beside it (label, owner, host, boot id, pid, process groups, since, TTL), and our holder run under `timeout -k 10 <ttl>`, so it cannot outlive its TTL. flock is released by the kernel when its holder dies, so a lock that cannot be taken has a *live* holder: deleting or re-creating the file would put two holders on one board. So the lock file is never touched. A held lock is waited for up to `lock_wait_s`; then the rig is `busy` (a retryable harness error) and the job moves to the next rig. The only recovery is killing a holder verified as our own (same client owner and label, same host and boot id, a live pid in the recorded process group, past its TTL). The same wrapper guards any reboot. xut reboots a rig only through a configured `reboot_command`, and never by default. The lock path must match whatever the other fpgas.online users take; Task 12 checks this before any programming.
 8. **N and the system clock.** `MARGIN = 16` cycles at 100 MHz (160 ns, far above BUFG insertion and SLICE clock-to-out skews), with `set_max_delay -datapath_only` of (MARGIN − 2) periods. The system clock is the board oscillator through one BUFG, with no MMCM: the harness should not depend on a clock-management primitive, since those are primitives under test themselves.
 9. **What "run N times" means.** N = 3 programmings per bitstream (`--hw-repeats`). Any difference is `nondeterminism`, and the configuration fails.
 10. **Packing scope.** Configurations are packed per test, in content order, into bitstreams of at most 28 DUT clocks (32 BUFGCTRL, minus the harness's 2, minus 2 spare) and 64 slots. The content-addressed cache shares identical sets across tests. Packing across tests is left for later, if build time demands it.
