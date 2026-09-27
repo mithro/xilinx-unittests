@@ -243,14 +243,29 @@ def error_lines(log_text: str) -> list[str]:
     ]
 
 
-def classify(log_text: str, known: AbstractSet[str] | None = None) -> str:
+_EXIT_LINE = re.compile(r"^xut-smoke: (?:build|run) exit (\d+)\s*$", re.M)
+
+
+def _is_config(line: str) -> bool:
+    return any(rx.search(line) for rx in _CONFIG_RULES)
+
+
+def _crashed(log_text: str, rc: int | None) -> bool:
+    """A signal exit (>= 128) of the script or a step it logged, other than the
+    timeout-or-kill path (``TIMEOUT_MARK``, classified before)."""
+    codes = [int(c) for c in _EXIT_LINE.findall(log_text)] + ([rc] if rc is not None else [])
+    return any(c >= 128 for c in codes)
+
+
+def classify(log_text: str, known: AbstractSet[str] | None = None, rc: int | None = None) -> str:
     """The category of a failed smoke log (``CATEGORIES``): an infrastructure failure
     first (``INFRA_MARK``), then an OOM kill at the container's memory cap, then a timeout
     (an OOM-killed tool exits 137, which the script marks as ``timeout-or-kill``), then
-    ``config`` when the first error line is the model's own attribute/legality check
-    (``_CONFIG_RULES``, ruling S51), then ``secureip`` when every module the log says is
-    missing is absent from the model source (``known``: its models; ruling S51), then the
-    first category any error line matches, else ``other``."""
+    ``config`` when *every* error line is the model's own attribute/legality check
+    (``_CONFIG_RULES``, rulings S51, S50a) and nothing crashed (``rc``, or a logged exit,
+    >= 128), then ``secureip`` when every module the log says is missing is absent from
+    the model source (``known``: its models; ruling S51), then the first category any
+    non-config error line matches, else ``other``."""
     from xut.container import OOM_MARK
 
     if INFRA_MARK in log_text:
@@ -259,9 +274,10 @@ def classify(log_text: str, known: AbstractSet[str] | None = None) -> str:
         return "oom"
     if TIMEOUT_MARK in log_text:
         return "timeout"
-    errors = error_lines(log_text)
-    if errors and any(rx.search(errors[0]) for rx in _CONFIG_RULES):
+    lines = error_lines(log_text)
+    if lines and all(_is_config(ln) for ln in lines) and not _crashed(log_text, rc):
         return "config"
+    errors = [ln for ln in lines if not _is_config(ln)]
     missing = missing_modules(log_text)
     if known is not None and missing and not set(missing) & set(known):
         return "secureip"
@@ -286,10 +302,14 @@ def failure(log_text: str, rc: int | None, known: AbstractSet[str] | None = None
     infra = [ln.removeprefix(INFRA_MARK).strip() for ln in lines if ln.startswith(INFRA_MARK)]
     oom = [ln.strip() for ln in lines if ln.startswith(OOM_MARK)]
     exits = [ln.strip() for ln in lines if ln.startswith(CONTAINER_EXIT)]
-    first = (infra or oom or (exits if rc is None else []) or error_lines(log_text) or [""])[0]
+    category = classify(log_text, known, rc)
+    errors = error_lines(log_text)
+    if category != "config":  # the first error that is not a model's legality message
+        errors = [ln for ln in errors if not _is_config(ln)] or errors
+    first = (infra or oom or (exits if rc is None else []) or errors or [""])[0]
     if not first:
         first = f"exit {rc}, no {SMOKE_OK}" if rc is not None else "the script did not finish"
-    return f"{classify(log_text, known)}: {_short(first)}"
+    return f"{category}: {_short(first)}"
 
 
 # ---- configurations ------------------------------------------------------------------------

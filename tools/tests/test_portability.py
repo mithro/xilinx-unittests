@@ -918,3 +918,20 @@ def test_parse_refuses_unknown_cells(old, new, why):
     md = render({"s": ROWS[:1]}, _meta()).replace(old, new, 1)
     with pytest.raises(portability.PortabilityError, match=why):
         parse(md)
+
+
+def test_config_needs_every_error_line_and_no_crash():
+    """Ruling S50a (re-review nit; the reviewer's cls.py): a crash after a model's
+    attribute message is not config; the reason is the first non-config error."""
+    attr = CONFIG_LOGS["DSP48E1"].splitlines()[1]
+    crash = (
+        f"$ bash verilator.sh\nxut-smoke: build exit 0\n{attr}\n"
+        "%Error: smoke.v:10: Verilog $stop\n"
+        "Segmentation fault (core dumped) - internal error\nxut-smoke: run exit 139\n"
+    )
+    assert failure(crash, 139) == "other: %Error: smoke.v:10: Verilog $stop"
+    signal_only = f"xut-smoke: build exit 0\n{attr}\nxut-smoke: run exit 139\n"
+    assert classify(signal_only, rc=139) == "other"
+    assert classify(signal_only) == "other"  # the logged exit is enough
+    clean = f"xut-smoke: build exit 0\n{attr}\nxut-smoke: run exit 0\n"
+    assert failure(clean, 0).startswith("config: Attribute Syntax Error")
