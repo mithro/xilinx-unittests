@@ -556,6 +556,24 @@ def _load_results(
     return out
 
 
+def _unless_transform_bug(
+    root: Path, ms: str, test_id: str, flow: str, warn: Callable[[str], None]
+) -> str:
+    """A Verilator ``pass``, unless the test's iverilog-vz trace differs from its iverilog
+    trace: a ``transform-bug`` blocks the Verilator results (spec §6.2; PR #10 nit), so the
+    pass is recorded as ``error``."""
+    from xut.crosscheck import transform_bug
+
+    pts = transform_bug(root, ms, test_id, flow)
+    if not pts:
+        return "pass"
+    warn(
+        f"{flow}/verilator/{test_id}: iverilog-vz differs from iverilog at {len(pts)} "
+        f"point(s) ({pts[0]}): a transform-bug blocks the Verilator result; recorded as error"
+    )
+    return "error"
+
+
 def _cell(declared_as: str | None, res: dict | None) -> str:
     """One test's ``results`` value for one (runner, flow) (Task 18 brief)."""
     if declared_as == "unsupported":
@@ -825,7 +843,10 @@ def record(
                             f"dirty {res.get('dirty')})"
                         )
                 key = f"{c.level}/{runner}/{flow}"
-                cells.setdefault(key, []).append(_cell(c.runners.get(runner), res))
+                cell = _cell(c.runners.get(runner), res)
+                if runner == "verilator" and cell == "pass":
+                    cell = _unless_transform_bug(root, model_source, c.id, flow, warn)
+                cells.setdefault(key, []).append(cell)
     if not found:
         raise RecordError(
             f"no result.json for any {prim} test under build/*/*/{model_source}/: "

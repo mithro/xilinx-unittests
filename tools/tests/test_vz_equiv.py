@@ -116,6 +116,27 @@ def test_data_trigger_uses_set_and_clock_ports_cycle(tmp_path):
     assert any(e.op == "edge" for e in vec.events)
 
 
+def test_a_multi_bit_data_trigger_is_walked_bit_by_bit(tmp_path):
+    """PR #10 nit: a forcing condition on a partial value (SEL[0] & ~SEL[1]) needs each bit
+    alone (walking one) and all but one (walking zero), not only all-zeros/all-ones."""
+    f = tmp_path / "vz_walk.v"
+    f.write_text(
+        "`timescale 1ps/1ps\n"
+        "module VZWALK (output Q, input C, input [2:0] SEL, input D);\n"
+        "  reg q; assign Q = q;\n"
+        "  always @(posedge C) q <= D;\n"
+        "  always @(SEL) if (SEL[0] & ~SEL[1]) assign q = 1'b1; else deassign q;\n"
+        "endmodule\n"
+    )
+    an = Checked("VZWALK", f, ["SEL"], ["C"], False)
+    m = _map(f, "VZWALK")
+    assert m.cls_of("SEL") == "data"
+    vec = equiv_stimulus(an, m)
+    assert validate(vec, m).errors == []
+    for value in ("001", "010", "100", "110", "101", "011"):
+        assert _set_count(vec, m, "SEL", value) >= 1, value
+
+
 def test_unknown_glbl_trigger_raises():
     an = Checked("VZTRIG", FIX / "vz_trig.v", ["glbl.JTAG_TCK"], [], False)
     with pytest.raises(TransformError, match="glbl.JTAG_TCK has no glbl channel"):
