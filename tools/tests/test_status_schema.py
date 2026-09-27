@@ -164,7 +164,9 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
         # overrides: a work unit refreshes its own stub (`xut status init
         # --refresh-bins`, AGENTS.md §7) whenever its overrides change `coverage_bins`,
         # and the orchestrator refreshed every stub on main (a11e51e), so a never-recorded
-        # stub's `uncovered` is exactly its current bins.
+        # stub's `uncovered` is exactly its current bins. An infra PR that changes
+        # `coverage_bins` carries the refreshed stubs as an exception its body states,
+        # until the orchestrator refreshes them on main after the merge (AGENTS.md §7).
         assert data["coverage"]["uncovered"] == coverage_bins(entry), entry.name
 
 
