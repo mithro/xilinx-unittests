@@ -237,13 +237,27 @@ smoke simulation whose memory grows without bound. Its container peaked at
   ```
 
   The job then lives outside your own cgroup, and an OOM kill stays inside it.
+  `vivado.slice` is the host's shared slice for all heavy FPGA-tool jobs, not
+  only Vivado. It is capped at 300G in total and shared with other projects.
+  This project's share is 100G.
 - **Containers.** Docker containers run under the system slice, not your
-  scope, so the scope alone does not cap them. Every container xut starts is
-  capped with `--memory` / `--memory-swap` (default `4g`,
-  `XUT_CONTAINER_MEMORY`). Never start an uncapped container by hand.
-- **Parallelism from measured memory, not cores.** Use `--jobs` at most 24
-  and `pytest -n` at most 8. Never use `-n auto` locally: it means 88
-  workers. Run Vivado at most 4 at a time, each scope capped at 16G.
+  scope, so the scope alone does not cap them. From PR C
+  (`infra/verilatorize`) on, every container xut starts is capped with
+  `--memory` / `--memory-swap`: the default is `4g`, set by
+  `XUT_CONTAINER_MEMORY`. `--jobs` is refused above
+  `XUT_MEMORY_BUDGET` (100g) ÷ the cap, which is 25 with the defaults.
+  **Until PR C is merged, xut containers on `main` are uncapped: keep
+  `--jobs` at 8 or below.** Never start an uncapped container by hand.
+- **Parallelism from measured memory, not cores.** Use `--jobs` at most 24,
+  one below the enforced limit of 25, as a margin. Use `pytest -n` at most 8.
+  Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
+  time, each scope capped at 16G. That is 64G, within this project's 100G
+  share. These are conservative starting values, not yet measured for our
+  Vivado runs: measure the first runs with the scope's `memory.peak` and
+  adjust.
+- **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
+  value in a plan or task brief is capped by this section. For example, the
+  step-2 plan's `--jobs 80` and `--jobs 40` predate this section; use 24.
 - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
 - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
