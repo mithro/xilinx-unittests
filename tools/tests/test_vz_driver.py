@@ -383,3 +383,59 @@ def test_sim_tools_names_every_simulator(tmp_path, monkeypatch):
     ms = ModelSource("test-src", tmp_path / "src")
     got = json.loads(driver.sim_tools(ms, tmp_path / "w"))
     assert got == {"iverilog": "IV 12", "image": "sha256:abc", "xsim": "unavailable"}
+
+
+def test_ensure_model_checks_each_configuration_once_and_configurations_concurrently(
+    tmp_path, monkeypatch
+):
+    """Ruling S61: configurations run concurrently. Two configurations of one model are
+    checked at the same time (per-configuration locks), and each exactly once however many
+    threads ask for it."""
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from xut.verilatorize import equiv
+
+    out = tmp_path / "vz"
+    ms = SimpleNamespace(name="ms")
+    e = driver.ModelEntry(status="transformed", source_sha256="s", rewrites=["shadow"])
+    monkeypatch.setattr(driver, "vz_dir", lambda _ms, _root=None: out)
+    monkeypatch.setitem(driver._ENTRIES, (str(out), "M"), e)
+    monkeypatch.setattr(driver, "_CHECKED", set())
+    monkeypatch.setattr(driver, "model_attrs", lambda _ms, _m, attrs: dict(attrs or {}))
+    monkeypatch.setattr(driver, "_sim_tools", lambda _ms, _out: "tools")
+    monkeypatch.setattr(driver, "checked", lambda _man, model, _files: model)
+    monkeypatch.setattr(driver, "model_files", lambda _ms: {})
+    monkeypatch.setattr(driver.Manifest, "load", staticmethod(lambda _p: None))
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        driver, "_record", lambda _o, _e, _m, k, _log, deps=False: recorded.append(k)
+    )
+    calls: list[str] = []
+    active, peak, lock = [0], [0], threading.Lock()
+
+    def fake_check(subject, _ms, _dir, cfg, lib):
+        with lock:
+            calls.append(equiv.config_key(cfg))
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        with lock:
+            active[0] -= 1
+        return SimpleNamespace(status="pass", oracle="iverilog", reason="")
+
+    monkeypatch.setattr(equiv, "check_model", fake_check)
+    attrs = [{"INIT": "1'b0"}, {"INIT": "1'b1"}] * 4
+    threads = [
+        threading.Thread(target=driver.ensure_model, args=(ms, "M", a), kwargs={"log": str})
+        for a in attrs
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(calls) == ["INIT=1'b0", "INIT=1'b1"]  # each configuration once
+    assert peak[0] == 2  # the two configurations were checked at the same time
+    assert sorted(recorded) == sorted(calls)
+    assert e.equiv == {"INIT=1'b0": "pass", "INIT=1'b1": "pass"}

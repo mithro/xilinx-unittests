@@ -749,8 +749,14 @@ def _check_all(
 
 # ---- on demand, for the runners (Task 15) --------------------------------------------------
 #: One lock per (transform directory, model): runner jobs are threads, and two runners (or
-#: two configurations) of one model must not transform or check it twice at once.
+#: two configurations) of one model must not transform it twice at once. The lock covers
+#: only loading or transforming the entry; each configuration's check has its own lock
+#: (``_KEY_LOCKS``), so the configurations of one model are checked concurrently (ruling
+#: S61: configurations run concurrently), each once.
 _MODEL_LOCKS: dict[tuple[str, str], threading.Lock] = {}
+#: One lock per (transform directory, model, config key): its descendants' derivation and
+#: its equivalence check run once, never twice at once.
+_KEY_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 #: ``manifest.json`` is read, changed and written whole: one writer at a time per process.
 _MANIFEST_LOCK = threading.Lock()
@@ -765,6 +771,11 @@ _CHECKED: set[tuple[str, str, str]] = set()
 def _model_lock(key: tuple[str, str]) -> threading.Lock:
     with _LOCKS_GUARD:
         return _MODEL_LOCKS.setdefault(key, threading.Lock())
+
+
+def _key_lock(key: tuple[str, str, str]) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _KEY_LOCKS.setdefault(key, threading.Lock())
 
 
 def _sim_tools(ms: ModelSource, out: Path) -> str:
@@ -905,10 +916,14 @@ def _ensure_one(
             with _MANIFEST_LOCK:
                 man = verilatorize(ms, [model], progress=log, out_dir=out)
             e = _ENTRIES[key] = man.models[model]
-        if not check or not e.gated or e.status == "unsupported" or e.depends_on_unsupported:
-            return e, None
-        cfg = model_attrs(ms, model, attrs)
-        k = config_key(cfg)
+    if not check or not e.gated or e.status == "unsupported" or e.depends_on_unsupported:
+        return e, None
+    cfg = model_attrs(ms, model, attrs)
+    k = config_key(cfg)
+    # this configuration's work, once: other configurations of the model run concurrently
+    # (each writes only its own keys of the entry and its own equiv/<model>/<cfg>/ directory;
+    # the manifest itself is written under _MANIFEST_LOCK)
+    with _key_lock((str(out), model, k)):
         if e.depends_on_transformed and k not in e.dep_configs:
             e.dep_configs[k] = descendant_configs(ms, model, cfg, e.depends_on_transformed)
             _record(out, e, model, k, log, deps=True)
