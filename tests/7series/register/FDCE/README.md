@@ -11,11 +11,11 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 | ID | Level | Style | Exercises |
 |---|---|---|---|
 | `7series.FDCE.L0.smoke` | L0 | vector | port:C, port:CE, port:D, port:Q, port:CLR, port:C:edge, port:CE:1, port:D:1, attr:INIT=1'b0, attr:INIT=1'b1, attr:IS_C_INVERTED=1'b0, attr:IS_C_INVERTED=1'b1, attr:IS_D_INVERTED=1'b0, attr:IS_D_INVERTED=1'b1, attr:IS_CLR_INVERTED=1'b0, attr:IS_CLR_INVERTED=1'b1, claim:FDCE.C1, claim:FDCE.C4 |
-| `7series.FDCE.L0.illegal_init` | L0 | vector |  |
 | `7series.FDCE.L1.capture` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:1, port:D:0, port:D:1, claim:FDCE.C1 |
 | `7series.FDCE.L1.ce_hold` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:0, port:CE:1, port:D:0, port:D:1, claim:FDCE.C2 |
 | `7series.FDCE.L1.clear_over_ce` | L1 | vector | port:CLR, port:CE, port:Q, port:CE:0, port:CE:1, port:CLR:assert, port:CLR:release, claim:FDCE.C3 |
 | `7series.FDCE.L1.clear_async` | L1 | vector | port:CLR, port:Q, port:CLR:assert, port:CLR:release, claim:FDCE.C3 |
+| `7series.FDCE.L1.gsr_vs_clear` | L1 | vector | port:CLR, port:Q, port:CLR:assert, port:CLR:release, attr:IS_CLR_INVERTED=1'b1, claim:FDCE.C3, claim:FDCE.C4, claim:FDCE.C6 |
 | `7series.FDCE.L1.clear_recovery` | L1 | vector | port:CLR, port:C, port:D, port:Q, port:CLR:assert, port:CLR:release, claim:FDCE.C1, claim:FDCE.C3 |
 | `7series.FDCE.L1.gsr_init` | L1 | vector | port:Q, claim:FDCE.C4 |
 | `7series.FDCE.L1.is_c_inverted` | L1 | vector | port:C, port:Q, port:C:edge, attr:IS_C_INVERTED=1'b1, claim:FDCE.C5 |
@@ -32,11 +32,8 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 - `7series.FDCE.L0.smoke`: Every one of the 16 attribute combinations elaborates, powers up to INIT and captures once on every simulator: the minimum any toolchain must get right.
   - Misses: only one capture per configuration; no control, CE-low or GSR activity
   - Misses: no x/z on any input (sv_x_inputs covers x)
-  - Misses: illegal values are tried only by L0.illegal_init
+  - Misses: UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) accepts INIT=1'bx without rejecting it; the reject path is not exercised for flops
   - Not on hw for configurations `*_d1_*`: IS_D_INVERTED=1 (UG953 p370) is only legal on I/O registers; the fabric harness uses SLICE flops
-- `7series.FDCE.L0.illegal_init`: INIT=1'bx is outside UG953's 1'b0/1'b1 (p370); the simulation must reject it (expect=reject), which exercises the runtime-rejection path of spec §4.1.
-  - Misses: only INIT=1'bx is tried; over-width literals are truncated at elaboration and IS_*_INVERTED illegal values are not tried
-  - Misses: whether UNISIM rejects it is observed, not documented (see Task 24)
 - `7series.FDCE.L1.capture`: Pins the basic D-to-Q transfer on the active edge, for both INIT values and for the all-defaults configuration (model defaults vs UNISIM defaults).
   - Misses: CE held High and the control inactive throughout
   - Misses: no GSR after power-up
@@ -55,6 +52,9 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
   - Misses: no clock activity while the control is asserted
   - Misses: no GSR overlap
   - Misses: default polarities only
+- `7series.FDCE.L1.gsr_vs_clear`: GSR and CLR active together, entered in both orders, for both INIT values and both CLR polarities. UG953 documents each alone (p369) but not which wins when they conflict.
+  - Misses: which of GSR and CLR wins is undocumented; the golden model infers CLR (ruling S30), UNISIM gives INIT: see findings/FDCE-doc-gap-L1-gsr_vs_clear.md
+  - Misses: one edge under GSR and the control; no free-running clock
 - `7series.FDCE.L1.clear_recovery`: After CLR is released, the next active edge captures D. The edge is at least async_sep_ps after the release, so recovery timing is not tested (spec §2).
   - Misses: recovery/removal timing is out of scope (spec §2)
   - Misses: one release per configuration
@@ -102,9 +102,7 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 - Timing (setup/hold, clock-to-Q, recovery/removal) is out of scope (spec §2).
 - only one capture per configuration; no control, CE-low or GSR activity
 - no x/z on any input (sv_x_inputs covers x)
-- illegal values are tried only by L0.illegal_init
-- only INIT=1'bx is tried; over-width literals are truncated at elaboration and IS_*_INVERTED illegal values are not tried
-- whether UNISIM rejects it is observed, not documented (see Task 24)
+- UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) accepts INIT=1'bx without rejecting it; the reject path is not exercised for flops
 - CE held High and the control inactive throughout
 - no GSR after power-up
 - default polarities only
@@ -113,6 +111,8 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 - CLR release timing relative to the clock is covered only by clear_recovery
 - no clock activity while the control is asserted
 - no GSR overlap
+- which of GSR and CLR wins is undocumented; the golden model infers CLR (ruling S30), UNISIM gives INIT: see findings/FDCE-doc-gap-L1-gsr_vs_clear.md
+- one edge under GSR and the control; no free-running clock
 - recovery/removal timing is out of scope (spec §2)
 - one release per configuration
 - GSR overlapping an active control is not driven here
@@ -137,11 +137,11 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 | Test | python | xsim | iverilog | verilator | hw |
 |---|---|---|---|---|---|
 | `7series.FDCE.L0.smoke` | yes | yes | yes | yes | yes |
-| `7series.FDCE.L0.illegal_init` | yes | yes | yes | unsupported: a 2-state simulator cannot represent the 1'bx attribute value | unsupported: rejection of an illegal attribute is a simulation-model check |
 | `7series.FDCE.L1.capture` | yes | yes | yes | yes | yes |
 | `7series.FDCE.L1.ce_hold` | yes | yes | yes | yes | yes |
 | `7series.FDCE.L1.clear_over_ce` | yes | yes | yes | yes | yes |
 | `7series.FDCE.L1.clear_async` | yes | yes | yes | yes | yes |
+| `7series.FDCE.L1.gsr_vs_clear` | yes | yes | yes | yes | unsupported: GSR pulses need the GSR-immune harness state of spec §7.2 |
 | `7series.FDCE.L1.clear_recovery` | yes | yes | yes | yes | yes |
 | `7series.FDCE.L1.gsr_init` | yes | yes | yes | yes | unsupported: GSR pulses need the GSR-immune harness state of spec §7.2 |
 | `7series.FDCE.L1.is_c_inverted` | yes | yes | yes | yes | yes |
@@ -153,17 +153,18 @@ FDCE is a single D flip-flop with clock enable and an asynchronous clear input `
 | `7series.FDCE.L1.sv_x_inputs` | no: self-checking sv testbench; there is no golden-model replay | yes | yes | unsupported: 2-state simulator: x stimulus is randomised per X seed (spec §5.6), so the undocumented x checkpoints cannot be compared | unsupported: sv testbenches are simulation-only (spec §4.3) |
 | `7series.FDCE.L2.cocotb_random` | no: the cocotb test compares against the golden model itself | unsupported: cocotb has no xsim backend (spec §4.3) | yes | yes | unsupported: cocotb runs in simulation; failing seeds are frozen into vector tests |
 
-Findings: none recorded.
+Findings:
 
+- [FDCE-doc-gap-L1-gsr_vs_clear](../../../../findings/FDCE-doc-gap-L1-gsr_vs_clear.md)
 
 ## Related tests
 
-- `7series.FDCE.L0.smoke`: `7series.FDRE.L0.smoke`, `7series.FDSE.L0.smoke`, `7series.FDPE.L0.smoke`, `7series.FDCE.L0.illegal_init`
-- `7series.FDCE.L0.illegal_init`: `7series.FDRE.L0.illegal_init`, `7series.FDSE.L0.illegal_init`, `7series.FDPE.L0.illegal_init`, `7series.FDCE.L0.smoke`
+- `7series.FDCE.L0.smoke`: `7series.FDRE.L0.smoke`, `7series.FDSE.L0.smoke`, `7series.FDPE.L0.smoke`
 - `7series.FDCE.L1.capture`: `7series.FDRE.L1.capture`, `7series.FDSE.L1.capture`, `7series.FDPE.L1.capture`, `7series.FDCE.L2.exhaustive`
 - `7series.FDCE.L1.ce_hold`: `7series.FDRE.L1.ce_hold`, `7series.FDSE.L1.ce_hold`, `7series.FDPE.L1.ce_hold`
 - `7series.FDCE.L1.clear_over_ce`: `7series.FDRE.L1.reset_over_ce`, `7series.FDSE.L1.set_over_ce`, `7series.FDPE.L1.preset_over_ce`
 - `7series.FDCE.L1.clear_async`: `7series.FDPE.L1.preset_async`
+- `7series.FDCE.L1.gsr_vs_clear`: `7series.FDPE.L1.gsr_vs_preset`, `7series.FDCE.L1.gsr_init`, `7series.FDCE.L1.clear_async`
 - `7series.FDCE.L1.clear_recovery`: `7series.FDPE.L1.preset_recovery`
 - `7series.FDCE.L1.gsr_init`: `7series.FDRE.L1.gsr_init`, `7series.FDSE.L1.gsr_init`, `7series.FDPE.L1.gsr_init`, `7series.FDCE.L1.sv_gsr_midsim`
 - `7series.FDCE.L1.is_c_inverted`: `7series.FDRE.L1.is_c_inverted`, `7series.FDSE.L1.is_c_inverted`, `7series.FDPE.L1.is_c_inverted`
