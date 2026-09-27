@@ -24,6 +24,10 @@ from __future__ import annotations
 import sys
 
 SWEEP = "tools/tests/test_vz_rewrite.py::test_sweep_every_transformed_model_lints"
+#: The shard that also runs the flops ``xut run`` and ``xut crosscheck`` steps; the
+#: workflow names it in those steps' ``if`` and ``test_ci_shards.py`` pins that exactly one
+#: shard, this one, runs them.
+FLOPS_SHARD = "rest"
 VERILATOR = "tools/tests/test_runner_verilator.py"
 
 #: shard -> (selection, scheduling). Selection decides which tests run; scheduling only
