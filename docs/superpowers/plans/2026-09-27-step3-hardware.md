@@ -65,8 +65,15 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
 - **Never pipe command output into `grep`/`tail`.** Log to a file (`cmd > .cache/x.log 2>&1`), then inspect the log file.
 - **Small commits.** Commit after every meaningful change. Subjects are prefixed `<area>: ` (`infra: `, `hw: `, `runners: `, `flops: `, `luts: `, `docs: `). Every commit ends with the trailer `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`, passed as a second `-m` as the commit commands below do.
 - **MEMORY SAFETY:** every heavy command (Vivado, `pytest -n`, `xut run`) runs inside `systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) -p MemoryMax=<cap> -p MemorySwapMax=0 -- <cmd>`. Every docker container gets `--memory=4g --memory-swap=4g` (the infra now does this). Vivado jobs are at most 4 in parallel, and each Vivado scope is capped at 16G. `pytest -n` is at most 8, never `-n auto`.
-  - `xut` itself launches every Vivado process through `xut.scope.scoped_run` (Task 6), which builds exactly that `systemd-run` line with `MemoryMax=16G`, and through a 4-slot cross-process semaphore. It refuses to run Vivado when `systemd-run` is missing: it never falls back to an unscoped Vivado.
-  - Commands in this plan that run `pytest -n 8`, `xut run`, `xut hw build`, `xut hw sim` or `xut hw smoke` are written out in full with their scope. Caps: `pytest -n 8` 64G (it may start up to 4 capped Vivado scopes of its own, each outside this cap); `xut run` 32G; `xut hw sim` 16G; `xut hw build`/`smoke` 8G (the Vivado children run in their own 16G scopes).
+  - `xut` itself launches every Vivado synthesis/implementation run, and `vivado -version`, through `xut.scope.scoped_run` (Task 6), which builds exactly that `systemd-run` line with `MemoryMax=16G`, and through the host-wide 4-slot semaphore (`$XDG_RUNTIME_DIR/xut-vivado/slot{0..3}.lock`). It refuses to run Vivado when `systemd-run` is missing: it never falls back to an unscoped Vivado. `xut hw sim`'s xsim runs go through `scoped_run` too, at the same `HW_SIM_MEMORY_MAX = "16G"` that its command scope uses (one value throughout).
+  - **The budget** (ruling S49 I5): the project's share of `vivado.slice` is 100G, and the caps of everything that can run at once must sum to at most that. Vivado children and containers run in their own scopes, outside the command's cap, so both count:
+    - Vivado: at most 4 × 16G = 64G, host-wide.
+    - `pytest`: at most `-n 4` in a 32G scope. Each worker runs at most one capped child (a 4G container or a 16G Vivado), so the worst case is 32G + 4 × 16G = **96G**. Never run `pytest -n` above 4 while Vivado builds can run.
+    - `xut run` (simulators): a 32G scope plus `--jobs 16` × 4G containers = **96G**. `xut run --flow vivado --runner hw`: 32G + 64G of Vivado = **96G**.
+    - `xut hw build` and `xut hw smoke`: an 8G scope + 64G of Vivado = **72G**.
+    - `xut hw sim`: a 16G scope plus Icarus `--jobs 8` × 4G containers = **48G**, or xsim `--jobs 2` × 16G = **48G**.
+    - Do not run two of these at once.
+  - Commands in this plan that run `pytest -n`, `xut run`, `xut hw build`, `xut hw sim` or `xut hw smoke` are written out in full with their scope and the caps above.
   - An OOM kill is a retryable failure: lower the parallelism and re-run. Never raise a cap.
 - **SRAM-only programming.** The only programming command anywhere is `openFPGALoader -b arty <bitstream>`, which writes the FPGA's SRAM. Never pass `-f`, `--write-flash`, `--external-flash`, `--bulk-erase` or any other flash option, and never use openocd's `program`. The flash keeps whatever the lab put there. `xut.hw.session.PROGRAM_ARGV` is the one definition; a test pins it, and the Pi-side script `hw/pi/xut_work.sh` has no other `openFPGALoader` line (a test greps for it).
 - **The flock rule** (spec §7.5, ruling S49). Programming the FPGA, and any reboot of a rig, happen only while holding that rig's lock: `flock` on `/run/lock/<lock>` (per rig, from `hw/rigs.yaml`), taken by `hw/pi/xut_lock.sh`.
@@ -119,7 +126,7 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
    - A transport error is retried once, never into a pass.
    - An `expected_divergence` never masks a silicon result.
 5. **Power-on semantics.** A slot's in_vec INIT is its stimulus's `t0`. A slot runs once per programming, and every repeat reprograms. A `t0` difference is a different slot, so it is part of the bitstream key.
-6. **Memory safety.** Every Vivado process runs through `scoped_run` with `MemoryMax=16G` and the 4-slot semaphore, and never falls back to an unscoped run. Containers keep the infra's `--memory=4g`.
+6. **Memory safety.** Every Vivado run (and `vivado -version`) goes through `scoped_run` with `MemoryMax=16G` and the host-wide 4-slot semaphore, and never falls back to an unscoped run; `xut hw sim`'s xsim runs are scoped the same way at one cap value. Containers keep the infra's `--memory=4g`. Every command's stated sum stays within the 100G share.
 
 ---
 
@@ -167,9 +174,10 @@ Run and cache layout (never committed):
 build/vivado/hw/unisim-2025.2/<test-id>/{result.json,trace.xtr,run.log}   the hw runner (spec §6 layout)
 build/vivado/hw/unisim-2025.2/<test-id>/cfg-<cfg>/{trace.xtr,trace-r<k>.xtr,mismatches.txt,run.log}
 build/vivado/hw/unisim-2025.2/<test-id>/jobs/g<g>-r<k>/attempt-<n>/       staged files + fetched results
-build/hwsim/<sim>/<model-source>/<test-id>/                                `xut hw sim`
+build/hwsim-runs/<sim>/<model-source>/<test-id>/                                `xut hw sim`
 .cache/hw/bit/<key>/{top.bit,manifest.json,build.log,timing.rpt,utilization.rpt,drc.rpt,sources/}
-.cache/hw/locks/{vivado-slot-<i>.lock,build-<key>.lock}
+.cache/hw/locks/build-<key>.lock                                       per-key build lock (per worktree)
+$XDG_RUNTIME_DIR/xut-vivado/slot{0..3}.lock                             the host-wide Vivado slots
 .cache/hw/ssh_config, .cache/hw/known_hosts
 ```
 
@@ -2814,27 +2822,244 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
 
 ---
 
-### Task 5: The harness in simulation — byte-exact against the emulator, and FDRE's golden trace reproduced
+### Task 5a: Capped scopes, and the harness in simulation — byte-exact against the emulator
 
 **Files:**
-- Create: `tools/xut/hdl/hw/xut_hw_tb.sv`, `tools/xut/hw/plan.py`, `tools/xut/hw/hwsim.py`, `tools/tests/test_hw_rtl.py`
-- Modify: `tools/xut/cli.py` (`xut hw sim`)
+- Create: `tools/xut/scope.py`, `tools/tests/test_scope.py`, `tools/xut/hdl/hw/xut_hw_tb.sv`, `tools/xut/hw/hwsim.py`, `tools/tests/test_hw_rtl.py`
 
 **Interfaces:**
+- Produces (`xut.scope`; here, not in PR B, because `xut hw sim` needs it first):
+  - `scope_argv(argv, what, memory_max) -> list[str]`
+  - `scoped_run(argv, *, what, memory_max, cwd, log, timeout_s) -> int`, which raises `ScopeError` when `systemd-run` is missing and `RunTimeout` on a timeout
+  - `slots_dir() -> Path` (`$XUT_VIVADO_SLOTS_DIR`, else `$XDG_RUNTIME_DIR/xut-vivado`), `VivadoSlots(n=4, lock_dir=None)` with the context manager `slot()`: host-wide, not per worktree
+  - `VIVADO_MEMORY_MAX = "16G"`, `VIVADO_PARALLEL = 4`, `OOM_RCS = (137, -9)`
 - Produces (`xut.hw.hwsim`):
   - `Step(send: bytes, lines: int)`: one host command and the number of lines its reply has
   - `session_steps(programs: dict[int, HwProgram]) -> list[Step]`: `I`, then per slot in order `L` (1 line) and `R` (`2 + len(labels)` lines). `xut.hw.session` reuses it for boards.
-  - `render_host(steps) -> tuple[str, int]`, `split_replies(data, steps) -> list[bytes]`
+  - `render_host(steps) -> tuple[str, int]`, `split_replies(data, steps) -> list[bytes]`, `run_replies(replies, programs) -> dict[int, RunReply]`
   - `simulate(slots, steps, sim, workdir, *, model_source, work_root, extra_files=(), maxwords=MAXWORDS, margin=MARGIN, timeout_s=1800) -> SimResult` with `SimResult(tx: bytes, replies: list[bytes], log: Path, margin_violations: list[str])`
-  - `sim_case(case, ctx, sim) -> list[CfgOutcome]` with `CfgOutcome(cfg, status, reason)`, writing `build/hwsim/<sim>/<model-source>/<test-id>/`
-  - `run_replies(replies, programs) -> dict[int, RunReply]`
-- Produces (`xut.hw.plan`): `CfgPlan(cfg, m, prog, slot, expected, seed, stim_sha256)`, `TestPlan(case, items, settled, groups)` with `members(g)`, `slots(g)`, `programs(g)`; `plan_case(case, ctx) -> TestPlan`
-  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit), `HwSimError`
-- CLI: `xut hw sim SELECTORS... [--sim iverilog|xsim] [--model-source auto] [--jobs N]`. It runs the python runner first for the selected vector tests, then `sim_case` per test. It prints `progress:` lines and exits 0 (all pass or skip), 3 (any mismatch) or 4 (any error).
+  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit), `HW_SIM_MEMORY_MAX = "16G"`, `HwSimError`
 
-`xut hw sim` is a verification tool, not a runner. It writes no `result.json` and nothing in `status/`, because simulating the harness is evidence about the harness, not about the primitive. The primitive's hardware evidence comes only from silicon (the `hw` runner).
+xsim runs go through `scoped_run` at `HW_SIM_MEMORY_MAX` (Global Constraints: one cap value); Icarus runs in the 4g-capped container.
 
-- [ ] **Step 1: Write the testbench** — `tools/xut/hdl/hw/xut_hw_tb.sv`:
+- [ ] **Step 1: Write the scope tests** — `tools/tests/test_scope.py`:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+import shutil
+import subprocess
+import threading
+
+import pytest
+
+from xut import scope
+from xut.scope import ScopeError, VivadoSlots, scope_argv
+
+
+def test_scope_argv_is_the_agents_md_line():
+    argv = scope_argv(["vivado", "-version"], "vivado-x", "16G")
+    assert argv[:5] == ["systemd-run", "--user", "--scope", "--quiet", "--slice=vivado.slice"]
+    assert argv[5].startswith("--unit=xut-vivado-x-")
+    assert argv[6:11] == ["-p", "MemoryMax=16G", "-p", "MemorySwapMax=0", "--"]
+    assert argv[11:] == ["vivado", "-version"]
+
+
+def test_scoped_run_refuses_without_systemd_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(ScopeError, match="systemd-run"):
+        scope.scoped_run(["true"], what="t", memory_max="1G", cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+
+
+def _user_scopes_work() -> bool:
+    if shutil.which("systemd-run") is None:
+        return False
+    r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--", "true"], capture_output=True)
+    return r.returncode == 0
+
+
+@pytest.mark.skipif(not _user_scopes_work(), reason="no systemd user manager (CI runners have none)")
+def test_scoped_run_runs_and_logs(tmp_path):
+    rc = scope.scoped_run(
+        ["bash", "-c", "echo hello; exit 3"], what="t", memory_max="256M", cwd=tmp_path,
+        log=tmp_path / "l.log", timeout_s=60,
+    )
+    assert rc == 3 and "hello" in (tmp_path / "l.log").read_text()
+
+
+def test_vivado_slots_bound_is_host_wide(tmp_path, monkeypatch):
+    """Two VivadoSlots (as two worktrees' builders would make) share one bound of 2."""
+    monkeypatch.setenv("XUT_VIVADO_SLOTS_DIR", str(tmp_path / "slots"))
+    sems = [VivadoSlots(n=2), VivadoSlots(n=2)]
+    inside, peak, lock = [0], [0], threading.Lock()
+    gate = threading.Barrier(4)
+
+    def job(k):
+        gate.wait()
+        with sems[k % 2].slot():
+            with lock:
+                inside[0] += 1
+                peak[0] = max(peak[0], inside[0])
+            threading.Event().wait(0.05)
+            with lock:
+                inside[0] -= 1
+
+    ts = [threading.Thread(target=job, args=(k,)) for k in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert peak[0] == 2
+    assert sorted(p.name for p in (tmp_path / "slots").iterdir()) == ["slot0.lock", "slot1.lock"]
+
+
+def test_slots_dir_needs_xdg_runtime_dir(monkeypatch):
+    monkeypatch.delenv("XUT_VIVADO_SLOTS_DIR", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    with pytest.raises(ScopeError, match="XDG_RUNTIME_DIR"):
+        scope.slots_dir()
+```
+
+- [ ] **Step 2: Implement `tools/xut/scope.py`**
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+"""Capped scopes for heavy commands (AGENTS.md §10.1, memory safety).
+
+``scoped_run`` runs a command in its own transient systemd user scope::
+
+    systemd-run --user --scope --quiet --slice=vivado.slice --unit=xut-<what>-<t>-<pid>-<r>
+        -p MemoryMax=<cap> -p MemorySwapMax=0 -- <argv>
+
+so an OOM kill stays inside it. With no systemd-run it refuses: a heavy command never
+falls back to an unscoped run. ``VivadoSlots`` allows at most 4 concurrent Vivado
+processes host-wide: flock'd ``slot{0..3}.lock`` files in ``$XDG_RUNTIME_DIR/xut-vivado``,
+shared by every worktree and every xut process.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import os
+import shutil
+import signal
+import subprocess
+import threading
+import time
+import uuid
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from pathlib import Path
+
+from xut.container import RunTimeout
+from xut.errors import XutError
+
+VIVADO_MEMORY_MAX = "16G"
+VIVADO_PARALLEL = 4
+#: A process killed by the OOM killer: bash reports 137, a direct child -9.
+OOM_RCS = (137, -9)
+_KILL_GRACE_S = 30
+
+
+class ScopeError(XutError, RuntimeError):
+    """A heavy command cannot run in a capped scope."""
+
+
+def scope_argv(argv: Sequence[str], what: str, memory_max: str) -> list[str]:
+    unit = f"xut-{what}-{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+    return [
+        "systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--slice=vivado.slice",
+        f"--unit={unit}",
+        "-p",
+        f"MemoryMax={memory_max}",
+        "-p",
+        "MemorySwapMax=0",
+        "--",
+        *argv,
+    ]
+
+
+def scoped_run(
+    argv: Sequence[str],
+    *,
+    what: str,
+    memory_max: str,
+    cwd: Path,
+    log: Path,
+    timeout_s: int,
+) -> int:
+    """Run ``argv`` in a capped scope, appending its output to ``log``; its exit code."""
+    if shutil.which("systemd-run") is None:
+        raise ScopeError(
+            "systemd-run not found: heavy commands run only in a capped scope "
+            "(AGENTS.md §10.1); refusing to run unscoped"
+        )
+    with Path(log).open("a") as f:
+        p = subprocess.Popen(
+            scope_argv(argv, what, memory_max),
+            cwd=cwd,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            return p.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.wait(timeout=_KILL_GRACE_S)
+            raise RunTimeout(f"timeout after {timeout_s}s: {what}") from e
+
+
+def slots_dir() -> Path:
+    """The host-wide Vivado slot directory: ``$XUT_VIVADO_SLOTS_DIR`` (tests), else
+    ``$XDG_RUNTIME_DIR/xut-vivado``. One directory for every worktree and every xut
+    process of this user, so the bound of 4 is host-wide (ruling S49 I2)."""
+    env = os.environ.get("XUT_VIVADO_SLOTS_DIR")
+    if env:
+        return Path(env)
+    run = os.environ.get("XDG_RUNTIME_DIR")
+    if not run:
+        raise ScopeError("XDG_RUNTIME_DIR is not set: the host-wide Vivado slots live there")
+    return Path(run) / "xut-vivado"
+
+
+class VivadoSlots:
+    """At most ``n`` Vivado processes at once, host-wide: one flock per
+    ``slot{0..n-1}.lock`` in ``slots_dir()``. A non-blocking scan of every slot first, then
+    a blocking wait on one of them."""
+
+    def __init__(self, n: int = VIVADO_PARALLEL, lock_dir: Path | None = None) -> None:
+        self.n = n
+        self.lock_dir = Path(lock_dir) if lock_dir is not None else slots_dir()
+
+    @contextmanager
+    def slot(self) -> Iterator[int]:
+        self.lock_dir.mkdir(parents=True, exist_ok=True)
+        files = [(self.lock_dir / f"slot{i}.lock").open("a") for i in range(self.n)]
+        held = None
+        try:
+            for i, f in enumerate(files):
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                held = i
+                break
+            if held is None:  # every slot busy: wait for one
+                held = (os.getpid() + threading.get_ident()) % self.n
+                fcntl.flock(files[held], fcntl.LOCK_EX)
+            yield held
+        finally:
+            if held is not None:
+                fcntl.flock(files[held], fcntl.LOCK_UN)
+            for f in files:
+                f.close()
+```
+
+- [ ] **Step 3: Write the testbench** — `tools/xut/hdl/hw/xut_hw_tb.sv`:
 
 ```systemverilog
 // SPDX-License-Identifier: Apache-2.0
@@ -2938,31 +3163,27 @@ module xut_hw_tb;
 endmodule
 ```
 
-- [ ] **Step 2: Write the failing tests** — `tools/tests/test_hw_rtl.py`:
+- [ ] **Step 4: Write the failing byte-exact test** — `tools/tests/test_hw_rtl.py`:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
 """The RTL harness transmits byte for byte what the reference emulator predicts, on
-Icarus (container) and on xsim (Vivado), error paths included; and the simulated
-harness reproduces the golden traces of real flops."""
+Icarus (container) and on xsim (Vivado), error paths included (Task 5a); and the
+simulated harness reproduces the golden traces of real flops (Task 5b)."""
 
 import pytest
 from hw_toy import TOYFF_V, HwToyFf, toy_map, toy_spec
 
 from xut.hw import proto
 from xut.hw.compile import compile_program
-from xut.hw.hwsim import SIM_BUILD_ID, Step, session_steps, sim_case, simulate
+from xut.hw.hwsim import SIM_BUILD_ID, Step, session_steps, simulate
 from xut.hw.image import MARGIN, MAXWORDS, W_END
 from xut.hw.interp import EmuSlot, Harness
 from xut.hw.replay import ModelDut
 from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
 from xut.hw.slots import SELFTEST_SLOTS, dut_slot
 from xut.modelsrc import resolve
-from xut.paths import repo_root
-from xut.runners.base import RunContext
-from xut.runners.python import PythonRunner
 from xut.stimgen import VecBuilder
-from xut.testspec import discover, select
 from xut.wrap import render_wrapper
 
 SIMS = [
@@ -3036,30 +3257,13 @@ def test_rtl_matches_the_emulator_byte_for_byte(sim, tmp_path):
     toy_run = proto.parse_run(r.replies[first_toy_run])
     assert toy_run.status == 0 and toy_run.samples[0] == "0"  # power-on Q = INIT = 0
     assert toy_run.samples[1] == "1"  # the first edge captured the power-on D = t0 = 1
-
-
-def _flops_case(test_id: str):
-    return select(discover(repo_root()), [test_id])[0]
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("sim", SIMS)
-@pytest.mark.parametrize("test_id", ["7series.FDRE.L2.exhaustive", "7series.FDCE.L1.clear_over_ce"])
-def test_simulated_harness_reproduces_the_golden_trace(sim, test_id, tmp_path):
-    case = _flops_case(test_id)
-    ctx = RunContext(tmp_path, "rtl", resolve("auto"))
-    assert PythonRunner().run(case, ctx).status == "pass"
-    outcomes = sim_case(case, ctx, sim)
-    bad = [o for o in outcomes if o.status not in ("pass", "skip")]
-    assert not bad, bad
-    assert any(o.status == "pass" for o in outcomes)
 ```
 
 The last three asserts also pin the power-on semantics on the RTL: the toy slot with INIT=0 and `t0` D=1 samples Q=0 before any edge, and Q=1 after the first edge, with no `set` in between.
 
-Run `uv run pytest tools/tests/test_hw_rtl.py > .cache/pytest.log 2>&1; cat .cache/pytest.log`. Expected: `No module named 'xut.hw.hwsim'`.
+Run `uv run pytest tools/tests/test_scope.py tools/tests/test_hw_rtl.py > .cache/pytest.log 2>&1; cat .cache/pytest.log`. Expected: `No module named 'xut.scope'` (then, after Step 2, `xut.hw.hwsim`).
 
-- [ ] **Step 3: Implement `tools/xut/hw/hwsim.py` and `tools/xut/hw/plan.py`**
+- [ ] **Step 5: Implement `tools/xut/hw/hwsim.py`**
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -3067,35 +3271,31 @@ Run `uv run pytest tools/tests/test_hw_rtl.py > .cache/pytest.log 2>&1; cat .cac
 host (Vivado sourced only in a subshell, via xut.runners.xsim.render_script).
 
 ``simulate`` builds one harness with the given slots, plays a host script into its UART
-(``xut_hw_tb.sv``) and returns what the harness transmitted. ``sim_case`` runs every
-hardware-renderable configuration of a vector test through the simulated harness, with
-the golden expected traces as the reference: the proof, before any board is involved,
-that the harness, its compiler and its protocol reproduce the golden ``.xtr``.
+(``xut_hw_tb.sv``) and returns what the harness transmitted. ``sim_case`` (Task 5b) runs
+every hardware-renderable configuration of a vector test through the simulated harness,
+with the golden expected traces as the reference: the proof, before any board is
+involved, that the harness, its compiler and its protocol reproduce the golden ``.xtr``.
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 
 from xut.container import executor_for
 from xut.errors import XutError
-from xut.formats import xtr
 from xut.hw import proto
 from xut.hw.image import MARGIN, MAXWORDS, HwProgram
-from xut.hw.plan import plan_case
-from xut.hw.replay import samples_to_trace
-from xut.hw.selftest import check as selftest_check
 from xut.hw.slots import HW_HDL, HW_INCLUDES, HW_SOURCES, SlotBuild, render_cfg_vh, render_slots
 from xut.modelsrc import ModelSource
-from xut.runners.base import RunContext, error_reason
-from xut.runners.xsim import render_script, run_script
-from xut.testspec import TestCase
+from xut.runners.xsim import render_script
+from xut.scope import scoped_run
 
 SIM_BUILD_ID = 0x51AB0001  # simulation has no bitstream; any fixed value
+#: The one memory cap of `xut hw sim`: its command scope, and each xsim run (Global Constraints).
+HW_SIM_MEMORY_MAX = "16G"
 CPB = 4  # xut_hw_tb.sv's UART clocks per bit
 TB = "xut_hw_tb.sv"
 
@@ -3169,9 +3369,20 @@ def _iverilog(d: Path, files: list[str], ms: ModelSource, work_root: Path, timeo
 
 
 def _xsim(d: Path, files: list[str], timeout_s: int) -> str:
+    """xsim through ``scoped_run`` at ``HW_SIM_MEMORY_MAX`` (Vivado sourced only in
+    ``xsim.sh``'s subshell, as in the xsim runner)."""
     (d / "xsim.sh").write_text(render_script(d, files, "xut_hw_tb", [], {}, {}))
-    run_script(d, timeout_s)
-    return (d / "run.log").read_text(errors="replace")
+    log = d / "run.log"
+    log.write_text("")
+    scoped_run(
+        ["bash", "xsim.sh"],
+        what="hwsim-xsim",
+        memory_max=HW_SIM_MEMORY_MAX,
+        cwd=d,
+        log=log,
+        timeout_s=timeout_s,
+    )
+    return log.read_text(errors="replace")
 
 
 def simulate(
@@ -3217,68 +3428,6 @@ def simulate(
     return SimResult(tx, split_replies(tx, steps), workdir / "run.log", viol)
 
 
-@dataclass
-class CfgOutcome:
-    cfg: str
-    status: str  # pass | fail | error | skip
-    reason: str | None = None
-
-
-def sim_case(case: TestCase, ctx: RunContext, sim: str) -> list[CfgOutcome]:
-    """Every configuration of vector test ``case`` through the simulated harness."""
-    out_dir = ctx.root / "build" / "hwsim" / sim / ctx.model_source.name / case.id
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True)
-    plan = plan_case(case, ctx)
-    outcomes = {c: CfgOutcome(c, st, why) for c, (st, why) in plan.settled.items()}
-    for g in range(len(plan.groups)):
-        members = plan.members(g)
-        programs = plan.programs(g)
-        steps = session_steps(programs)
-        try:
-            r = simulate(
-                plan.slots(g),
-                steps,
-                sim,
-                out_dir / f"g{g}",
-                model_source=ctx.model_source,
-                work_root=ctx.root,
-            )
-            runs = run_replies(r.replies, programs)
-            bad = [selftest_check(s, runs[s]) for s in (0, 1)]
-            problems = [b for b in bad if b] + r.margin_violations
-            if problems:
-                raise HwSimError("; ".join(problems))
-        except Exception as e:
-            for it in members:
-                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", error_reason(e))
-            continue
-        for j, it in enumerate(members):
-            run = runs[2 + j]
-            header = {
-                "runner": f"hwsim-{sim}",
-                "flow": "rtl",
-                "model": ctx.model_source.name,
-                "seed": str(it.seed),
-                "prim": case.prim,
-                "cfg": it.cfg,
-            }
-            cd = out_dir / f"cfg-{it.cfg}"
-            cd.mkdir()
-            if run.status != 0:
-                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", f"status {proto.STATUS[run.status]}")
-                continue
-            actual = samples_to_trace(run.samples, it.prog.labels, it.m, header)
-            xtr.dump(actual, cd / "trace.xtr")
-            mm = xtr.compare(it.expected, actual, x_observable=False)
-            (cd / "mismatches.txt").write_text("".join(f"{x}\n" for x in mm))
-            outcomes[it.cfg] = CfgOutcome(
-                it.cfg, "fail" if mm else "pass", "; ".join(str(x) for x in mm[:3]) or None
-            )
-    result = [outcomes[c] for c in sorted(outcomes)]
-    (out_dir / "report.json").write_text(json.dumps([asdict(o) for o in result], indent=1) + "\n")
-    return result
 
 
 def run_replies(replies: list[bytes], programs: dict[int, HwProgram]) -> dict[int, proto.RunReply]:
@@ -3288,7 +3437,85 @@ def run_replies(replies: list[bytes], programs: dict[int, HwProgram]) -> dict[in
     return {s: proto.parse_run(replies[2 + 2 * k]) for k, s in enumerate(sorted(programs))}
 ```
 
-`tools/xut/hw/plan.py` (shared by `xut hw sim`, `xut hw build` in Task 6 and the hw runner in Task 10, so all three run exactly the same configurations):
+Reply indexing: `session_steps` puts `I` first, then `L`/`R` per slot, so the k-th slot's run reply is `replies[2 + 2 * k]` (`run_replies`).
+
+- [ ] **Step 6: Run the byte-exact tests on both simulators.** Expected under 10 minutes, so report every 60 s:
+
+```bash
+systemd-run --user --scope --slice=vivado.slice --unit=xut-hwrtl-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
+  uv run pytest tools/tests/test_hw_rtl.py -k byte_for_byte -v > .cache/pytest-hwrtl.log 2>&1; cat .cache/pytest-hwrtl.log
+```
+
+Expected: `test_rtl_matches_the_emulator_byte_for_byte[iverilog]` and `[xsim]` pass. On a mismatch, `r.tx` and `expected` differ at some byte. Find the first differing line (write both to `.cache/` and diff the files) and decide from the protocol spec which side is wrong. Fix the RTL or the emulator, never the test. Pay particular attention to the handling of `lslot`/`lwords` after a failed load, and to the CRC of the `load` reply.
+
+- [ ] **Step 7: Lint and commit**
+
+```bash
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+git add tools/xut/scope.py tools/tests/test_scope.py tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/hwsim.py tools/tests/test_hw_rtl.py
+git commit -m "hw: capped scopes; simulate the harness on Icarus and xsim, byte-exact against the emulator" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 5b: The shared planner, `xut hw sim`, and FDRE's golden trace reproduced
+
+**Files:**
+- Create: `tools/xut/hw/plan.py`, `tools/tests/test_hw_plan.py`
+- Modify: `tools/xut/hw/hwsim.py` (`sim_case`), `tools/tests/test_hw_rtl.py` (the golden-reproduction test), `tools/xut/cli.py` (`xut hw sim`)
+
+**Interfaces:**
+- Produces (`xut.hw.plan`; consumed by `xut hw sim` here, by `xut hw build` in Task 6, by the hw runner in Task 10 and by nothing else, so all three run exactly the same configurations):
+  - `CfgPlan(cfg: str, m: DutMap, prog: HwProgram, slot: SlotBuild, expected: Trace, seed: int, stim_sha256: str)`
+  - `TestPlan(case: TestCase, items: list[CfgPlan], settled: dict[str, tuple[str, str]], groups: list[list[int]])`, where `settled` maps a configuration that never reaches hardware to `(status, reason)` (`skip` for `config_exclusions` and not-renderable, `error` otherwise) and `groups` holds indices into `items`, one list per bitstream; methods `members(g) -> list[CfgPlan]`, `slots(g) -> tuple[SlotBuild, ...]` (self-test slots first), `programs(g) -> dict[int, HwProgram]` (keyed by slot)
+  - `plan_case(case: TestCase, ctx: RunContext) -> TestPlan`
+- Produces (`xut.hw.hwsim`): `sim_case(case, ctx, sim) -> list[CfgOutcome]` with `CfgOutcome(cfg, status, reason)`, writing `build/hwsim-runs/<sim>/<model-source>/<test-id>/`
+- CLI: `xut hw sim SELECTORS... [--sim iverilog|xsim] [--model-source auto] [--jobs N]`. It runs the python runner first for the selected vector tests, then `sim_case` per test. It prints `progress:` lines and exits 3 on any mismatch (it wins, as in `xut crosscheck`), otherwise 4 on any error, otherwise 0.
+
+`xut hw sim` is a verification tool, not a runner. It writes no `result.json` and nothing in `status/`, because simulating the harness is evidence about the harness, not about the primitive. Its output lives under `build/hwsim-runs/`, whose layout `xut.crosscheck.gather` (`build/*/*/*/<test>/`) never matches. The primitive's hardware evidence comes only from silicon (the `hw` runner).
+
+- [ ] **Step 1: Write the failing planner tests** — `tools/tests/test_hw_plan.py`:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+import dataclasses
+
+import pytest
+from test_runner_base import _case
+
+from xut.hw.plan import plan_case
+from xut.hw.slots import SELFTEST_SLOTS
+from xut.modelsrc import ModelSource
+from xut.runners.base import NoPythonRun, RunContext
+from xut.runners.python import PythonRunner
+
+
+def _ctx(tmp_path):
+    return RunContext(tmp_path, "rtl", ModelSource("unisim-test", tmp_path / "ms"))
+
+
+def test_plan_covers_every_python_configuration(tmp_path, toy):
+    case = _case()  # 7series.TOYFF.L1.capture: init0, init1
+    assert PythonRunner().run(case, _ctx(tmp_path)).status == "pass"
+    plan = plan_case(case, _ctx(tmp_path))
+    assert sorted(it.cfg for it in plan.items) == ["init0", "init1"] and plan.settled == {}
+    assert plan.groups == [[0, 1]] or plan.groups == [[1, 0]]
+    assert plan.slots(0)[:2] == SELFTEST_SLOTS and set(plan.programs(0)) == {0, 1, 2, 3}
+
+
+def test_exclusions_are_settled_skips(tmp_path, toy):
+    case = dataclasses.replace(_case(), config_exclusions={"hw": {"init1": "why not"}})
+    PythonRunner().run(case, _ctx(tmp_path))
+    plan = plan_case(case, _ctx(tmp_path))
+    assert plan.settled == {"init1": ("skip", "excluded: why not")}
+
+
+def test_no_python_run_raises(tmp_path, toy):
+    with pytest.raises(NoPythonRun):
+        plan_case(_case(), _ctx(tmp_path))
+```
+
+- [ ] **Step 2: Implement `tools/xut/hw/plan.py`** (as follows), then `sim_case`:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -3373,6 +3600,121 @@ def plan_case(case: TestCase, ctx: RunContext) -> TestPlan:
     return TestPlan(case, items, settled, pack([it.slot for it in items]))
 ```
 
+Then add ``sim_case`` to `tools/xut/hw/hwsim.py`, with these imports added to its block:
+
+```python
+import json
+from dataclasses import asdict
+
+from xut.formats import xtr
+from xut.hw.plan import plan_case
+from xut.hw.replay import samples_to_trace
+from xut.hw.selftest import check as selftest_check
+from xut.runners.base import RunContext, error_reason
+from xut.testspec import TestCase
+```
+
+```python
+@dataclass
+class CfgOutcome:
+    cfg: str
+    status: str  # pass | fail | error | skip
+    reason: str | None = None
+
+
+def sim_case(case: TestCase, ctx: RunContext, sim: str) -> list[CfgOutcome]:
+    """Every configuration of vector test ``case`` through the simulated harness."""
+    out_dir = ctx.root / "build" / "hwsim-runs" / sim / ctx.model_source.name / case.id
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    plan = plan_case(case, ctx)
+    outcomes = {c: CfgOutcome(c, st, why) for c, (st, why) in plan.settled.items()}
+    for g in range(len(plan.groups)):
+        members = plan.members(g)
+        programs = plan.programs(g)
+        steps = session_steps(programs)
+        try:
+            r = simulate(
+                plan.slots(g),
+                steps,
+                sim,
+                out_dir / f"g{g}",
+                model_source=ctx.model_source,
+                work_root=ctx.root,
+            )
+            runs = run_replies(r.replies, programs)
+            bad = [selftest_check(s, runs[s]) for s in (0, 1)]
+            problems = [b for b in bad if b] + r.margin_violations
+            if problems:
+                raise HwSimError("; ".join(problems))
+        except Exception as e:
+            for it in members:
+                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", error_reason(e))
+            continue
+        for j, it in enumerate(members):
+            run = runs[2 + j]
+            header = {
+                "runner": f"hwsim-{sim}",
+                "flow": "rtl",
+                "model": ctx.model_source.name,
+                "seed": str(it.seed),
+                "prim": case.prim,
+                "cfg": it.cfg,
+            }
+            cd = out_dir / f"cfg-{it.cfg}"
+            cd.mkdir()
+            if run.status != 0:
+                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", f"status {proto.STATUS[run.status]}")
+                continue
+            actual = samples_to_trace(run.samples, it.prog.labels, it.m, header)
+            xtr.dump(actual, cd / "trace.xtr")
+            mm = xtr.compare(it.expected, actual, x_observable=False)
+            (cd / "mismatches.txt").write_text("".join(f"{x}\n" for x in mm))
+            outcomes[it.cfg] = CfgOutcome(
+                it.cfg, "fail" if mm else "pass", "; ".join(str(x) for x in mm[:3]) or None
+            )
+    result = [outcomes[c] for c in sorted(outcomes)]
+    (out_dir / "report.json").write_text(json.dumps([asdict(o) for o in result], indent=1) + "\n")
+    return result
+```
+
+- [ ] **Step 3: Add the golden-reproduction test** to `tools/tests/test_hw_rtl.py`. Add these imports to the file's import block:
+
+```python
+from xut import crosscheck
+from xut.hw.hwsim import sim_case
+from xut.paths import repo_root
+from xut.runners.base import RunContext
+from xut.runners.python import PythonRunner
+from xut.testspec import discover, select
+```
+
+and append:
+
+```python
+
+
+def _flops_case(test_id: str):
+    return select(discover(repo_root()), [test_id])[0]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("sim", SIMS)
+@pytest.mark.parametrize("test_id", ["7series.FDRE.L2.exhaustive", "7series.FDCE.L1.clear_over_ce"])
+def test_simulated_harness_reproduces_the_golden_trace(sim, test_id, tmp_path):
+    case = _flops_case(test_id)
+    ctx = RunContext(tmp_path, "rtl", resolve("auto"))
+    assert PythonRunner().run(case, ctx).status == "pass"
+    outcomes = sim_case(case, ctx, sim)
+    bad = [o for o in outcomes if o.status not in ("pass", "skip")]
+    assert not bad, bad
+    assert any(o.status == "pass" for o in outcomes)
+    # build/hwsim-runs/ is not a runner directory: crosscheck never sees it
+    views = crosscheck.gather(tmp_path, case.id)
+    assert all(not r.startswith("hwsim") for vs in views.values() for (_, r) in vs)
+```
+
 - [ ] **Step 4: Add `xut hw sim`** to `tools/xut/cli.py`:
 
 ```python
@@ -3415,21 +3757,12 @@ def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: in
     raise SystemExit(3 if "fail" in seen else 4 if "error" in seen else 0)
 ```
 
-- [ ] **Step 5: Run the byte-exact tests on both simulators.** Expected under 10 minutes, so report every 60 s:
-
-```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-hwrtl-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
-  uv run pytest tools/tests/test_hw_rtl.py -k byte_for_byte -v > .cache/pytest-hwrtl.log 2>&1; cat .cache/pytest-hwrtl.log
-```
-
-Expected: `test_rtl_matches_the_emulator_byte_for_byte[iverilog]` and `[xsim]` pass. On a mismatch, `r.tx` and `expected` differ at some byte. Find the first differing line (write both to `.cache/` and diff the files) and decide from the protocol spec which side is wrong. Fix the RTL or the emulator, never the test. Pay particular attention to the handling of `lslot`/`lwords` after a failed load, and to the CRC of the `load` reply.
-
-- [ ] **Step 6: Prove the golden reproduction for FDRE (and FDCE's async clear).** First the two pinned tests, then the whole flops unit on both simulators:
+- [ ] **Step 5: Prove the golden reproduction for FDRE (and FDCE's async clear).** First the two pinned tests, then the whole flops unit on both simulators:
 
 ```bash
 systemd-run --user --scope --slice=vivado.slice --unit=xut-hwrtl-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run pytest tools/tests/test_hw_rtl.py -k golden -v > .cache/pytest-hwgolden.log 2>&1; cat .cache/pytest-hwgolden.log
-systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p MemoryMax=40G -p MemorySwapMax=0 -- \
+systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run xut hw sim 'unit:flops' --sim iverilog --jobs 8 > .cache/hwsim-flops-iverilog.log 2>&1; echo "exit=$?"
 systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run xut hw sim 'unit:flops' --sim xsim --jobs 2 > .cache/hwsim-flops-xsim.log 2>&1; echo "exit=$?"
@@ -3437,14 +3770,14 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p 
 
 - **Estimate:** about 32 hardware-declared flops vector tests, each one or two harness simulations of about 10–60 s. On Icarus with 8 jobs that is about 3–6 minutes (report every 60 s). xsim elaborates slower: about 32 × 1–2 min ÷ 2 ≈ 15–30 minutes (report every 5 minutes). Anchor the ETA on the `progress:` lines.
 - **Expected:** `exit=0` for both runs. Every configuration is `pass` or `skip`. Each skip reason is either the test's `config_exclusions` (IS_D_INVERTED) or the validator's `hw_reasons`.
-- A `fail` here is a harness or compiler bug (the golden model and the UNISIM simulators already agree on these tests, from step 2). Debug it with `build/hwsim/<sim>/unisim-2025.2/<test>/g<g>/run.log` and the `mismatches.txt`, fix it, and re-run. Never relax the comparison.
+- A `fail` here is a harness or compiler bug (the golden model and the UNISIM simulators already agree on these tests, from step 2). Debug it with `build/hwsim-runs/<sim>/unisim-2025.2/<test>/g<g>/run.log` and the `mismatches.txt`, fix it, and re-run. Never relax the comparison.
 
-- [ ] **Step 7: Lint, log, commit, push and open PR A**
+- [ ] **Step 6: Lint, log, commit, push and open PR A**
 
 ```bash
 uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=64G -p MemorySwapMax=0 -- \
-  uv run pytest -n 8 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
+systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+  uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 git add tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/plan.py tools/xut/hw/hwsim.py tools/xut/cli.py tools/tests/test_hw_rtl.py
 git commit -m "hw: simulate the harness on Icarus and xsim; byte-exact against the emulator; xut hw sim" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -3461,23 +3794,23 @@ The PR body lists Tasks 1–5, the per-task review outcomes and Review Focus ite
 
 ---
 
+---
+
 ## PR B: the Vivado flow (branch `infra/hw-vivado`)
 
-### Task 6: Capped scopes and the Vivado batch build (constraints, build IDs, bitstream cache)
+### Task 6: The Vivado batch build (constraints, post-flow DUT check, build IDs, bitstream cache)
 
 **Files:**
-- Create: `tools/xut/scope.py`, `tools/xut/hw/vivado.py`, `hw/boards/arty_a7_35t/board.xdc`, `tools/tests/test_scope.py`, `tools/tests/test_hw_vivado.py`
+- Create: `tools/xut/hw/vivado.py`, `hw/boards/arty_a7_35t/board.xdc`, `tools/tests/test_hw_vivado.py`
 - Modify: `tools/xut/cli.py` (`xut hw build`)
 
 **Interfaces:**
-- Produces (`xut.scope`):
-  - `scope_argv(argv, what, memory_max) -> list[str]`
-  - `scoped_run(argv, *, what, memory_max, cwd, log, timeout_s) -> int`, which raises `ScopeError` when `systemd-run` is missing and `RunTimeout` on a timeout
-  - `VivadoSlots(lock_dir, n=4, poll_s=2.0)` with the context manager `slot()`
-  - `VIVADO_MEMORY_MAX = "16G"`, `VIVADO_PARALLEL = 4`, `OOM_RCS = (137, -9)`
+- Consumes: `xut.scope` (Task 5a): `scoped_run`, `VivadoSlots`, `VIVADO_MEMORY_MAX`, `OOM_RCS`.
 - Produces (`xut.hw.vivado`):
   - `PART = "xc7a35ticsg324-1L"`, `BOARD = "arty_a7_35t"`, `board_xdc() -> Path`, `BUILD_TIMEOUT_S = 3600`, `ALLOWED_CRITICAL: tuple[str, ...] = ()`
-  - `build_tcl() -> str`, `build_script() -> str`
+  - `build_tcl() -> str`, `build_script() -> str`, `post_route_tcl(slots) -> str`
+  - `check_dut_cells(text, slots) -> list[str]` (spec §6's post-flow DUT check), `check_latency(text) -> tuple[dict[str, float], list[str]]`, `LATENCY_BUDGET_NS = 20.0`
+  - `FlowMismatch(BuildError)`: the post-flow DUT check failed (spec §8 `flow-mismatch`)
   - `build_inputs(slots, *, maxwords, margin, build_id) -> dict[str, str]`
   - `build_key(slots, vivado, *, maxwords, margin) -> str`, `build_id_of(key) -> int`
   - `Bitstream(path, key, build_id, sha256, manifest)`, `BuildError`
@@ -3495,7 +3828,10 @@ Rules:
   - timing did not close (`XUT_TIMING_FAILED`, exit 3);
   - there is any `CRITICAL WARNING` not listed in `ALLOWED_CRITICAL` (each entry needs a comment justifying it);
   - Vivado was OOM-killed (retryable: lower the parallelism, never raise the cap);
-  - Vivado exited non-zero or wrote no bitstream.
+  - Vivado exited non-zero or wrote no bitstream;
+  - the **post-flow DUT check** (spec §6, ruling S49 I3) fails: after `route_design`, `post_route.tcl` writes `dut_cells.txt` with every DUT instance's `REF_NAME` and the value of every attribute its configuration sets. `check_dut_cells` compares them with the slot's map; any difference (a retargeted cell, an absorbed inversion, a changed INIT, a missing cell) raises `FlowMismatch`, which the hw runner reports as a `flow-mismatch` (never a DUT result);
+  - the **DUT clock latency** is over budget: `post_route.tcl` also measures, per DUT clock, the routed delay from its flip-flop to the BUFG plus the BUFG's global net (`XUT_LATENCY <clock> <ns>`). `(MARGIN − 2)` periods cover the datapath (`set_max_delay -datapath_only`), and the remaining 2 periods (20 ns) must cover clock-to-Q, the BUFG and that latency: `check_latency` fails the build when latency + 2 ns exceeds `LATENCY_BUDGET_NS`, or when a latency could not be measured (never a pass by default).
+- **Smaller bitstreams.** `BITSTREAM.GENERAL.COMPRESS TRUE` (less to `scp` through the jump host and to shift over JTAG).
 - **Cache.** `.cache/hw/bit/<key>/`. A build writes to `<key>.tmp-<pid>-<rand>/` under a per-key `flock` and renames it into place when it is complete, so a concurrent or interrupted build never leaves a half-written entry. A failed build's temporary directory is kept for diagnosis and never used.
 
 - [ ] **Step 1: Create the stacked worktree**
@@ -3529,73 +3865,7 @@ set_false_path -from [get_ports { uart_txd_in }]
 set_false_path -to [get_ports { uart_rxd_out led[*] }]
 ```
 
-- [ ] **Step 3: Write the failing tests.** `tools/tests/test_scope.py`:
-
-```python
-# SPDX-License-Identifier: Apache-2.0
-import shutil
-import subprocess
-import threading
-
-import pytest
-
-from xut import scope
-from xut.scope import ScopeError, VivadoSlots, scope_argv
-
-
-def test_scope_argv_is_the_agents_md_line():
-    argv = scope_argv(["vivado", "-version"], "vivado-x", "16G")
-    assert argv[:5] == ["systemd-run", "--user", "--scope", "--quiet", "--slice=vivado.slice"]
-    assert argv[5].startswith("--unit=xut-vivado-x-")
-    assert argv[6:11] == ["-p", "MemoryMax=16G", "-p", "MemorySwapMax=0", "--"]
-    assert argv[11:] == ["vivado", "-version"]
-
-
-def test_scoped_run_refuses_without_systemd_run(tmp_path, monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    with pytest.raises(ScopeError, match="systemd-run"):
-        scope.scoped_run(["true"], what="t", memory_max="1G", cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
-
-
-def _user_scopes_work() -> bool:
-    if shutil.which("systemd-run") is None:
-        return False
-    r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--", "true"], capture_output=True)
-    return r.returncode == 0
-
-
-@pytest.mark.skipif(not _user_scopes_work(), reason="no systemd user manager (CI runners have none)")
-def test_scoped_run_runs_and_logs(tmp_path):
-    rc = scope.scoped_run(
-        ["bash", "-c", "echo hello; exit 3"], what="t", memory_max="256M", cwd=tmp_path,
-        log=tmp_path / "l.log", timeout_s=60,
-    )
-    assert rc == 3 and "hello" in (tmp_path / "l.log").read_text()
-
-
-def test_vivado_slots_bound_concurrency(tmp_path):
-    sem, inside, peak, lock = VivadoSlots(tmp_path, n=2, poll_s=0.01), [0], [0], threading.Lock()
-    gate = threading.Barrier(4)
-
-    def job():
-        gate.wait()
-        with sem.slot():
-            with lock:
-                inside[0] += 1
-                peak[0] = max(peak[0], inside[0])
-            threading.Event().wait(0.05)
-            with lock:
-                inside[0] -= 1
-
-    ts = [threading.Thread(target=job) for _ in range(4)]
-    for t in ts:
-        t.start()
-    for t in ts:
-        t.join()
-    assert peak[0] == 2
-```
-
-`tools/tests/test_hw_vivado.py` (pure-Python parts, plus one `vivado`-marked build in Task 7):
+- [ ] **Step 3: Write the failing tests.** `tools/tests/test_hw_vivado.py` (pure-Python parts, plus one `vivado`-marked build in Task 7):
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -3624,7 +3894,7 @@ def test_key_is_deterministic_and_input_sensitive():
 def test_build_inputs_carry_the_id_and_everything_the_key_hashes():
     ins = vivado.build_inputs(_slots(), maxwords=8192, margin=16, build_id=0xCAFEF00D)
     assert "`define XUT_HW_BUILD_ID 32'hcafef00d" in ins["xut_hw_cfg.vh"]
-    assert set(ins) >= {"xut_hw_top.sv", "xut_hw_msgs.vh", "xut_hw_slots.v", "timing.tcl", "board.xdc", "build.tcl"}
+    assert set(ins) >= {"xut_hw_top.sv", "xut_hw_msgs.vh", "xut_hw_slots.v", "timing.tcl", "post_route.tcl", "board.xdc", "build.tcl"}
 
 
 def test_build_script_sources_vivado_only_in_a_subshell_and_never_xil_timing():
@@ -3639,6 +3909,44 @@ def test_build_tcl_fails_on_timing_and_sets_userid():
     assert "XUT_TIMING_FAILED" in tcl and "exit 3" in tcl
     assert "BITSTREAM.CONFIG.USERID" in tcl and "source timing.tcl" in tcl
     assert tcl.index("synth_design") < tcl.index("source timing.tcl") < tcl.index("place_design")
+    assert tcl.index("route_design") < tcl.index("source post_route.tcl") < tcl.index("write_bitstream")
+    assert "BITSTREAM.GENERAL.COMPRESS TRUE" in tcl
+
+
+def test_post_route_tcl_queries_every_dut_and_clock():
+    tcl = vivado.post_route_tcl(_slots())
+    assert "get_cells -quiet u_slots/u_dut_s2/dut" in tcl and "foreach a {INIT}" in tcl
+    assert "xut_latency dclk_s1_0 " in tcl and "xut_latency dclk_s2_0 " in tcl
+
+
+def _cells(**over):
+    row = {"ref": "TOYFF", "INIT": "1'b0"} | over
+    return f"2\t{row['ref']}\tINIT={row['INIT']}\n"
+
+
+def test_dut_check_passes_a_faithful_implementation():
+    assert vivado.check_dut_cells(_cells(), _slots()) == []
+    assert vivado.check_dut_cells(_cells(INIT="1'h0"), _slots()) == []  # same value, other radix
+
+
+@pytest.mark.parametrize(
+    "text,match",
+    [
+        (_cells(ref="LUT1"), "REF_NAME LUT1"),
+        (_cells(INIT="1'b1"), "INIT"),
+        ("2\tMISSING\n", "no DUT cell"),
+        ("", "no DUT cell"),
+    ],
+)
+def test_dut_check_flags_a_retargeted_or_missing_cell(text, match):
+    problems = vivado.check_dut_cells(text, _slots())
+    assert problems and match in problems[0]
+
+
+def test_latency_budget():
+    lat, bad = vivado.check_latency("XUT_LATENCY dclk_s1_0 3.25\nXUT_LATENCY dclk_s2_0 17.5\n")
+    assert lat == {"dclk_s1_0": 3.25, "dclk_s2_0": 17.5} and bad == ["dclk_s2_0: 17.500 ns + 2.0 ns > 20.0 ns"]
+    assert vivado.check_latency("XUT_LATENCY dclk_s1_0 unknown\n")[1] == ["dclk_s1_0: latency could not be measured"]
 
 
 def test_log_classification():
@@ -3652,124 +3960,6 @@ def test_log_classification():
 ```
 
 Run both; expected: `No module named 'xut.scope'`.
-
-- [ ] **Step 4: Implement `tools/xut/scope.py`**
-
-```python
-# SPDX-License-Identifier: Apache-2.0
-"""Capped scopes for heavy commands (AGENTS.md §10.1, memory safety).
-
-``scoped_run`` runs a command in its own transient systemd user scope::
-
-    systemd-run --user --scope --quiet --slice=vivado.slice --unit=xut-<what>-<t>-<pid>-<r>
-        -p MemoryMax=<cap> -p MemorySwapMax=0 -- <argv>
-
-so an OOM kill stays inside it. With no systemd-run it refuses: a heavy command never
-falls back to an unscoped run. ``VivadoSlots`` allows at most 4 concurrent Vivado
-processes across every xut process on the host (flock'd slot files).
-"""
-
-from __future__ import annotations
-
-import fcntl
-import os
-import shutil
-import signal
-import subprocess
-import time
-import uuid
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
-from pathlib import Path
-
-from xut.container import RunTimeout
-from xut.errors import XutError
-
-VIVADO_MEMORY_MAX = "16G"
-VIVADO_PARALLEL = 4
-#: A process killed by the OOM killer: bash reports 137, a direct child -9.
-OOM_RCS = (137, -9)
-_KILL_GRACE_S = 30
-
-
-class ScopeError(XutError, RuntimeError):
-    """A heavy command cannot run in a capped scope."""
-
-
-def scope_argv(argv: Sequence[str], what: str, memory_max: str) -> list[str]:
-    unit = f"xut-{what}-{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-    return [
-        "systemd-run",
-        "--user",
-        "--scope",
-        "--quiet",
-        "--slice=vivado.slice",
-        f"--unit={unit}",
-        "-p",
-        f"MemoryMax={memory_max}",
-        "-p",
-        "MemorySwapMax=0",
-        "--",
-        *argv,
-    ]
-
-
-def scoped_run(
-    argv: Sequence[str],
-    *,
-    what: str,
-    memory_max: str,
-    cwd: Path,
-    log: Path,
-    timeout_s: int,
-) -> int:
-    """Run ``argv`` in a capped scope, appending its output to ``log``; its exit code."""
-    if shutil.which("systemd-run") is None:
-        raise ScopeError(
-            "systemd-run not found: heavy commands run only in a capped scope "
-            "(AGENTS.md §10.1); refusing to run unscoped"
-        )
-    with Path(log).open("a") as f:
-        p = subprocess.Popen(
-            scope_argv(argv, what, memory_max),
-            cwd=cwd,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            return p.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired as e:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.wait(timeout=_KILL_GRACE_S)
-            raise RunTimeout(f"timeout after {timeout_s}s: {what}") from e
-
-
-class VivadoSlots:
-    """At most ``n`` holders at once, across processes (one flock per slot file)."""
-
-    def __init__(self, lock_dir: Path, n: int = VIVADO_PARALLEL, poll_s: float = 2.0) -> None:
-        self.lock_dir, self.n, self.poll_s = Path(lock_dir), n, poll_s
-
-    @contextmanager
-    def slot(self) -> Iterator[int]:
-        self.lock_dir.mkdir(parents=True, exist_ok=True)
-        while True:
-            for i in range(self.n):
-                f = (self.lock_dir / f"vivado-slot-{i}.lock").open("a")
-                try:
-                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    f.close()
-                    continue
-                try:
-                    yield i
-                finally:
-                    fcntl.flock(f, fcntl.LOCK_UN)
-                    f.close()
-                return
-            time.sleep(self.poll_s)
-```
 
 - [ ] **Step 5: Implement `tools/xut/hw/vivado.py`**
 
@@ -3794,6 +3984,7 @@ import json
 import os
 import re
 import shlex
+import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -3813,6 +4004,7 @@ from xut.hw.slots import (
     timing_tcl,
 )
 from xut.paths import VIVADO_SETTINGS, repo_root
+from xut.wrap import WrapError, literal_value
 from xut.scope import OOM_RCS, VIVADO_MEMORY_MAX, VivadoSlots, scoped_run
 
 PART = "xc7a35ticsg324-1L"
@@ -3828,6 +4020,113 @@ _TIMING = re.compile(r"^XUT_TIMING wns=(\S+) whs=(\S+)$", re.MULTILINE)
 
 class BuildError(XutError, RuntimeError):
     """A bitstream build failed; the message says why and where the log is."""
+
+
+class FlowMismatch(BuildError):
+    """The post-flow DUT check (spec §6) failed: the implemented DUT cell or one of its
+    attributes differs from the configuration. Spec §8 ``flow-mismatch``."""
+
+
+#: The 2 system periods (MARGIN - 2 cover the datapath) left for clock-to-Q, the BUFG and
+#: the DUT clock's routed latency (spec §7.1).
+LATENCY_BUDGET_NS = 20.0
+#: Added to the measured net delays: flip-flop clock-to-Q plus the BUFG cell.
+CLK_TO_Q_AND_BUFG_NS = 2.0
+_LATENCY = re.compile(r"^XUT_LATENCY (\S+) (\S+)$", re.MULTILINE)
+
+
+def post_route_tcl(slots: Sequence[SlotBuild]) -> str:
+    """Sourced after route_design: writes ``../dut_cells.txt`` (one line per DUT slot:
+    ``<k> TAB <REF_NAME> TAB <ATTR>=<value> ...``, or ``<k> TAB MISSING``) and prints one
+    ``XUT_LATENCY <clock> <ns|unknown>`` line per DUT clock. ``get_net_delays`` reports
+    ``SLOW_MAX`` in ps (Task 7 checks the unit against ``report_timing`` on one path)."""
+    out = [
+        "# SPDX-License-Identifier: Apache-2.0",
+        "# GENERATED by xut.hw.vivado: sourced after route_design by build.tcl. Do not edit.",
+        "proc xut_net_max {net} {",
+        "  set n [get_nets -quiet $net]",
+        "  if {[llength $n] != 1} { return -1 }",
+        "  set d [get_net_delays -quiet -of_objects $n]",
+        "  if {[llength $d] == 0} { return -1 }",
+        "  return [lindex [lsort -real [get_property SLOW_MAX $d]] end]",
+        "}",
+        "proc xut_latency {name q g} {",
+        "  set a [xut_net_max $q]",
+        "  set b [xut_net_max $g]",
+        '  if {$a < 0 || $b < 0} { puts "XUT_LATENCY $name unknown"; return }',
+        '  puts "XUT_LATENCY $name [expr {($a + $b) / 1000.0}]"',
+        "}",
+        "set fh [open ../dut_cells.txt w]",
+    ]
+    for k, s in enumerate(slots):
+        if s.kind != "dut":
+            continue
+        attrs = " ".join(sorted(json.loads(s.map_json)["attrs"]))
+        out += [
+            f"set c [get_cells -quiet u_slots/u_dut_s{k}/dut]",
+            "if {[llength $c] != 1} {",
+            f'  puts $fh "{k}\tMISSING"',
+            "} else {",
+            f'  set line "{k}\t[get_property REF_NAME $c]"',
+            f'  foreach a {{{attrs}}} {{ append line "\t$a=[get_property $a $c]" }}',
+            "  puts $fh $line",
+            "}",
+        ]
+    out.append("close $fh")
+    for k, s in enumerate(slots):
+        for i in range(s.nclk):
+            out.append(f"xut_latency dclk_s{k}_{i} u_slots/dclk_s{k}_{i} u_slots/gclk_s{k}_{i}")
+    return "\n".join(out) + "\n"
+
+
+def _same(got: str | None, want: str) -> bool:
+    def norm(x: str) -> object:
+        x = str(x).strip().strip('"')
+        try:
+            return literal_value(x)
+        except (ValueError, WrapError):
+            return x.upper()
+
+    return got is not None and norm(got) == norm(want)
+
+
+def check_dut_cells(text: str, slots: Sequence[SlotBuild]) -> list[str]:
+    """The post-flow DUT check: every DUT slot's cell is its primitive and every attribute
+    its configuration sets reads back with that value. The problems, or []."""
+    rows = {}
+    for ln in text.splitlines():
+        if ln.strip():
+            k, *rest = ln.split("\t")
+            rows[int(k)] = rest
+    problems = []
+    for k, s in enumerate(slots):
+        if s.kind != "dut":
+            continue
+        m = json.loads(s.map_json)
+        row = rows.get(k)
+        if not row or row == ["MISSING"]:
+            problems.append(f"slot {k}: no DUT cell u_slots/u_dut_s{k}/dut after implementation")
+            continue
+        ref, props = row[0], dict(p.split("=", 1) for p in row[1:])
+        if ref != m["prim"]:
+            problems.append(f"slot {k}: REF_NAME {ref}, configured {m['prim']} (retargeted)")
+        for a, v in sorted(m["attrs"].items()):
+            if not _same(props.get(a), v):
+                problems.append(f"slot {k}: {a} = {props.get(a)!r} after implementation, configured {v}")
+    return problems
+
+
+def check_latency(text: str) -> tuple[dict[str, float], list[str]]:
+    """Per DUT clock, the measured latency in ns; and the clocks over budget or unmeasured."""
+    lat, problems = {}, []
+    for name, value in _LATENCY.findall(text):
+        if value == "unknown":
+            problems.append(f"{name}: latency could not be measured")
+            continue
+        lat[name] = float(value)
+        if lat[name] + CLK_TO_Q_AND_BUFG_NS > LATENCY_BUDGET_NS:
+            problems.append(f"{name}: {lat[name]:.3f} ns + {CLK_TO_Q_AND_BUFG_NS} ns > {LATENCY_BUDGET_NS} ns")
+    return lat, problems
 
 
 def board_xdc() -> Path:
@@ -3863,6 +4162,8 @@ set whs [xut_slack hold]
 puts "XUT_TIMING wns=$wns whs=$whs"
 if {{$wns < 0 || $whs < 0}} {{ puts "XUT_TIMING_FAILED wns=$wns whs=$whs"; exit 3 }}
 set_property BITSTREAM.CONFIG.USERID "0x$build_id" [current_design]
+source post_route.tcl
+set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]
 write_bitstream -force ../top.bit
 puts {BUILD_OK}
 exit 0
@@ -3891,6 +4192,7 @@ def build_inputs(
     files["xut_hw_slots.v"] = render_slots(slots)
     files["xut_hw_cfg.vh"] = render_cfg_vh(slots, build_id, maxwords, margin)
     files["timing.tcl"] = timing_tcl(slots, margin)
+    files["post_route.tcl"] = post_route_tcl(slots)
     files["board.xdc"] = board_xdc().read_text()
     files["build.tcl"] = build_tcl()
     files["build.sh"] = build_script()
@@ -3993,6 +4295,16 @@ def ensure_bitstream(
             why = "Vivado reported success but wrote no top.bit"
         if why is not None:
             raise BuildError(f"{why}; see {log}")
+        cells = (tmp / "dut_cells.txt").read_text() if (tmp / "dut_cells.txt").is_file() else ""
+        dut_problems = check_dut_cells(cells, slots)
+        if dut_problems:
+            raise FlowMismatch(f"post-flow DUT check: {'; '.join(dut_problems)}; see {tmp}")
+        latency, lat_problems = check_latency(text)
+        n_clocks = sum(s.nclk for s in slots)
+        if lat_problems or len(latency) != n_clocks:
+            raise BuildError(
+                f"DUT clock latency: {'; '.join(lat_problems) or f'{len(latency)} of {n_clocks} measured'}; see {log}"
+            )
         wns, whs = _TIMING.findall(text)[-1]
         sha = hashlib.sha256((tmp / "top.bit").read_bytes()).hexdigest()
         manifest = {
@@ -4006,6 +4318,8 @@ def ensure_bitstream(
             "margin": margin,
             "wns_ns": float(wns),
             "whs_ns": float(whs),
+            "dut_check": "pass",
+            "dclk_latency_ns": latency,
             "bitstream_sha256": sha,
             "built": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
             "slots": [
@@ -4029,12 +4343,18 @@ def ensure_bitstream(
 
 
 def vivado_version(scratch: Path) -> str:
-    """The first line of ``vivado -version`` (e.g. ``vivado v2025.2 (64-bit)``)."""
+    """The first line of ``vivado -version`` (e.g. ``vivado v2025.2 (64-bit)``). The caller
+    holds a ``VivadoSlots`` slot: it is a Vivado process like any other."""
     scratch.mkdir(parents=True, exist_ok=True)
     log = scratch / f"vivado-version-{uuid.uuid4().hex[:6]}.log"
     inner = f"source {shlex.quote(str(VIVADO_SETTINGS))} && vivado -version"
     rc = scoped_run(
-        ["bash", "-c", inner], what="vivado-version", memory_max="4G", cwd=scratch, log=log, timeout_s=300
+        ["bash", "-c", inner],
+        what="vivado-version",
+        memory_max=VIVADO_MEMORY_MAX,
+        cwd=scratch,
+        log=log,
+        timeout_s=300,
     )
     text = log.read_text(errors="replace")
     first = next((ln.strip() for ln in text.splitlines() if ln.strip().startswith("vivado v")), "")
@@ -4050,16 +4370,24 @@ class Builder(Protocol):
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream: ...
 
 
+_VERSION: dict[str, str] = {}
+_VERSION_LOCK = threading.Lock()
+
+
 class VivadoBuilder:
+    """Builds in this worktree's cache (``.cache/hw``), bounded by the host-wide slots."""
+
     def __init__(self, root: Path, cache_root: Path | None = None) -> None:
         self.cache_root = cache_root or Path(root) / ".cache" / "hw"
-        self.sem = VivadoSlots(self.cache_root / "locks")
-        self._version: str | None = None
+        self.sem = VivadoSlots()
 
     def version(self) -> str:
-        if self._version is None:
-            self._version = vivado_version(self.cache_root / "scratch")
-        return self._version
+        """``vivado -version``, run once per process, under a slot."""
+        with _VERSION_LOCK:
+            if "vivado" not in _VERSION:
+                with self.sem.slot():
+                    _VERSION["vivado"] = vivado_version(self.cache_root / "scratch")
+            return _VERSION["vivado"]
 
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream:
         return ensure_bitstream(
@@ -4126,7 +4454,7 @@ git commit -m "hw: scoped Vivado batch build with generated constraints, determi
 
 ---
 
-### Task 7: The first real builds — self-test, FDRE and the cache
+### Task 7: The first real builds — self-test, the 28-clock limit, FDRE and the cache
 
 **Files:**
 - Modify: `tools/tests/test_hw_vivado.py` (a `vivado`-marked build test), `tools/xut/hw/vivado.py` (only if a build shows a justified `ALLOWED_CRITICAL` entry, or a constraint/Tcl fix)
@@ -4148,16 +4476,50 @@ def test_build_selftest_and_toy_then_hit_the_cache(tmp_path):
     again = b.ensure(slots)
     assert again.path == bit.path and again.sha256 == bit.sha256
     assert list((tmp_path / "hw" / "bit").glob("*.tmp-*")) == []
+    assert bit.manifest["dut_check"] == "pass" and set(bit.manifest["dclk_latency_ns"]) == {"dclk_s1_0"}
+
+
+@pytest.mark.vivado
+def test_build_at_the_clock_budget(tmp_path):
+    """DUT_BUFG_BUDGET real FDRE slots (one clock each) plus the self-test: the most global
+    clocks a bitstream may use. 7-series clock regions take at most 12 global clocks each,
+    so placement must spread the slots; this build proves that it does, that timing closes,
+    that every DUT passes the post-flow DUT check, and that every DUT clock's latency is
+    within budget (spec §7.1)."""
+    from xut.catalog.model import load_entry
+    from xut.hw.slots import DUT_BUFG_BUDGET
+    from xut.paths import repo_root
+    from xut.wrap import build_map, spec_from_catalog
+
+    entry = load_entry("7series", "FDRE", repo_root())
+    duts = []
+    for k in range(DUT_BUFG_BUDGET):
+        spec = spec_from_catalog(entry, f"c{k}", {"INIT": f"1'b{k % 2}"})
+        m = build_map(spec)
+        duts.append(dut_slot(m, render_wrapper(spec, m), format(k % 8, "03b")))
+    b = vivado.VivadoBuilder(tmp_path, cache_root=tmp_path / "hw")
+    bit = b.ensure((*SELFTEST_SLOTS, *duts))
+    assert bit.manifest["dut_check"] == "pass"
+    assert len(bit.manifest["dclk_latency_ns"]) == DUT_BUFG_BUDGET + 1
+    assert bit.manifest["wns_ns"] >= 0 and bit.manifest["whs_ns"] >= 0
 ```
+
+(FDRE's wrapper has 3 in_vec bits: D, CE, R in catalog order, so `t0` is 3 bits.)
 
 - [ ] **Step 2: Run it** (Vivado, one build of about 3–6 minutes; report every 60 s from `.cache/pytest-vivado.log`, which pytest writes as it goes):
 
 ```bash
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-vivado-$(date +%s) -p MemoryMax=8G -p MemorySwapMax=0 -- \
-  uv run pytest tools/tests/test_hw_vivado.py -m vivado -v > .cache/pytest-vivado.log 2>&1; cat .cache/pytest-vivado.log
+  uv run pytest tools/tests/test_hw_vivado.py -m vivado -n 2 -v > .cache/pytest-vivado.log 2>&1; cat .cache/pytest-vivado.log
 ```
 
-Expected: pass. The Vivado run itself is a nested scope of its own (16G). For each `CRITICAL WARNING` that fails the build: read it in `<cache>/bit/<key>.tmp-*/build.log`. Fix the cause if it is ours (a constraint, a pin, a missing include). Only if it is inherent and harmless, add its id to `ALLOWED_CRITICAL` with a one-line comment saying why, as a separate commit (`hw: allow CRITICAL WARNING [<id>] (<why>)`). Reviewers must check every such entry.
+- **Estimate:** two builds, about 3–6 minutes and 8–15 minutes; report every 60 s, then every 5 minutes.
+- **Expected:** both pass. The Vivado runs are scopes of their own (16G each).
+- **The latency unit.** In the 28-clock build's `timing.rpt`, find one `dclk_s<k>_0` → DUT path and compare its clock-path delay with the `XUT_LATENCY dclk_s<k>_0` line in `build.log`. If they differ by a factor of 1000, `get_net_delays`' `SLOW_MAX` is in ns, not ps: fix the `/ 1000.0` in `post_route_tcl` and re-run.
+- **The clock budget.** If the 28-clock build cannot place (a clock-region or BUFG error), lower `DUT_BUFG_BUDGET` to the largest value that builds (try 24, then 20), update the test and Decision 10, and record why in the log.
+- Record both builds' utilization (slice LUTs/FFs, BUFGCTRL used out of 32, RAMB36 used) and the largest measured latency.
+
+ For each `CRITICAL WARNING` that fails the build: read it in `<cache>/bit/<key>.tmp-*/build.log`. Fix the cause if it is ours (a constraint, a pin, a missing include). Only if it is inherent and harmless, add its id to `ALLOWED_CRITICAL` with a one-line comment saying why, as a separate commit (`hw: allow CRITICAL WARNING [<id>] (<why>)`). Reviewers must check every such entry.
 
 - [ ] **Step 3: Build the flops unit's bitstreams** (this also measures build time for the Task 12 estimate):
 
@@ -5739,7 +6101,7 @@ from xut.hw.replay import ModelDut
 from xut.hw.selftest import CounterSim, PassthroughSim
 from xut.hw.session import RC_BUSY, RC_NO_UART, RC_PROGRAM, RC_SSH
 from xut.hw.slots import SlotBuild
-from xut.hw.vivado import Bitstream
+from xut.hw.vivado import Bitstream, FlowMismatch
 from xut.wrap import DutMap
 from xut_models import registry
 
@@ -5872,13 +6234,18 @@ class FakeTransport:
 
 
 class FakeBuilder:
-    def __init__(self, cache_root: Path) -> None:
+    """``flow_mismatch``: raise the post-flow DUT check's ``FlowMismatch`` instead."""
+
+    def __init__(self, cache_root: Path, flow_mismatch: bool = False) -> None:
         self.cache_root = Path(cache_root)
+        self.flow_mismatch = flow_mismatch
 
     def version(self) -> str:
         return "fake-vivado"
 
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream:
+        if self.flow_mismatch:
+            raise FlowMismatch("post-flow DUT check: slot 2: REF_NAME LUT1, configured TOYFF (retargeted)")
         key = hashlib.sha256("".join(s.digest() for s in slots).encode()).hexdigest()
         bid = int(key[:8], 16)
         d = self.cache_root / "bit" / key
@@ -5987,7 +6354,7 @@ git commit -m "hw: BoardSession over SSH (SRAM programming under the rig lock), 
 
 **Files:**
 - Create: `tools/xut/runners/hw.py`, `tools/tests/test_runner_hw.py`
-- Modify: `tools/xut/runners/__init__.py` (register `hw`), `tools/xut/runners/base.py` (`Runner.flows`, `RunContext.hw_repeats`/`hw_rigs`, `python_dir` always at flow `rtl`), `tools/xut/run.py` (python runs at `rtl`; a runner must run the selected flow), `tools/xut/cli.py` (`xut run --flow vivado --hw-repeats N --hw-rig NAME`), `tools/xut/schemas/result.schema.json` (the `hw` object), `tools/tests/test_run.py`
+- Modify: `tools/xut/runners/__init__.py` (register `hw`), `tools/xut/runners/base.py` (`Runner.flows`, `RunContext.hw_repeats`/`hw_rigs`, `python_dir` always at flow `rtl`), `tools/xut/run.py` (python runs at `rtl`; a runner must run the selected flow), `tools/xut/cli.py` (`xut run --flow vivado --hw-repeats N --hw-rig NAME`), `tools/xut/schemas/result.schema.json` (the `hw` object), `tools/xut/crosscheck.py` (`dut_check` → `flow-mismatch`), `tools/tests/test_run.py`, `tools/tests/test_crosscheck.py`
 
 **Interfaces:**
 - Consumes: `plan_case` (Task 5), `Builder`/`VivadoBuilder` (Task 6), `BoardPool`/`run_job` (Task 9), `samples_to_trace` (Task 3), and the step-2 `Runner` template.
@@ -5997,7 +6364,8 @@ git commit -m "hw: BoardSession over SSH (SRAM programming under the rig lock), 
   - `REFERENCE = "unisim-2025.2"`
   - `Runner.flows: ClassVar[frozenset[str]] = frozenset({"rtl"})` on the base
   - `RunContext.hw_repeats: int = 3`, `RunContext.hw_rigs: tuple[str, ...] = ()`
-  - `result.json` `hw`: `{rig, rigs, site, serial, board, part, repeats, repeats_differ, selftest, build_ids, bitstream_sha256}` (`dna` stays optional; see "Spec ambiguities" 6)
+  - `result.json` `hw`: `{rig, rigs, site, serial, board, part, repeats, repeats_differ, selftest, dut_check, dut_check_detail, build_ids, bitstream_sha256}` (`dna` stays optional; see "Spec ambiguities" 6)
+  - `xut.crosscheck.classify`: a `hw` result with `dut_check = "fail"` is a `flow-mismatch` finding (spec rev 3.6 §8), with the check's detail as its point
 
 How the runner plugs in (it is the xsim runner's shape; `Runner.run` does the rest):
 
@@ -6036,10 +6404,11 @@ MS = "unisim-2025.2"
 
 @pytest.fixture
 def fake_hw(tmp_path, monkeypatch, toy):
-    def make(rigs: dict[str, FakeRig]):
+    def make(rigs: dict[str, FakeRig], flow_mismatch: bool = False):
         t = FakeTransport(rigs)
         pool = BoardPool([SshBoardSession(rig(n), t) for n in rigs])
-        be = HwBackend(FakeBuilder(tmp_path / "cache"), pool, {n: "ok" for n in rigs})
+        builder = FakeBuilder(tmp_path / "cache", flow_mismatch=flow_mismatch)
+        be = HwBackend(builder, pool, {n: "ok" for n in rigs})
         monkeypatch.setattr(hw_runner, "backend", lambda root, rigs=(): be)
         monkeypatch.setattr(hw_runner, "settings_available", lambda: True)
         return be, t
@@ -6102,6 +6471,14 @@ def test_selftest_failing_everywhere_is_a_harness_error(tmp_path, fake_hw):
     assert res.status == "error" and res.hw["selftest"] == "fail"
     assert "self-test" in res.reason
     assert _classes(tmp_path, case) == ["harness-error"]
+
+
+def test_a_failed_post_flow_dut_check_is_a_flow_mismatch(tmp_path, fake_hw):
+    _, t = fake_hw({"a": FakeRig()}, flow_mismatch=True)
+    case, res = _run(tmp_path)
+    assert res.status == "error" and "flow-mismatch" in res.reason
+    assert res.hw["dut_check"] == "fail" and t.programmings["a"] == 0  # nothing ran
+    assert _classes(tmp_path, case) == ["flow-mismatch"]
 
 
 def test_a_bad_board_is_replaced(tmp_path, fake_hw):
@@ -6182,12 +6559,23 @@ In `tools/xut/cli.py` `run_cmd`: `--flow` becomes `click.Choice(["rtl", "vivado"
 
 and pass them into the `RunContext` (`hw_repeats=hw_repeats, hw_rigs=tuple(hw_rigs)`).
 
+In `tools/xut/crosscheck.py` `classify`, in the `runner == "hw"` branch before the self-test check:
+
+```python
+            if hw.get("dut_check") == "fail":
+                detail = hw.get("dut_check_detail") or "post-flow DUT check failed"
+                out.append(_f("flow-mismatch", test_id, flow, None, ["hw"], [detail]))
+                continue
+```
+
+and pin it in `tools/tests/test_crosscheck.py` with a synthetic `hw` view, as the existing `harness-error` test does.
+
 In `tools/xut/schemas/result.schema.json`, replace the `hw` property:
 
 ```json
     "hw": {
       "type": ["object", "null"],
-      "$comment": "hw runner only (spec §6, §7.5); crosscheck reads selftest (harness-error), repeats and repeats_differ (nondeterminism).",
+      "$comment": "hw runner only (spec §6, §7.5); crosscheck reads selftest (harness-error), repeats and repeats_differ (nondeterminism), dut_check (flow-mismatch).",
       "additionalProperties": false,
       "properties": {
         "dna": {"type": "string"},
@@ -6200,6 +6588,8 @@ In `tools/xut/schemas/result.schema.json`, replace the `hw` property:
         "repeats": {"type": "integer", "minimum": 1},
         "repeats_differ": {"type": "boolean"},
         "selftest": {"enum": ["pass", "fail", "not-run"]},
+        "dut_check": {"enum": ["pass", "fail", "not-run"]},
+        "dut_check_detail": {"type": "string"},
         "build_ids": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{8}$"}},
         "bitstream_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
       }
@@ -6252,7 +6642,7 @@ from xut.hw.pool import BoardPool, run_job
 from xut.hw.replay import samples_to_trace
 from xut.hw.rigs import config_path, load_rigs, write_ssh_config
 from xut.hw.session import HwJob, SlotRun, SshBoardSession, SshTransport
-from xut.hw.vivado import PART, Builder, VivadoBuilder
+from xut.hw.vivado import PART, Builder, FlowMismatch, VivadoBuilder
 from xut.runners.base import (
     ConfigResult,
     RunContext,
@@ -6385,6 +6775,7 @@ class HwRunner(Runner):
             "repeats": ctx.hw_repeats,
             "repeats_differ": False,
             "selftest": "not-run",
+            "dut_check": "not-run",
             "build_ids": [],
             "bitstream_sha256": [],
             "rigs": [],
@@ -6394,9 +6785,16 @@ class HwRunner(Runner):
             log = [f"group {g}: configurations {', '.join(it.cfg for it in members)}"]
             try:
                 bit = be.builder.ensure(plan.slots(g))
+            except FlowMismatch as e:  # spec §6 post-flow DUT check: a toolchain bug, no DUT result
+                hw["dut_check"] = "fail"
+                hw["dut_check_detail"] = str(e)
+                self._settle(done, members, "error", f"flow-mismatch: {e}", log)
+                continue
             except Exception as e:
                 self._settle(done, members, "error", f"bitstream build failed: {error_reason(e)}", log)
                 continue
+            if hw["dut_check"] == "not-run":
+                hw["dut_check"] = "pass"
             hw["build_ids"].append(f"{bit.build_id:08x}")
             hw["bitstream_sha256"].append(bit.sha256)
             log.append(f"bitstream {bit.build_id:08x}: {bit.path}")
@@ -6471,8 +6869,8 @@ Register it in `tools/xut/runners/__init__.py`: `from xut.runners.hw import HwRu
 
 ```bash
 uv run pytest tools/tests/test_runner_hw.py tools/tests/test_run.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=64G -p MemorySwapMax=0 -- \
-  uv run pytest -n 8 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
+systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+  uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_run.py
 git commit -m "runners: add the hw runner (flow vivado; self-test, repeats, silicon cross-check) and xut run --flow vivado" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -6750,8 +7148,8 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsmokebuild-$(date +
 - [ ] **Step 5: Whole-branch verification, log, push and PR C**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=64G -p MemorySwapMax=0 -- \
-  uv run pytest -n 8 --dist loadfile > .cache/pytest-all.log 2>&1; tail -n 8 .cache/pytest-all.log
+systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+  uv run pytest -n 4 --dist loadfile > .cache/pytest-all.log 2>&1; tail -n 8 .cache/pytest-all.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 uv run xut doctor > .cache/doctor.log 2>&1; cat .cache/doctor.log
 ```
@@ -6824,7 +7222,7 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsmoke-$(date +%s) -
 
 ```bash
 systemd-run --user --scope --slice=vivado.slice --unit=xut-run-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
-  uv run xut run 'unit:flops' --jobs 24 > .cache/run-flops-rtl.log 2>&1; echo "exit=$?"
+  uv run xut run 'unit:flops' --jobs 16 > .cache/run-flops-rtl.log 2>&1; echo "exit=$?"
 ```
 
 - **Estimate:** as in step 2's Task 27, about 5–8 minutes, so report every 60 s from the `progress:` lines.
@@ -6890,8 +7288,8 @@ Expected in each `status/7series/FD*.yaml`:
 - [ ] **Step 9: Verify, log and open PR D**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=64G -p MemorySwapMax=0 -- \
-  uv run pytest -n 8 --dist loadfile -m "not slow" > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
+systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+  uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest.log 2>&1; tail -n 5 .cache/pytest.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 git status --porcelain > .cache/git-status.log 2>&1; cat .cache/git-status.log
 ```
@@ -6937,7 +7335,7 @@ The body summarises the silicon results and findings, and ends with the Claude C
 - [ ] **Step 2: Prove it in simulation first**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p MemoryMax=40G -p MemorySwapMax=0 -- \
+systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run xut hw sim 'unit:luts' --sim iverilog --jobs 8 > .cache/hwsim-luts.log 2>&1; echo "exit=$?"
 ```
 
