@@ -4,27 +4,42 @@
 - Test: 7series.FDCE.L1.gsr_vs_clear
 - Flow / model source: rtl / unisim-2025.2
 - Runners: iverilog, verilator, xsim
-- First seen: 2026-09-28 (flops Task 24; pre-check run of the uncommitted test, then the full run)
+- First seen: 2026-09-27 at b3ffb16
+- Also seen: rtl / unisim-gh-2020.1 (2026-09-27 at b3ffb16)
 - Status: open
 
 ## Evidence
 
-Configurations with INIT=1'b1 (INIT differs from the value CLR forces, 0), with
-IS_CLR_INVERTED both 0 and 1. The golden model's expected Q, against every UNISIM simulator:
+`xut crosscheck '7series.FD*'` at b3ffb16 (results of the full runs of both model
+sources), verbatim. rtl / unisim-2025.2, runners iverilog, verilator, xsim:
 
-- `(A)` GSR asserted, then CLR made active (samples S2), then one clock cycle under both
-  (S3 after the rise, S4 after the fall): expected 0, got 1 on every simulator.
-- `(B)` CLR made active first (Q = 0, agreed), then GSR asserted (S9): expected 0,
-  got 1 on every simulator.
-- Every other sample agrees, including S5 (GSR released while CLR is still active: Q = 0,
-  `doc:369`) and S10 (CLR released while GSR is still active: Q = INIT, `doc:369`).
-- Configurations with INIT=1'b0 agree throughout: GSR and CLR give the same value there.
-- Every disagreeing bit carries the provenance
-  `inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win`;
-  no `doc:` bit disagrees.
+- init1_clrinv0/S2 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S3 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S4 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S9 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S2 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S3 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S4 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S9 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
 
-The crosscheck points of the full run are in the pilot log entry
-(`log/*-unit-7series-flops-pilot-run.md`) and in `build/crosscheck/7series.FDCE.L1.gsr_vs_clear.json`.
+rtl / unisim-gh-2020.1, runners iverilog, verilator (no xsim for this source):
+
+- init1_clrinv0/S2 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S3 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S4 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv0/S9 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S2 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S3 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S4 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+- init1_clrinv1/S9 Q[0]: expected 0, got 1 (inferred:UG953_says_an_active_CLR/PRE_overrides_all_other_inputs_(p369/p372)_but_does_not_name_GSR;_the_control_is_taken_to_win)
+
+Sample map, per configuration (INIT=1'b1; IS_CLR_INVERTED 0 and 1):
+
+- (A) S1 GSR on; S2 CLR on; S3, S4 after the rise and fall of one clock cycle
+  under both; S5 GSR off, CLR still on (agrees: Q=0, `doc:`).
+- (B) S8 CLR on (agrees: Q=0); S9 GSR on; S10 CLR off, GSR still on
+  (agrees: Q=INIT, `doc:`).
+- Configurations with INIT=1'b0 agree throughout; no `doc:` bit disagrees.
 
 ## Analysis
 
