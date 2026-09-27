@@ -267,15 +267,25 @@ smoke simulation whose memory grows without bound. Its container peaked at
   only xut's hard limit (one below the enforced 25), never the number to use;
   the budget formula gives the usable number. **Before PR C, the limit is 8**,
   because containers are uncapped. Use `pytest -n` at most 8.
-  Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
-  time, each scope capped at 16G: that is 64G. The 4 slots
-  (`XUT_VIVADO_SLOTS`) are counted inside the one heavy command that holds the
-  lock below, so they are that command's jobs, not a second budget. The slots
-  are only a semaphore: xsim and Vivado run inside the calling command's own
-  scope, so that scope's cap must cover them (four 16G jobs need at least a
-  64G scope; with less, an OOM kill is a retryable result). These are
-  conservative starting values, not yet measured for our
-  Vivado runs: measure the first runs with the scope's `memory.peak` and
+  Never use `-n auto` locally: it means 88 workers. There are two host-wide
+  slot pools (`xut.slots`, ruling S60), and each is only a semaphore, never a
+  second budget:
+  - **Vivado synthesis and implementation** (`xut hw build`): at most 4 at a
+    time (`XUT_VIVADO_SLOTS`), each sized at 16G, so a scope running four
+    needs at least 64G. That size is a conservative starting value, not yet
+    measured for our Vivado runs.
+  - **xsim** (one configuration's xvlog, xelab and simulation, in the xsim
+    runner and the verilatorize oracle): at most 12 at a time
+    (`XUT_XSIM_SLOTS`). Measured: one configuration's whole `xsim.sh` peaked
+    at 340M on its own. A unit run with four at once peaked at 1.3G for its
+    whole scope, and one with twelve at once at 3.4G, including the Python
+    process and the result checking.
+
+  Both run inside the scope of the heavy command that starts them, not in a
+  scope of their own, so that command's cap and budget must cover them. A
+  scope cap of 8G covers twelve xsim with room to spare. With too small a cap,
+  an OOM kill is a retryable result. Measure new kinds of runs with the
+  scope's memory peak (`journalctl --user` prints it when the scope ends) and
   adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
   value in a plan or task brief is capped by this section. For example, the
