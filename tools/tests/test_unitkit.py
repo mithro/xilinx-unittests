@@ -168,3 +168,40 @@ def test_doc_mismatch_ignores_inferred_bits():
     got2 = Trace({"runner": "x"})
     got2.add("S0", {"Q": "00"})
     assert unitkit._doc_mismatch(want, got2)
+
+
+@pytest.mark.parametrize(
+    ("want_bit", "got_bit"),
+    [
+        ("-", "0"),  # golden declares the bit undefined: crosscheck never compares it
+        ("0", "-"),  # the mutant leaves it undefined: a simulator may still show golden's 0
+        ("x", "0"),  # a 2-state runner (verilator) skips expected x/z
+        ("0", "x"),
+        ("z", "1"),
+        ("1", "z"),
+    ],
+)
+def test_doc_mismatch_counts_only_defined_bits_on_both_sides(want_bit, got_bit):
+    """Ruling S57.1 (PR #14 correctness review, finding 1): a documented bit counts only
+    where golden and mutant are both 0/1 and differ, the least-observable semantics of
+    ``xtr.compare``; a ``-``, x or z on either side never counts."""
+    from xut.formats.xtr import Trace, compare
+
+    hdr = {"runner": "python", "kind": "expected"}  # a golden replay, as _replayed makes
+    want, got = Trace(dict(hdr)), Trace(dict(hdr))
+    want.add("S0", {"Q": want_bit}, {"Q": "doc:9"})
+    got.add("S0", {"Q": got_bit}, {"Q": "doc:9"})
+    assert not unitkit._doc_mismatch(want, got)
+    if want_bit == "-":  # the counterexample: a simulator like the mutant passes compare
+        actual = Trace({"runner": "iverilog"})
+        actual.add("S0", {"Q": got_bit})
+        assert compare(want, actual) == []
+
+
+def test_doc_mismatch_counts_a_defined_difference():
+    from xut.formats.xtr import Trace
+
+    want, got = Trace({"runner": "python"}), Trace({"runner": "python"})
+    want.add("S0", {"Q": "01"}, {"Q": "doc:9"})
+    got.add("S0", {"Q": "11"}, {"Q": "doc:9"})
+    assert unitkit._doc_mismatch(want, got)

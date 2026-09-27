@@ -281,7 +281,10 @@ def vector_reach(case: TestCase, root: Path) -> list[ConfigReach]:
 
 def _doc_diffs(want: Trace, got: Trace) -> Iterator[tuple[str, str, int]]:
     """(sample, port, bit) of every bit ``want`` documents (``doc:``, per-bit tags, LSB
-    first) on which ``got`` differs."""
+    first) on which ``got`` shows the other defined value. A ``-``, x or z on either side
+    never counts (ruling S57.1): that is the least-observable semantics of
+    ``xtr.compare`` against a 2-state runner, so a counted bit is one every runner's
+    crosscheck would catch."""
     for label, ports in want.samples.items():
         for port, bits in ports.items():
             tags = want.prov[label][port].split(",")
@@ -289,7 +292,7 @@ def _doc_diffs(want: Trace, got: Trace) -> Iterator[tuple[str, str, int]]:
                 zip(reversed(bits), reversed(got.samples[label][port]), strict=True)
             ):
                 tag = tags[i] if len(tags) > 1 else tags[0]
-                if tag.startswith("doc:") and w != g:
+                if tag.startswith("doc:") and w in "01" and g in "01" and w != g:
                     yield label, port, i
 
 
