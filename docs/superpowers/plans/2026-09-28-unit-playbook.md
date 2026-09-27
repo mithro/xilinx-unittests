@@ -2694,6 +2694,8 @@ class CfgLut5(_Powered):
     def __init__(self, attrs: Mapping[str, str | int]) -> None:
         super().__init__(attrs)
         self.init = _init_value(self.PRIM, self.attrs, self.WIDTH)
+        #: INIT's uniform value (0 or 1), or None: the contents a never-shifting model shows
+        self._init_uniform = _uniform_bit(self.init, self.WIDTH)
         self.inv_clk = bit_attr(self.attrs.get("IS_CLK_INVERTED", 0))
         self.contents = self.init  # under the inferred order (D5)
         self.shifts = 0  # documented shifts since power-on (none under GSR)
@@ -2734,7 +2736,7 @@ class CfgLut5(_Powered):
         """A GSR loss: what the contents were is itself an inference now, so the only
         value a model that never shifted would still show is INIT's own."""
         self.known = None
-        self._last_known = _uniform_bit(self.init, self.WIDTH)
+        self._last_known = self._init_uniform
         self._run = (None, 0)
         self._cascaded = False
 
@@ -2742,7 +2744,7 @@ class CfgLut5(_Powered):
     def power_on(self) -> None:
         super().power_on()
         self.contents = self.init
-        self.known = self._last_known = _uniform_bit(self.init, self.WIDTH)
+        self.known = self._last_known = self._init_uniform
         if self.known is not None:  # INIT is the start-up function (p349); uniform only
             self.hit(f"{self.PRIM}.C6")
 
@@ -2752,9 +2754,7 @@ class CfgLut5(_Powered):
             return
         # "keep the contents" and "reload INIT" agree only if nothing was shifted since
         # power-on, or the contents are known-uniform with INIT's own uniform value.
-        same = self._untouched or (
-            self.known is not None and self.known == _uniform_bit(self.init, self.WIDTH)
-        )
+        same = self._untouched or (self.known is not None and self.known == self._init_uniform)
         if not same:
             self._gsr_mark = self.shifts
             self._lose_order_free_state()
@@ -3554,9 +3554,16 @@ S52 = (
 )
 #: tests whose twin (LUT6/LUT6_2, LUT5/CFGLUT5) has a test of the same name
 SHARED_WITH_TWIN = (
-    "smoke", "illegal_init", "default_init", "projections", "init_sweep", "init_random",
-    "sv_x_inputs", "sv_gsr_midsim", "cocotb_random",
-)  # fmt: skip
+    "smoke",
+    "illegal_init",
+    "default_init",
+    "projections",
+    "init_sweep",
+    "init_random",
+    "sv_x_inputs",
+    "sv_gsr_midsim",
+    "cocotb_random",
+)
 TWIN = {"LUT6": "LUT6_2", "LUT6_2": "LUT6", "LUT5": "CFGLUT5", "CFGLUT5": "LUT5"}
 
 
@@ -3649,7 +3656,7 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         "smoke",
         "vector",
         "vectors/gen.py:l0_smoke",
-        [*base, "attr:INIT", *table, *default, *shift_bins, *clk_attrs,],
+        [*base, "attr:INIT", *table, *default, *shift_bins, *clk_attrs],
         "Elaborates with the default INIT and two sampled ones and reads every address: the "
         "minimum any toolchain must get right. The default configuration sets no attribute, "
         "so the model's documented default meets the simulators' own.",
@@ -3657,10 +3664,14 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
             "INIT": ["unset (default)", "all ones", "1 seeded random"],
             **({"IS_CLK_INVERTED": [0, 1]} if k.reconfig else {}),
         },
-        gaps=["one sweep per configuration", NO_X,
-              "illegal values are tried only by L0.illegal_init", *s52],
+        gaps=[
+            "one sweep per configuration",
+            NO_X,
+            "illegal values are tried only by L0.illegal_init",
+            *s52,
+        ],
         related=[f"{FAMILY}.{prim}.L0.illegal_init"],
-    )  # fmt: skip
+    )
     add(
         "L0",
         "illegal_init",
@@ -3670,10 +3681,12 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         f"An INIT with x digits is not the HEX value UG953 asks for (p{PAGES[prim][1]}); the "
         "simulation must reject it (expect=reject), the runtime-rejection path of spec §4.1.",
         declared=_runners(k, verilator=VL_REJ, hw=HW_REJ),
-        gaps=["only an all-x INIT is tried; an over-wide literal is refused by xut wrap",
-              "whether UNISIM rejects it is observed, not documented (Task A6 rule)"],
+        gaps=[
+            "only an all-x INIT is tried; an over-wide literal is refused by xut wrap",
+            "whether UNISIM rejects it is observed, not documented (Task A6 rule)",
+        ],
         related=[f"{FAMILY}.{prim}.L0.smoke"],
-    )  # fmt: skip
+    )
     add(
         "L1",
         "default_init",
@@ -3708,10 +3721,12 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
             "model infers the table holds (inferred:, no claim, ruling S44): a disagreement "
             "is a doc-gap finding, never masked.",
             declared=_runners(k, hw=HW_GSR),
-            gaps=["claims are credited only by the sweeps before and after the pulse",
-                  "one GSR pulse, one configuration"],
+            gaps=[
+                "claims are credited only by the sweeps before and after the pulse",
+                "one GSR pulse, one configuration",
+            ],
             related=[f"{FAMILY}.{prim}.L1.sv_gsr_midsim"],
-        )  # fmt: skip
+        )
     if prim == "LUT6_2":
         add(
             "L1",
@@ -3721,10 +3736,15 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
             [*base, "attr:INIT", *_claims(k, 1, 2)],
             "Each I4..I0 is read with I5 low then high: O5 must not move (lower 32 bits "
             "only) while O6 switches to the upper half.",
-            sampling={"INIT": ["lower: I0 projection, upper: its complement",
-                               "lower zero, upper ones", "1 seeded random"]},
+            sampling={
+                "INIT": [
+                    "lower: I0 projection, upper: its complement",
+                    "lower zero, upper ones",
+                    "1 seeded random",
+                ]
+            },
             gaps=[NO_X],
-        )  # fmt: skip
+        )
         add(
             "L1",
             "doc_example",
@@ -3746,10 +3766,14 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         + ("every value" if k.width <= 4 else "boundaries, walking ones and zeros")
         + "), each read at every address: every INIT bit is seen alone, set and clear.",
         sampling=_sampling(k),
-        gaps=["the addresses are visited in binary order (L2.init_random adds random order)",
-              NO_X, NO_TIMING, *s52],
+        gaps=[
+            "the addresses are visited in binary order (L2.init_random adds random order)",
+            NO_X,
+            NO_TIMING,
+            *s52,
+        ],
         related=[f"{FAMILY}.{prim}.L1.projections"],
-    )  # fmt: skip
+    )
     if k.width > 4:
         add(
             "L2",
@@ -3760,18 +3784,25 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
             "Seeded random INITs, each swept and then read at random addresses, where "
             "several inputs change at once.",
             sampling={"INIT": [f"{RANDOM_INITS} seeded random (the test's seed)"]},
-            gaps=["one seed per run; a failing seed is frozen by hand (xut freeze-seed is "
-                  "deferred)", NO_X, *s52],
+            gaps=[
+                "one seed per run; a failing seed is frozen by hand (xut freeze-seed is deferred)",
+                NO_X,
+                *s52,
+            ],
             related=[f"{FAMILY}.{prim}.L2.cocotb_random"],
-        )  # fmt: skip
+        )
     _sim_tests(k, add, table, default, ordered, clk_attrs)
     return out
 
 
 def _sim_tests(
-    k: LutKind, add: Add, table: list[str], default: list[str], ordered: list[str],
+    k: LutKind,
+    add: Add,
+    table: list[str],
+    default: list[str],
+    ordered: list[str],
     clk_attrs: list[str],
-) -> None:  # fmt: skip
+) -> None:
     """The sv and cocotb tests (simulation only)."""
     prim = k.prim
     sv = f"sv/tb_{prim.lower()}"
@@ -3780,9 +3811,11 @@ def _sim_tests(
     cfgs = (
         [{"cfg": "ones", "attrs": {"INIT": lit(k, ones(k))}}]
         if k.reconfig
-        else [{"cfg": "rand", "attrs": {"INIT": rand}},
-              {"cfg": "p0", "attrs": {"INIT": lit(k, projection(k, 0))}}]
-    )  # fmt: skip
+        else [
+            {"cfg": "rand", "attrs": {"INIT": rand}},
+            {"cfg": "p0", "attrs": {"INIT": lit(k, projection(k, 0))}},
+        ]
+    )
     add(
         "L1",
         "sv_x_inputs",
@@ -3860,10 +3893,14 @@ def _cfglut5_tests(k: LutKind, add: Add, base: list[str], shift_bins: list[str])
         "vectors/gen.py:l1_ce_low_holds",
         [*base, *_bins(prim, "CDI"), *_bins(prim, "CLK"), "attr:INIT", *_claims(k, 1, 2, 4)],
         "CE Low with CDI toggling and CLK running: the function and CDO do not move.",
-        gaps=["CE is never raised here (see reconfigure)", "only the all-ones configuration "
-              "credits C4; the others' reads depend on the inferred order (ruling S52)", NO_X],
+        gaps=[
+            "CE is never raised here (see reconfigure)",
+            "only the all-ones configuration "
+            "credits C4; the others' reads depend on the inferred order (ruling S52)",
+            NO_X,
+        ],
         related=rel,
-    )  # fmt: skip
+    )
     add(
         "L1",
         "reconfigure",
@@ -3871,9 +3908,12 @@ def _cfglut5_tests(k: LutKind, add: Add, base: list[str], shift_bins: list[str])
         "vectors/gen.py:l1_reconfigure",
         [*base, *shift_bins, "attr:INIT", *_claims(k, 1, 2, 3, 5)],
         "A new 32-bit function is shifted in through CDI and read back at every address.",
-        gaps=["the read-back order relies on the inferred shift direction (a disagreement is "
-              "a doc-gap); only ones_to_zero credits C3 and C5 (ruling S52)", NO_X],
-    )  # fmt: skip
+        gaps=[
+            "the read-back order relies on the inferred shift direction (a disagreement is "
+            "a doc-gap); only ones_to_zero credits C3 and C5 (ruling S52)",
+            NO_X,
+        ],
+    )
     add(
         "L1",
         "cdo_cascade",
@@ -3882,13 +3922,15 @@ def _cfglut5_tests(k: LutKind, add: Add, base: list[str], shift_bins: list[str])
         ["port:CDO", *shift_bins, "attr:INIT", *_claims(k, 3, 5)],
         "64 shifts with CDO sampled after each: the old INIT leaves on CDO, then the first "
         "shifted-in bits arrive 32 shifts later, as a CDO-to-CDI chain needs.",
-        gaps=["which INIT bit reaches CDO first is inferred; only ones_zeros_ones credits "
-              "(ruling S52)",
-              "documented bits bound the chain length only from above: a chain shorter than "
-              "32 bits shows only on inferred bits; the two-LUT chain is an L3 design",
-              NO_X],
+        gaps=[
+            "which INIT bit reaches CDO first is inferred; only ones_zeros_ones credits "
+            "(ruling S52)",
+            "documented bits bound the chain length only from above: a chain shorter than "
+            "32 bits shows only on inferred bits; the two-LUT chain is an L3 design",
+            NO_X,
+        ],
         related=rel,
-    )  # fmt: skip
+    )
     add(
         "L1",
         "partial_shift",
@@ -3896,26 +3938,40 @@ def _cfglut5_tests(k: LutKind, add: Add, base: list[str], shift_bins: list[str])
         "vectors/gen.py:l1_partial_shift",
         [*base, *shift_bins, "attr:INIT"],
         "1, 5, 16 and 31 shifts leave a mix of old and new bits: pins the shift order.",
-        gaps=["the order is inferred; a disagreement is a doc-gap "
-              "(findings/CFGLUT5-doc-gap-L1-partial_shift.md)", S52, NO_X],
+        gaps=[
+            "the order is inferred; a disagreement is a doc-gap "
+            "(findings/CFGLUT5-doc-gap-L1-partial_shift.md)",
+            S52,
+            NO_X,
+        ],
         related=rel,
-    )  # fmt: skip
+    )
     add(
         "L1",
         "is_clk_inverted",
         "vector",
         "vectors/gen.py:l1_is_clk_inverted",
-        [*base, *_bins(prim, "CDI", "1"), *_bins(prim, "CE"), *_bins(prim, "CLK"),
-         "attr:INIT", "attr:IS_CLK_INVERTED=1'b1", *_claims(k, 3)],
+        [
+            *base,
+            *_bins(prim, "CDI", "1"),
+            *_bins(prim, "CE"),
+            *_bins(prim, "CLK"),
+            "attr:INIT",
+            "attr:IS_CLK_INVERTED=1'b1",
+            *_claims(k, 3),
+        ],
         "IS_CLK_INVERTED=1: samples after each rise show no shift, after each fall one.",
         sampling={"IS_CLK_INVERTED": [1], "INIT": ["all zeros", "all ones"]},
-        gaps=["the intermediate samples depend on the inferred order; L1.edge_polarity is "
-              "the order-free test of the same claim",
-              "claim:CFGLUT5.C7 is exercised, not credited: a simulator that shifts on the "
-              "rise differs here only on samples that depend on the inferred shift order "
-              "(ruling S52); L1.edge_polarity credits it", NO_X],
+        gaps=[
+            "the intermediate samples depend on the inferred order; L1.edge_polarity is "
+            "the order-free test of the same claim",
+            "claim:CFGLUT5.C7 is exercised, not credited: a simulator that shifts on the "
+            "rise differs here only on samples that depend on the inferred shift order "
+            "(ruling S52); L1.edge_polarity credits it",
+            NO_X,
+        ],
         related=[f"{FAMILY}.{prim}.L1.edge_polarity"],
-    )  # fmt: skip
+    )
     add(
         "L1",
         "shift_while_reading",
@@ -4061,12 +4117,14 @@ def render(prim: str) -> dict[str, str]:
     return files
 
 
-# --- mutants (ruling S55) ------------------------------------------------------------------
-# One model variant per credited claim, breaking exactly that claim's rule; the unit's
-# guard asserts each fails a documented bit in a configuration that credits the claim.
+# --- mutants (rulings S55, S55a) -----------------------------------------------------------
+# Every mutant factory of the unit lives here. ``mutants(prim)`` gives one per credited
+# claim, breaking exactly that claim's rule; the unit's guard asserts each fails a
+# documented bit in a configuration that credits the claim (in every one for an event
+# claim). The unit's own checks use the others (a second bit order, both edges).
 
 
-def _address_flipped(base: type) -> type:
+def address_flipped(base: type) -> type:
     """Logic table read at the neighbouring address: the input order is wrong (C1)."""
 
     class AddressFlipped(base):
@@ -4076,7 +4134,30 @@ def _address_flipped(base: type) -> type:
     return AddressFlipped
 
 
-def _default_ones(base: type) -> type:
+def init_reversed(base: type) -> type:
+    """INIT read end to end, bit 2^n - 1 - a for address a: the other bit order (C1)."""
+
+    class InitReversed(base):
+        def _address(self, n: int) -> int:
+            return super()._address(n) ^ ((1 << n) - 1)
+
+    return InitReversed
+
+
+def example_misread(base: type) -> type:
+    """LUT6_2 with the p509 example INIT reads it as ...FFFC: every other INIT is read
+    right, so only C4 (the example's OR functions) breaks."""
+
+    class ExampleMisread(base):
+        def __init__(self, attrs: dict) -> None:
+            super().__init__(attrs)
+            if self.init == self.OR_EXAMPLE:
+                self.init &= ~0b10
+
+    return ExampleMisread
+
+
+def default_ones(base: type) -> type:
     """An unset INIT reads as all ones, not the documented zero (the default claim)."""
 
     class DefaultOnes(base):
@@ -4088,7 +4169,7 @@ def _default_ones(base: type) -> type:
     return DefaultOnes
 
 
-def _output_replaced(port: str, value: Callable[[object], int]) -> Callable[[type], type]:
+def output_replaced(port: str, value: Callable[[object], int]) -> Callable[[type], type]:
     """``port`` shows ``value(model)`` instead of the documented bit."""
 
     def factory(base: type) -> type:
@@ -4103,8 +4184,10 @@ def _output_replaced(port: str, value: Callable[[object], int]) -> Callable[[typ
     return factory
 
 
-def _clock_edge_with_ce(ce: int | None) -> Callable[[type], type]:
+def clock_edge_with_ce(ce: int) -> Callable[[type], type]:
     """CE forced to ``ce`` on every edge (0: never shifts; 1: ignores CE)."""
+    if ce not in (0, 1):
+        raise ValueError(f"CE must be 0 or 1, not {ce!r}")
 
     def factory(base: type) -> type:
         class ForcedCe(base):
@@ -4119,7 +4202,7 @@ def _clock_edge_with_ce(ce: int | None) -> Callable[[type], type]:
     return factory
 
 
-def _init_ignored(base: type) -> type:
+def init_ignored(base: type) -> type:
     """The start-up contents are all zeros whatever INIT says (C6)."""
 
     class InitIgnored(base):
@@ -4130,7 +4213,7 @@ def _init_ignored(base: type) -> type:
     return InitIgnored
 
 
-def _inversion_ignored(base: type) -> type:
+def inversion_ignored(base: type) -> type:
     """IS_CLK_INVERTED has no effect: the rising edge is always active (C7)."""
 
     class InversionIgnored(base):
@@ -4141,6 +4224,16 @@ def _inversion_ignored(base: type) -> type:
     return InversionIgnored
 
 
+def both_edges(base: type) -> type:
+    """CLK shifts on every edge, the inactive one as well."""
+
+    class BothEdges(base):
+        def clock_edge(self, port: str, rising: bool) -> None:
+            super().clock_edge(port, not bool(self.inv_clk))
+
+    return BothEdges
+
+
 def mutants(prim: str) -> dict[str, unitkit.Mutant]:
     """{claim id: its Mutant} for ``prim``: every claim a vector test credits. CFGLUT5's
     C3, C4, C5 and C7 are event claims (a shift, a hold, a cascade, an edge): every
@@ -4148,24 +4241,26 @@ def mutants(prim: str) -> dict[str, unitkit.Mutant]:
     M = unitkit.Mutant
     if prim == "CFGLUT5":
         return {
-            "CFGLUT5.C1": M(_output_replaced("O6", lambda m: 0)),  # O6 ignores the contents
-            "CFGLUT5.C2": M(_output_replaced("O5", lambda m: 0)),  # O5 ignores the contents
-            "CFGLUT5.C3": M(_clock_edge_with_ce(0), event=True),  # never shifts
-            "CFGLUT5.C4": M(_clock_edge_with_ce(1), event=True),  # ignores CE
+            "CFGLUT5.C1": M(output_replaced("O6", lambda m: 0)),  # O6 ignores the contents
+            "CFGLUT5.C2": M(output_replaced("O5", lambda m: 0)),  # O5 ignores the contents
+            "CFGLUT5.C3": M(clock_edge_with_ce(0), event=True),  # never shifts
+            "CFGLUT5.C4": M(clock_edge_with_ce(1), event=True),  # ignores CE
             # CDO stuck at the power-on value
-            "CFGLUT5.C5": M(_output_replaced("CDO", lambda m: (m.init >> 31) & 1), event=True),
-            "CFGLUT5.C6": M(_init_ignored),
-            "CFGLUT5.C7": M(_inversion_ignored, event=True),
+            "CFGLUT5.C5": M(
+                output_replaced("CDO", lambda m: (m.init >> (m.WIDTH - 1)) & 1), event=True
+            ),
+            "CFGLUT5.C6": M(init_ignored),
+            "CFGLUT5.C7": M(inversion_ignored, event=True),
         }
     if prim == "LUT6_2":
-        upper = M(_output_replaced("O5", lambda m: (m.init >> (32 + m._address(5))) & 1))
+        upper = output_replaced("O5", lambda m: (m.init >> (32 + m._address(5))) & 1)
         return {
-            "LUT6_2.C1": M(_output_replaced("O6", lambda m: (m.init >> (m._address(6) ^ 1)) & 1)),
-            "LUT6_2.C2": upper,  # O5 reads the upper 32 bits
-            "LUT6_2.C3": M(_default_ones),
-            "LUT6_2.C4": upper,  # the p509 example's 5-input OR on O5 breaks with it
+            "LUT6_2.C1": M(output_replaced("O6", lambda m: (m.init >> (m._address(6) ^ 1)) & 1)),
+            "LUT6_2.C2": M(upper),  # O5 reads the upper 32 bits
+            "LUT6_2.C3": M(default_ones),
+            "LUT6_2.C4": M(example_misread),  # only the p509 example INIT is misread
         }
-    return {f"{prim}.C1": M(_address_flipped), f"{prim}.C2": M(_default_ones)}
+    return {f"{prim}.C1": M(address_flipped), f"{prim}.C2": M(default_ones)}
 
 
 UNIT = unitkit.Unit(
@@ -4183,34 +4278,44 @@ UNIT = unitkit.Unit(
 def main(prims: list[str]) -> None:
     for prim in prims or list(KINDS):
         d = GROUP_DIR / prim
-        for rel, text in render(prim).items():
+        files = render(prim)
+        for rel, text in files.items():
             path = d / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text)
-        print(f"wrote {len(render(prim))} files under {d.relative_to(ROOT)}")
+        print(f"wrote {len(files)} files under {d.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
     main(sys.argv[1:])
 ```
 
-`luts_tests.mutants(prim)` is the unit's mutant table for `UnitGuards`' failing-mutant guard (ruling S55), one `unitkit.Mutant` per claim a vector test credits, CFGLUT5's C3, C4, C5 and C7 marked `event=True` (ruling S55a: every configuration crediting them must catch the mutant): LUTn C1 reads the neighbouring address (a bit-order mutant), C2 reads an unset INIT as all ones; LUT6_2 C1 likewise on O6, C2 and C4 read O5 from the upper 32 bits, C3 is the all-ones default; CFGLUT5 C1/C2 pin O6/O5 to 0, C3 never shifts (CE forced Low), C4 ignores CE (CE forced High), C5 holds CDO at INIT[31], C6 ignores INIT, C7 ignores `IS_CLK_INVERTED`.
+`luts_tests.mutants(prim)` is the unit's mutant table for `UnitGuards`' failing-mutant guard (ruling S55), one `unitkit.Mutant` per claim a vector test credits, CFGLUT5's C3, C4, C5 and C7 marked `event=True` (ruling S55a: every configuration crediting them must catch the mutant): LUTn C1 reads the neighbouring address (a bit-order mutant), C2 reads an unset INIT as all ones; LUT6_2 C1 likewise on O6, C2 reads O5 from the upper 32 bits, C3 is the all-ones default, C4 misreads only the p509 example INIT (as …FFFC), so it breaks C4 alone; CFGLUT5 C1/C2 pin O6/O5 to 0, C3 never shifts (CE forced Low), C4 ignores CE (CE forced High), C5 holds CDO at INIT's top bit, C6 ignores INIT, C7 ignores `IS_CLK_INVERTED`.
 
-- [ ] **Step 3: Write the guards** `tests/7series/clb/_shared/luts/test_luts_tests.py`: `unitkit`'s set (the failing-mutant guard included), plus the unit's own checks (CFGLUT5 never declares Verilator; the both-edges and wrong-edge mutants fail documented bits of `L1.edge_polarity`, ruling S53, correctness review M3; the reversed INIT order, a second bit-order mutant, fails a C1-crediting configuration of every LUTn and LUT6_2, ruling S55):
+- [ ] **Step 3: Write the guards** `tests/7series/clb/_shared/luts/test_luts_tests.py`: `unitkit`'s set (the failing-mutant guard included), plus the unit's own checks (CFGLUT5 never declares Verilator; the both-edges and wrong-edge mutants fail documented bits of `L1.edge_polarity`, counted by `unitkit.doc_mismatches`, ruling S53, correctness review M3; the reversed INIT order, a second bit-order mutant, fails a C1-crediting configuration of every LUTn and LUT6_2, ruling S55). Every mutant factory lives in `luts_tests.py`'s mutant section; this file imports them and copies no replay code:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
 """The luts unit's guards: xut.unitkit's set, plus the unit's own invariants."""
 
-import zlib
-
 import pytest
-from luts_recipes import KINDS, generators
-from luts_tests import UNIT
+from luts_recipes import KINDS
+from luts_tests import (
+    FAMILY,
+    ROOT,
+    UNIT,
+    both_edges,
+    init_reversed,
+    inversion_ignored,
+)
 from luts_tests import tests_for as _tests_for  # aliased: pytest would collect "tests_for"
 
-from xut.unitkit import UnitGuards, mutant_fails
+from xut import unitkit
+from xut.testspec import TestCase
+from xut.unitkit import UnitGuards
 from xut_models.registry import get
+
+_CFGLUT5 = get(FAMILY, "CFGLUT5")
 
 
 class TestLutsUnit(UnitGuards):
@@ -4223,74 +4328,31 @@ def test_cfglut5_never_declares_verilator():
         assert "ruling S28" in e["unsupported_reasons"]["verilator"], e["id"]
 
 
-def _edge_polarity_mismatches(model_cls: type) -> int:
-    """Documented (doc:) bits on which ``model_cls`` disagrees with the golden model over
-    every configuration of CFGLUT5's L1.edge_polarity."""
-    from xut.golden import replay
-    from xut.stimgen import GenContext
-    from xut.wrap import build_map
-
-    golden = _CFGLUT5
-    test_id = "7series.CFGLUT5.L1.edge_polarity"
-    ctx = GenContext("7series", "CFGLUT5", zlib.crc32(test_id.encode()), UNIT.root)
-    bad = 0
-    for vec in generators("CFGLUT5")["l1_edge_polarity"](ctx):
-        m = build_map(ctx.specs[vec.cfg])
-        want, _ = replay(golden, vec, m)
-        got, _ = replay(model_cls, vec, m)
-        for label, ports in want.samples.items():
-            for port, bits in ports.items():
-                if want.prov[label][port].startswith("doc:") and got.samples[label][port] != bits:
-                    bad += 1
-    return bad
+def _vector_cases(prim: str) -> list[TestCase]:
+    return [c for c in unitkit.cases(ROOT, FAMILY, prim) if c.style == "vector"]
 
 
-_CFGLUT5 = get("7series", "CFGLUT5")
+def _edge_polarity() -> TestCase:
+    return next(c for c in _vector_cases("CFGLUT5") if c.id.endswith(".L1.edge_polarity"))
 
 
-class _BothEdges(_CFGLUT5):
-    """A simulator that shifts on every CLK edge."""
-
-    def clock_edge(self, port, rising):
-        super().clock_edge(port, not bool(self.inv_clk))
-
-
-class _IgnoresInversion(_CFGLUT5):
-    """A simulator that ignores IS_CLK_INVERTED."""
-
-    def __init__(self, attrs):
-        super().__init__(attrs)
-        self.inv_clk = 0
-
-
-@pytest.mark.parametrize("mutant", [_BothEdges, _IgnoresInversion])
-def test_edge_mutants_fail_documented_bits(mutant):
+@pytest.mark.parametrize("factory", [both_edges, inversion_ignored])
+def test_edge_mutants_fail_documented_bits(factory):
     """Correctness review M3: L1.edge_polarity catches these on doc: bits, so a wrong-edge
     simulator is a doc-vs-model finding, not folded into the bit-order doc-gap."""
-    assert _edge_polarity_mismatches(mutant) > 0
+    assert unitkit.doc_mismatches(_edge_polarity(), ROOT, factory(_CFGLUT5)) > 0
 
 
 def test_the_golden_model_agrees_with_itself():
-    assert _edge_polarity_mismatches(_CFGLUT5) == 0
-
-
-def _init_reversed(base: type) -> type:
-    """INIT read end to end, bit 2^n - 1 - a for address a: the other bit order (C1)."""
-
-    class InitReversed(base):
-        def _address(self, n: int) -> int:
-            return super()._address(n) ^ ((1 << n) - 1)
-
-    return InitReversed
+    assert unitkit.doc_mismatches(_edge_polarity(), ROOT, _CFGLUT5) == 0
 
 
 @pytest.mark.parametrize("prim", [p for p in KINDS if not KINDS[p].reconfig])
 def test_the_reversed_init_order_fails_a_c1_crediting_configuration(prim):
     """Ruling S55, the LUT INIT bit-order mutants: the unit's C1 mutant (neighbouring
     addresses swapped) is in UnitGuards; the reversed order must be caught as well."""
-    mutant = _init_reversed(get("7series", prim))
-    vector = [c for c in TestLutsUnit()._cases(prim) if c.style == "vector"]
-    assert any(mutant_fails(c, UNIT.root, f"{prim}.C1", mutant) for c in vector)
+    mutant = init_reversed(get(FAMILY, prim))
+    assert any(unitkit.mutant_fails(c, ROOT, f"{prim}.C1", mutant) for c in _vector_cases(prim))
 ```
 
 - [ ] **Step 4: Generate and check** (Task A3, Steps 2–3). Expected:
