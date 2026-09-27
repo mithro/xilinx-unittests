@@ -36,7 +36,7 @@
 **Prerequisites:** the step-2 PRs are merged into `main`: A (#4), B (#6), D (#7), the xvec-strings PR (#8), **C** (`infra/verilatorize`: the verilator runner and `xut.runners.sim`) and **E** (`unit/7series/flops`: the FDRE/FDSE/FDCE/FDPE models and tests). This plan consumes:
 
 - `xut.formats.xvec`: `Vec`, `Event`, `load`, `check_structure`; `xut.formats.xtr`: `Trace`, `load`, `dump`, `compare`, `diff`, `XtrError`;
-- `xut.validate.validate` (`Report.errors`, `.hw_reasons`), `xut.stimcompile` (`StimCompileError`, `_check_fits`, `raw_to_trace`), `xut.stimgen.VecBuilder`;
+- `xut.validate.validate` (`Report.errors`, `.hw_reasons`), `xut.stimcompile` (`StimCompileError`, `_check_fits` (made public as `check_fits` in Task 2), `raw_to_trace`), `xut.stimgen.VecBuilder`;
 - `xut.wrap`: `DutMap`, `spec_from_catalog`, `build_map`, `write_dut`; `xut.catalog.model.load_entry`;
 - `xut.golden.replay`; `xut_models.base.Model`/`Out`; `xut_models.registry.get`;
 - `xut.runners.base`: `Runner`, `RunContext`, `RunResult`, `ConfigResult`, `workdir`, `python_dir`, `load_generated`, `expected_trace`, `NoExpectedTrace`, `sha256_file`, `error_reason`;
@@ -52,7 +52,7 @@
 ```bash
 cd /home/tim/github/f4pga/xilinx-unittests && git fetch origin && git checkout main && git pull --ff-only
 mkdir -p .cache
-uv run python -c "from xut.runners.sim import vector_check; from xut.runners.verilator import VerilatorRunner; from xut.runners.xsim import render_script, run_script; from xut.stimcompile import _check_fits, raw_to_trace; from xut.crosscheck import classify; from xut.slots import vivado_slot; from xut_models.registry import get; print('step-2 interfaces OK', get('7series','FDRE').PRIM)" > .cache/step3-step0.log 2>&1
+uv run python -c "from xut.runners.sim import vector_check; from xut.runners.verilator import VerilatorRunner; from xut.runners.xsim import render_script, run_script; from xut.stimcompile import raw_to_trace; from xut.crosscheck import classify; from xut.slots import vivado_slot; from xut_models.registry import get; print('step-2 interfaces OK', get('7series','FDRE').PRIM)" > .cache/step3-step0.log 2>&1
 ls tests/7series/register/FDRE/test.yaml tests/7series/register/_shared/flops/flop_tests.py >> .cache/step3-step0.log 2>&1
 grep -n "revision 3.6" docs/superpowers/specs/2026-09-25-xilinx-primitive-test-suite-design.md >> .cache/step3-step0.log 2>&1
 cat .cache/step3-step0.log
@@ -153,7 +153,7 @@ tools/xut/hw/vivado.py           build inputs, build key and ID, batch build, bi
 tools/xut/hw/rigs.py             Rig / RigsConfig from hw/rigs.yaml, ssh_config rendering
 tools/xut/hw/session.py          Transport, SshTransport, HwJob, JobResult, BoardSession, SshBoardSession
 tools/xut/hw/pool.py             BoardPool, run_job (retry once, self-test, bad boards)
-tools/xut/hw/fake.py             FakeTransport, FakeBuilder (tests and `--fake` dry runs)
+tools/xut/hw/fake.py             FakeTransport, FakeBuilder: the fake rig and builder the tests use
 tools/xut/hw/smoke.py            LUT6 smoke design, Lut6Sim; `xut hw smoke`
 tools/xut/runners/hw.py          HwRunner
 tools/xut/hdl/hw/xut_hw_top.sv   board top: sysclk BUFG, power-on reset, ctrl + slots
@@ -633,7 +633,7 @@ git commit -m "hw: harness UART protocol, message templates and generated messag
 
 **Files:**
 - Create: `tools/xut/hw/image.py`, `tools/xut/hw/compile.py`, `tools/tests/test_hw_image.py`, `tools/tests/test_hw_compile.py`
-- Modify: `tools/xut/stimcompile.py` (`_check_fits` becomes the public `check_fits`; the old name stays as an alias for one release)
+- Modify: `tools/xut/stimcompile.py` (`_check_fits` becomes the public `check_fits`, which returns the `validate` report it computed)
 
 **Interfaces:**
 - Produces (`xut.hw.image`, standard library only):
@@ -806,7 +806,7 @@ def test_expect_reject_is_unrenderable():
 
 Run both files; expected: `No module named 'xut.hw.image'`.
 
-- [ ] **Step 2: Make `check_fits` public.** In `tools/xut/stimcompile.py`, rename `_check_fits` to `check_fits`, update its callers in the module, and add `_check_fits = check_fits  # step-2 name; remove in step 4`. Its docstring: "Structure, sizes, primitive/configuration and `validate` errors (ruling S11): the checks every compiler of an `.xvec` applies."
+- [ ] **Step 2: Make `check_fits` public.** In `tools/xut/stimcompile.py`, rename `_check_fits` to `check_fits` (stimcompile is its only caller; no alias), have it return the `Report` that its `validate` call computes (`-> Report`), and update its callers in the module. Its docstring: "Structure, sizes, primitive/configuration and `validate` errors (ruling S11): the checks every compiler of an `.xvec` applies."
 
 - [ ] **Step 3: Implement `tools/xut/hw/image.py`**
 
@@ -836,14 +836,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 OP_SET, OP_COMMIT, OP_EDGE, OP_WAIT, OP_SAMPLE, OP_END = 0x1, 0x2, 0x3, 0x4, 0x5, 0xF
-OP_NAMES = {
-    OP_SET: "SET",
-    OP_COMMIT: "COMMIT",
-    OP_EDGE: "EDGE",
-    OP_WAIT: "WAIT",
-    OP_SAMPLE: "SAMPLE",
-    OP_END: "END",
-}
 CHUNK = 16
 MAX_CHUNKS = 1 << 12
 MAX_CLOCKS = 1 << 12
@@ -999,7 +991,6 @@ from xut.errors import XutError
 from xut.formats.xvec import Vec
 from xut.hw.image import MAXWORDS, HwImageError, HwProgram, ImageBuilder, width
 from xut.stimcompile import StimCompileError, check_fits
-from xut.validate import validate
 from xut.wrap import DutMap
 
 REJECT_REASON = (
@@ -1031,10 +1022,9 @@ def compile_program(vec: Vec, m: DutMap, maxwords: int = MAXWORDS) -> HwProgram:
     if vec.expect == "reject":  # first: whatever else is wrong, it never reaches hardware
         raise HwUnrenderable(REJECT_REASON)
     try:
-        check_fits(vec, m)
+        report = check_fits(vec, m)  # structure, sizes and `validate`, run once
     except StimCompileError as e:
         raise HwCompileError(str(e)) from e
-    report = validate(vec, m)
     if report.hw_reasons:
         raise HwUnrenderable("; ".join(report.hw_reasons))
     t0 = t0_bits(vec, m)
@@ -1740,6 +1730,7 @@ from collections.abc import Mapping
 from xut.errors import XutError
 from xut.formats.xtr import Trace
 from xut.formats.xvec import Vec
+from xut.hw import proto
 from xut.hw.compile import compile_program
 from xut.hw.image import width
 from xut.hw.interp import run_program
@@ -1824,8 +1815,9 @@ def hw_replay(model_cls: type[Model], vec: Vec, m: DutMap) -> Trace:
     dut = ModelDut(model_cls, vec.attrs, m)
     dut.reset(prog.t0)
     out = run_program(prog.words, prog.nin, prog.nclk, dut, prog.t0)
-    if out.status != 0:
-        raise SampleError(f"{vec.prim}/{vec.cfg}: program ended with status {out.status}")
+    if out.status != proto.STATUS_CODE["ok"]:
+        st = proto.STATUS.get(out.status, out.status)
+        raise SampleError(f"{vec.prim}/{vec.cfg}: program ended with status {st}")
     header = {"runner": "hw-replay", "flow": "rtl", "model": "golden", "seed": str(vec.seed)}
     return samples_to_trace(out.samples, prog.labels, m, header, kind="expected")
 ```
@@ -2845,11 +2837,13 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
 
 **Files:**
 - Create: `tools/xut/scope.py`, `tools/tests/test_scope.py`, `tools/xut/hdl/hw/xut_hw_tb.sv`, `tools/xut/hw/steps.py`, `tools/xut/hw/hwsim.py`, `tools/tests/test_hw_rtl.py`
+- Modify: `tools/xut/runners/xsim.py` (`run_script` and `xsim_version` use `xut.scope.run_in_group` and `cached_version`: one copy of each)
 
 **Interfaces:**
 - Produces (`xut.scope`; here, not in PR B, because `xut hw sim` needs it first):
   - `scope_argv(argv, what, memory_max) -> list[str]`
   - `scoped_run(argv, *, what, memory_max, cwd, log, timeout_s) -> int`, which raises `ScopeError` when `systemd-run` is missing and `RunTimeout` on a timeout
+  - `run_in_group(argv, *, cwd, log, timeout_s, mode="a") -> int` (a process group with a timeout: the one copy) and `cached_version(key, probe) -> str` (the one per-process version cache)
   - `VIVADO_MEMORY_MAX = "16G"`, `OOM_RCS = (137, -9)`
 - Consumes: `xut.slots.vivado_slot()` (PR #10, ruling S50 CQ2): a context manager that takes one of `XUT_VIVADO_SLOTS` (default 4) flock files `$XDG_RUNTIME_DIR/xut-vivado/slot{N}.lock`, with a non-blocking scan and then a wait. This plan has no slot mechanism of its own.
 - Produces (`xut.hw.hwsim`):
@@ -2963,9 +2957,10 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from xut.container import RunTimeout
@@ -3014,21 +3009,55 @@ def scoped_run(
             "systemd-run not found: heavy commands run only in a capped scope "
             "(AGENTS.md §10.1); refusing to run unscoped"
         )
-    with Path(log).open("a") as f:
+    return run_in_group(scope_argv(argv, what, memory_max), cwd=cwd, log=log, timeout_s=timeout_s)
+
+
+def run_in_group(
+    argv: Sequence[str], *, cwd: Path, log: Path, timeout_s: int, mode: str = "a"
+) -> int:
+    """``argv`` in its own process group, stdout and stderr to ``log`` (opened with
+    ``mode``); its exit code. On a timeout the whole group is killed (the tools a script
+    starts too) and ``RunTimeout`` is raised. The one implementation: ``scoped_run`` and
+    ``xut.runners.xsim.run_script`` both use it."""
+    with Path(log).open(mode) as f:
         p = subprocess.Popen(
-            scope_argv(argv, what, memory_max),
-            cwd=cwd,
-            stdout=f,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+            argv, cwd=cwd, stdout=f, stderr=subprocess.STDOUT, start_new_session=True
         )
         try:
             return p.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired as e:
             os.killpg(p.pid, signal.SIGKILL)
             p.wait(timeout=_KILL_GRACE_S)
-            raise RunTimeout(f"timeout after {timeout_s}s: {what}") from e
+            raise RunTimeout(f"timeout after {timeout_s}s: {' '.join(argv[:3])}") from e
+
+
+_VERSIONS: dict[str, str] = {}
+_VERSIONS_LOCK = threading.Lock()
+
+
+def cached_version(key: str, probe: Callable[[], str]) -> str:
+    """``probe()`` once per process per ``key`` (a tool's version line). The one cache:
+    ``xut.runners.xsim.xsim_version`` and ``xut.hw.vivado.VivadoBuilder.version`` use it."""
+    with _VERSIONS_LOCK:
+        if key not in _VERSIONS:
+            _VERSIONS[key] = probe()
+        return _VERSIONS[key]
 ```
+
+Then make `tools/xut/runners/xsim.py` use them instead of its own copies (its step-2 tests must pass unchanged):
+
+```python
+def run_script(cd: Path, timeout_s: int) -> int:
+    """``bash xsim.sh > run.log 2>&1`` in ``cd``, in its own process group; its exit code."""
+    return run_in_group(["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w")
+
+
+def xsim_version(scratch: Path) -> str:
+    """First line of ``xsim -version`` (sourced in a subshell), once per process."""
+    return cached_version("xsim", lambda: _probe_xsim_version(scratch))
+```
+
+where `_probe_xsim_version` is the old body of `xsim_version` without its `_VERSION`/`_VERSION_LOCK` cache (both are deleted), and `from xut.scope import cached_version, run_in_group` joins the imports.
 
 - [ ] **Step 3: Write the testbench** — `tools/xut/hdl/hw/xut_hw_tb.sv`:
 
@@ -3047,7 +3076,7 @@ def scoped_run(
 `include "xut_hw_cfg.vh"
 `include "host.vh"
 module xut_hw_tb;
-  localparam integer CPB = 4;
+  localparam integer CPB = `XUT_HW_TB_CPB;          // hwsim.CPB, via host.vh
   localparam integer MARGIN = `XUT_HW_MARGIN;
   localparam integer NHOST = `XUT_HOST_WORDS;
   reg clk = 1'b0;
@@ -3426,6 +3455,7 @@ def simulate(
     (workdir / "host.memh").write_text(memh)
     (workdir / "host.vh").write_text(
         f"// SPDX-License-Identifier: Apache-2.0\n`define XUT_HOST_WORDS {n}\n"
+        f"`define XUT_HW_TB_CPB {CPB}\n"
     )
     files = [*HW_SOURCES, "xut_hw_slots.v", *(Path(f).name for f in extra_files), TB]
     if sim == "iverilog":
@@ -3456,7 +3486,7 @@ Expected: `test_rtl_matches_the_emulator_byte_for_byte[iverilog]` and `[xsim]` p
 
 ```bash
 uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/scope.py tools/tests/test_scope.py tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/steps.py tools/xut/hw/hwsim.py tools/tests/test_hw_rtl.py
+git add tools/xut/scope.py tools/xut/runners/xsim.py tools/tests/test_scope.py tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/steps.py tools/xut/hw/hwsim.py tools/tests/test_hw_rtl.py
 git commit -m "hw: capped scopes; simulate the harness on Icarus and xsim, byte-exact against the emulator" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -3982,6 +4012,7 @@ from pathlib import Path
 import pytest
 from hw_toy import toy_map, toy_spec
 
+from xut import scope
 from xut.hw import vivado
 from xut.hw.slots import SELFTEST_SLOTS, dut_slot
 from xut.wrap import render_wrapper
@@ -4054,7 +4085,7 @@ def test_every_vivado_run_takes_a_host_wide_slot(tmp_path, monkeypatch):
 
     monkeypatch.setattr(vivado, "vivado_slot", slot)
     monkeypatch.setattr(vivado, "scoped_run", fake_run)
-    monkeypatch.setattr(vivado, "_VERSION", {})
+    monkeypatch.setattr(scope, "_VERSIONS", {})
     assert vivado.VivadoBuilder(tmp_path).version() == "vivado v2025.2 (64-bit)"
     with pytest.raises(vivado.BuildError):  # the fake "build" writes no bitstream
         vivado.VivadoBuilder(tmp_path).ensure(_slots())
@@ -4152,7 +4183,6 @@ import json
 import os
 import re
 import shlex
-import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -4172,7 +4202,7 @@ from xut.hw.slots import (
     timing_tcl,
 )
 from xut.paths import VIVADO_SETTINGS, repo_root
-from xut.scope import OOM_RCS, VIVADO_MEMORY_MAX, scoped_run
+from xut.scope import OOM_RCS, VIVADO_MEMORY_MAX, cached_version, scoped_run
 from xut.slots import vivado_slot
 from xut.wrap import WrapError, literal_value
 
@@ -4565,10 +4595,6 @@ class Builder(Protocol):
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream: ...
 
 
-_VERSION: dict[str, str] = {}
-_VERSION_LOCK = threading.Lock()
-
-
 class VivadoBuilder:
     """Builds in this worktree's cache (``.cache/hw``), bounded by the host-wide slots."""
 
@@ -4576,12 +4602,13 @@ class VivadoBuilder:
         self.cache_root = cache_root or Path(root) / ".cache" / "hw"
 
     def version(self) -> str:
-        """``vivado -version``, run once per process, under a slot."""
-        with _VERSION_LOCK:
-            if "vivado" not in _VERSION:
-                with vivado_slot():
-                    _VERSION["vivado"] = vivado_version(self.cache_root / "scratch")
-            return _VERSION["vivado"]
+        """``vivado -version``, run once per process (``cached_version``), under a slot."""
+
+        def probe() -> str:
+            with vivado_slot():
+                return vivado_version(self.cache_root / "scratch")
+
+        return cached_version("vivado", probe)
 
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream:
         return ensure_bitstream(slots, cache_root=self.cache_root, vivado=self.version())
@@ -5600,14 +5627,25 @@ def test_ssh_config(tmp_path):
     ],
 )
 def test_invalid_configs(tmp_path, bad, match):
-    base = (
+    (tmp_path / "r.yaml").write_text(_base() + bad + "\n")
+    with pytest.raises(RigsError, match=match):
+        load_rigs(tmp_path / "r.yaml")
+
+
+def _base(key: str = "identity_file: /keys/xut,") -> str:
+    return (
         "format: xut-rigs 1\n"
-        "defaults: {jump: tweed, uart: /dev/ttyUSB1, baud: 115200, lock: /run/lock/fpga.lock,\n"
-        "           lock_ttl_s: 900, lock_wait_s: 600, site: s, board: arty_a7_35t}\n"
+        f"defaults: {{{key} jump: tweed, uart: /dev/ttyUSB1, baud: 115200,\n"
+        "           lock: /run/lock/fpga.lock, lock_ttl_s: 900, lock_wait_s: 600, site: s,\n"
+        "           board: arty_a7_35t}\n"
         "jumps: {tweed: {host: j}}\n"
     )
-    (tmp_path / "r.yaml").write_text(base + bad + "\n")
-    with pytest.raises(RigsError, match=match):
+
+
+def test_a_rig_without_a_key_is_a_config_error(tmp_path):
+    """No fallback to a user key (~/.ssh/id_ed25519 or any other)."""
+    (tmp_path / "r.yaml").write_text(_base(key="") + "rigs: [{name: a, host: h}]\n")
+    with pytest.raises(RigsError, match="no identity_file"):
         load_rigs(tmp_path / "r.yaml")
 ```
 
@@ -5714,14 +5752,22 @@ def load_rigs(path: Path) -> RigsConfig:
     except jsonschema.ValidationError as e:
         raise RigsError(f"{path}: {e.json_path}: {e.message}") from e
     d = data["defaults"]
-    key = Path(d.get("identity_file", "~/.ssh/id_ed25519")).expanduser()
+
+    def key_of(where: str, entry: dict) -> Path:
+        """The entry's own ``identity_file``, else the defaults'. There is no user-key
+        fallback: a rig or jump without a key is a config error."""
+        k = entry.get("identity_file", d.get("identity_file"))
+        if not k:
+            raise RigsError(f"{path}: {where} has no identity_file (and defaults set none)")
+        return Path(k).expanduser()
+
     jumps = {
         n: Jump(
-            n,
-            j["host"],
-            Path(j.get("identity_file", key)).expanduser(),
-            j.get("user"),
-            j.get("port", 22),
+            name=n,
+            host=j["host"],
+            identity_file=key_of(f"jump {n}", j),
+            user=j.get("user"),
+            port=j.get("port", 22),
         )
         for n, j in data["jumps"].items()
     }
@@ -5742,22 +5788,22 @@ def load_rigs(path: Path) -> RigsConfig:
             raise RigsError(f"{path}: rig {r['name']} lacks {missing} (set them in defaults)")
         rigs.append(
             Rig(
-                r["name"],
-                r["host"],
-                r["jump"],
-                r["board"],
-                r["uart"],
-                r["baud"],
-                r["lock"],
-                r["lock_ttl_s"],
-                r["lock_wait_s"],
-                r["site"],
-                Path(r.get("identity_file", key)).expanduser(),
-                r.get("user"),
-                r.get("port", 22),
-                r.get("enabled", True),
-                r.get("reason", ""),
-                r.get("reboot_command"),
+                name=r["name"],
+                host=r["host"],
+                jump=r["jump"],
+                board=r["board"],
+                uart=r["uart"],
+                baud=r["baud"],
+                lock=r["lock"],
+                lock_ttl_s=r["lock_ttl_s"],
+                lock_wait_s=r["lock_wait_s"],
+                site=r["site"],
+                identity_file=key_of(f"rig {r['name']}", raw),
+                user=r.get("user"),
+                port=r.get("port", 22),
+                enabled=r.get("enabled", True),
+                reason=r.get("reason", ""),
+                reboot_command=r.get("reboot_command"),
             )
         )
     return RigsConfig(path, tuple(rigs), jumps)
@@ -6338,6 +6384,8 @@ class SshBoardSession:
                 + ("programming failed" if rc == RC_PROGRAM else "no UART device")
                 + f" (rc {rc}; see {got})"
             )
+        if rc in RC_TTL:
+            raise TransportError(f"{rig.name}: the job outlived its TTL (rc {rc}; see {got})")
         if rc != 0:
             raise TransportError(f"{rig.name}: the job failed (rc {rc}; see {log} and {got})")
         if got_rc != 0 or not (got / "resp.json").is_file():
@@ -7810,8 +7858,9 @@ def smoke_layout(
     progs = selftest_programs()
     exp = {s: expected_samples(s) for s in progs}
     for k, s in enumerate(ss):
-        progs[2 + k] = s.prog
-        exp[2 + k] = _expected(s)
+        slot = len(SELFTEST_SLOTS) + k  # the DUT slots follow the self-test slots
+        progs[slot] = s.prog
+        exp[slot] = _expected(s)
     return slots, progs, exp
 
 
