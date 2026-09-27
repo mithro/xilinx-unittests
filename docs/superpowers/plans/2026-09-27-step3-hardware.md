@@ -41,7 +41,7 @@
 - `xut.golden.replay`; `xut_models.base.Model`/`Out`; `xut_models.registry.get`;
 - `xut.runners.base`: `Runner`, `RunContext`, `RunResult`, `ConfigResult`, `workdir`, `python_dir`, `load_generated`, `expected_trace`, `NoExpectedTrace`, `sha256_file`, `error_reason`;
 - `xut.runners.xsim`: `render_script`, `run_script`, `settings_available`, `xsim_version`, `LIBRARY_PATH_GUARD`;
-- `xut.container`: `executor_for`, `RunTimeout`, and PR #10's `max_jobs`, `size_bytes`, `BUDGET_ENV`, `DEFAULT_BUDGET` (the container memory budget); `xut.modelsrc.resolve`;
+- `xut.container`: `executor_for`, `RunTimeout`, and PR #10's `size_bytes`, `container_memory`, `MEMORY_ENV`, `BUDGET_ENV`, `DEFAULT_BUDGET` (the memory budget and the container cap); `xut.modelsrc.resolve`;
 - `xut.slots.vivado_slot` (PR #10, ruling S50 CQ2): the host-wide Vivado/xsim slot every Vivado or xsim invocation in this plan takes;
 - `xut.testspec`: `TestCase`, `declared`, `exclusions_for`, `runner_flows`; `xut.run.run_tests`; `xut.crosscheck` (reads `result.json` `hw.selftest`, `hw.repeats`, `hw.repeats_differ`);
 - `xut.doctor`: `Check`, `Probe`, `run_checks`, `_safe`;
@@ -2853,7 +2853,7 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
   - `session_steps(programs: dict[int, HwProgram]) -> list[Step]`: `I`, then per slot in order `L` (1 line) and `R` (`RUN_FRAME_LINES + len(labels)` lines)
   - `split_replies(data, steps) -> list[bytes]`, `slot_replies(replies, slots) -> dict[int, tuple[bytes, bytes]]` (the one owner of the reply indexing), `run_replies(replies, slots) -> dict[int, RunReply]`
   - `simulate(slots, steps, sim, workdir, *, model_source, work_root, extra_files=(), maxwords=MAXWORDS, margin=MARGIN, timeout_s=1800) -> SimResult` with `SimResult(tx: bytes, replies: list[bytes], log: Path, margin_violations: list[str])`
-  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit, passed to it through `host.vh`), `HW_SIM_MEMORY_MAX = "16G"`, `max_sim_jobs(sim) -> int` (PR #10's `container.max_jobs()` for Icarus; the budget // 16G, 6, for xsim), `HwSimError`
+  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit, passed to it through `host.vh`), `HW_SIM_MEMORY_MAX = "16G"`, `max_sim_jobs(sim) -> int` (the budget minus the command's own 16G scope, divided by the per-job cap: 21 Icarus containers at 4g; for xsim also at most the Vivado slot count: 4), `HwSimError`
 
 Every xsim run goes through `scoped_run` at `HW_SIM_MEMORY_MAX` (Global Constraints: one cap value) **inside `vivado_slot()`**, like every Vivado run; Icarus runs in the 4g-capped container.
 
@@ -3247,8 +3247,11 @@ def test_hw_sim_jobs_are_capped_by_the_budget(monkeypatch):
 
     monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
     monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
-    assert hwsim.max_sim_jobs("xsim") == 6  # 100g // 16G
-    assert hwsim.max_sim_jobs("iverilog") == 25  # container.max_jobs(): 100g // 4g
+    monkeypatch.delenv("XUT_VIVADO_SLOTS", raising=False)
+    assert hwsim.max_sim_jobs("iverilog") == 21  # (100g - the 16G scope) // 4g
+    assert hwsim.max_sim_jobs("xsim") == 4  # min((100g - 16G) // 16G = 5, 4 slots)
+    monkeypatch.setenv("XUT_VIVADO_SLOTS", "8")
+    assert hwsim.max_sim_jobs("xsim") == 5
 
 
 def test_hw_sim_xsim_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
@@ -3386,14 +3389,26 @@ HW_SIM_MEMORY_MAX = "16G"
 
 
 def max_sim_jobs(sim: str) -> int:
-    """The most parallel simulations the memory budget allows: Icarus jobs are containers,
-    bounded by PR #10's ``container.max_jobs()`` (budget // container cap); xsim jobs are
-    scopes of ``HW_SIM_MEMORY_MAX`` each (budget // 16G: 6 at the default 100g)."""
+    """The most parallel simulations the memory budget allows, after the command's own
+    ``HW_SIM_MEMORY_MAX`` scope is taken out of it. Icarus jobs are containers:
+    (budget - 16G) // the container cap (21 at 100g and 4g). xsim jobs are scopes of
+    ``HW_SIM_MEMORY_MAX`` each, and each holds a Vivado slot: min((budget - 16G) // 16G,
+    the slot count) (min(5, 4) = 4 at the defaults)."""
+    budget = container.size_bytes(
+        os.environ.get(container.BUDGET_ENV, container.DEFAULT_BUDGET), f"${container.BUDGET_ENV}"
+    )
+    scope = container.size_bytes(HW_SIM_MEMORY_MAX.lower(), "HW_SIM_MEMORY_MAX")
+    left = budget - scope
     if sim == "iverilog":
-        return container.max_jobs()[0]
-    budget = os.environ.get(container.BUDGET_ENV, container.DEFAULT_BUDGET)
-    per_job = container.size_bytes(HW_SIM_MEMORY_MAX.lower(), "HW_SIM_MEMORY_MAX")
-    return max(1, container.size_bytes(budget, f"${container.BUDGET_ENV}") // per_job)
+        cap = container.size_bytes(container.container_memory(), f"${container.MEMORY_ENV}")
+        return max(1, left // cap)
+    return max(1, min(left // scope, vivado_slot_count()))
+
+
+def vivado_slot_count() -> int:
+    """PR #10's slot count: ``$XUT_VIVADO_SLOTS``, default 4. (If ``xut.slots`` exposes its
+    own count when it lands, use that instead of re-reading the variable.)"""
+    return int(os.environ.get("XUT_VIVADO_SLOTS", "4"))
 
 
 CPB = 4  # xut_hw_tb.sv's UART clocks per bit
@@ -3883,7 +3898,7 @@ def test_simulated_harness_reproduces_the_golden_trace(sim, test_id, tmp_path):
     type=click.IntRange(min=1),
     default=1,
     show_default=True,
-    help="at most max_sim_jobs(sim): the memory budget / each job's cap",
+    help="at most max_sim_jobs(sim): (budget - this command's 16G) / each job's cap",
 )
 def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: int) -> None:
     """Run vector tests' configurations through the simulated harness (spec §7.1) and
