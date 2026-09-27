@@ -31,7 +31,7 @@
 - Vivado 2025.2 synthesis and implementation (`vivado -mode batch`), always inside a `systemd-run --user --scope` with `MemoryMax=16G`.
 - On each rig's Raspberry Pi: `openFPGALoader`, `flock`, `timeout` (util-linux, coreutils) and `python3` (standard library only). `xut doctor` and `xut hw rigs` check for all four.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-xilinx-primitive-test-suite-design.md` (rev 3.4). Read §§4, 5 (especially 5.1 ruling S8′ and 5.3), 6, 7 (binding for this step), 8, 11, 13, 14, 15 and 16 step 3.
+**Spec:** `docs/superpowers/specs/2026-09-25-xilinx-primitive-test-suite-design.md` (rev 3.6, which this plan's docs PR brings: it records the decisions below and ruling S49). Read §§4, 5 (especially 5.1 ruling S8′ and 5.3), 6, 7 (binding for this step), 8, 11, 13, 14, 15 and 16 step 3.
 
 **Prerequisites:** the step-2 PRs are merged into `main`: A (#4), B (#6), D (#7), the xvec-strings PR (#8), **C** (`infra/verilatorize`: the verilator runner and `xut.runners.sim`) and **E** (`unit/7series/flops`: the FDRE/FDSE/FDCE/FDPE models and tests). This plan consumes:
 
@@ -89,6 +89,7 @@ Expected: `step-2 interfaces OK FDRE`, both paths listed, and the spec's `Status
 - **Generated files** `status/PROGRESS.md`, `status/TODO.md`, `status/LOG.md` and `status/PORTABILITY.md` are never committed on a branch; only the orchestrator regenerates them on `main` (`status: regenerate`).
 - **Coordination.** Before any real-board step, check board availability with the fpgas.online sessions (ten64.welland.mithis.com, desktop.buddy.mithis.com), and confirm the shared lock name they use. Board access (keys on the Pis, the jump-host account) is fpgas-online/fpgas.online-infra#124. Route any infra request there. Never touch a repo outside github.com/mithro or github.com/fpgas-online.
 - **Long runs** follow the global progress-reporting rule: run in the background, log to a file, watch with a Monitor that reads the log's `progress: done=N total=M elapsed_s=E` lines (`xut run`, `xut hw build`, `xut hw sim` all print them), and report the remaining time and the finish clock-time at the stated cadence.
+- **Code in this plan is `ruff format`-clean at line length 100.** Every complete Python module in it was extracted and checked with `ruff format --check` and `ruff check` (E, F, W, I, B, UP, SIM) when the plan was written; fragments that extend an existing file (a CLI command, an import list, a few lines in a function) were checked for line length only. Each lint step runs `ruff format` before `ruff check`; if the formatter still changes something, keep its version: it may differ from the plan's text.
 - Worktrees live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. **One PR per branch, always.**
 
 ### Branches and PRs
@@ -430,9 +431,7 @@ def _pattern(name: str) -> re.Pattern[str]:
     for m in _FIELD.finditer(tpl):
         out.append(re.escape(tpl[pos : m.start()]))
         f = m.group(1)
-        out.append(
-            f"(?P<{f}>[01]+)" if f == "bits" else f"(?P<{f}>[0-9a-f]{{{FIELDS[f][1]}}})"
-        )
+        out.append(f"(?P<{f}>[01]+)" if f == "bits" else f"(?P<{f}>[0-9a-f]{{{FIELDS[f][1]}}})")
         pos = m.end()
     out.append(re.escape(tpl[pos:]))
     return re.compile("".join(out))
@@ -613,7 +612,7 @@ def hw_gen_rtl_cmd() -> None:
 ```bash
 uv run xut hw gen-rtl > .cache/gen-rtl.log 2>&1; cat .cache/gen-rtl.log
 uv run pytest tools/tests/test_hw_proto.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 ```
 
 Expected: `wrote .../xut_hw_msgs.vh`; every test passes; ruff clean.
@@ -695,7 +694,13 @@ def test_edges_samples_and_labels():
     b.sample("b")
     p = b.end()
     assert p.labels == ("a", "b")
-    assert p.words == (image.w_edge(1, 1), image.W_SAMPLE, image.w_edge(1, 0), image.W_SAMPLE, image.W_END)
+    assert p.words == (
+        image.w_edge(1, 1),
+        image.W_SAMPLE,
+        image.w_edge(1, 0),
+        image.W_SAMPLE,
+        image.W_END,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1060,7 +1065,7 @@ def compile_program(vec: Vec, m: DutMap, maxwords: int = MAXWORDS) -> HwProgram:
 
 ```bash
 uv run pytest tools/tests/test_hw_image.py tools/tests/test_hw_compile.py tools/tests/test_stimcompile.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/hw/image.py tools/xut/hw/compile.py tools/xut/stimcompile.py tools/tests/test_hw_image.py tools/tests/test_hw_compile.py
 git commit -m "hw: compile .xvec stimuli into harness program images (order-only rendering, t0 power-on vector)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1599,9 +1604,7 @@ class Harness:
                     self._mem[: self._lwords], s.nin, s.nclk, s.dut, s.t0, margin=self.margin
                 )
                 samples, status = r.samples, r.status
-            body += b"".join(
-                proto.render("sample", sidx=i, bits=b) for i, b in enumerate(samples)
-            )
+            body += b"".join(proto.render("sample", sidx=i, bits=b) for i, b in enumerate(samples))
             out += body + proto.render(
                 "end", slot=self._lslot, samples=len(samples), status=status, crc=zlib.crc32(body)
             )
@@ -1836,7 +1839,7 @@ def hw_replay(model_cls: type[Model], vec: Vec, m: DutMap) -> Trace:
 
 ```bash
 uv run pytest tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/hw/interp.py tools/xut/hw/selftest.py tools/xut/hw/replay.py tools/tests/hw_toy.py tools/tests/fixtures/hw tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py
 git commit -m "hw: reference interpreter, harness emulator, self-test channels and golden-model DUTs" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -1921,7 +1924,10 @@ def test_render_slots():
     assert "module xut_dut (" not in text
     assert "reg [0:0] in_s3 = 1'b1;" in text  # t0 as the flip-flops' INIT
     assert len(re.findall(r"\bBUFG u_bufg_s", text)) == 3  # counter + two toy clocks
-    assert "8'd2: begin cur_in <= {15'd0, in_s2}; cur_out <= {15'd0, out_s2}; cur_noutw <= 16'd1; end" in text
+    assert (
+        "8'd2: begin cur_in <= {15'd0, in_s2}; cur_out <= {15'd0, out_s2}; cur_noutw <= 16'd1; end"
+        in text
+    )
     assert "if (edge_we && sel == 8'd3 && edge_idx == 12'd0) dclk_s3_0 <= edge_val;" in text
 
 
@@ -1975,7 +1981,19 @@ def test_harness_elaborates_on_icarus(tmp_path):
     ex = executor_for(ms, tmp_path)
     libs = [a for p in ms.search for a in ("-y", ex.guest(p))]
     files = [ex.guest(d / f) for f in (*HW_SOURCES, "xut_hw_slots.v", "TOYFF.v")]
-    argv = ["iverilog", "-g2012", "-tnull", "-s", "xut_hw_top", "-I", ex.guest(d), *libs, "-Y", ".v", *files]
+    argv = [
+        "iverilog",
+        "-g2012",
+        "-tnull",
+        "-s",
+        "xut_hw_top",
+        "-I",
+        ex.guest(d),
+        *libs,
+        "-Y",
+        ".v",
+        *files,
+    ]
     rc = ex.run(argv, cwd=d, log=d / "elab.log", timeout_s=300)
     text = (d / "elab.log").read_text()
     assert rc == 0 and "error" not in text.lower(), text
@@ -2600,7 +2618,14 @@ class SlotBuild:
 
     def digest(self) -> str:
         h = hashlib.sha256()
-        for part in (self.kind, str(self.nin), str(self.nout), str(self.nclk), self.t0, self.wrapper):
+        for part in (
+            self.kind,
+            str(self.nin),
+            str(self.nout),
+            str(self.nclk),
+            self.t0,
+            self.wrapper,
+        ):
             h.update(part.encode())
             h.update(b"\0")
         return h.hexdigest()
@@ -2641,7 +2666,9 @@ def pack(slots: Sequence[SlotBuild]) -> list[list[int]]:
         if s.kind != "dut":
             raise SlotError(f"slot {i} is a {s.kind}, not a DUT")
         if s.nclk > DUT_BUFG_BUDGET:
-            raise SlotError(f"a slot with {s.nclk} clocks exceeds the {DUT_BUFG_BUDGET}-BUFG budget")
+            raise SlotError(
+                f"a slot with {s.nclk} clocks exceeds the {DUT_BUFG_BUDGET}-BUFG budget"
+            )
         full = clocks + s.nclk > DUT_BUFG_BUDGET or len(cur) + len(SELFTEST_SLOTS) >= MAX_SLOTS
         if cur and full:
             groups.append(cur)
@@ -2805,7 +2832,7 @@ def timing_tcl(slots: Sequence[SlotBuild], margin: int) -> str:
 
 ```bash
 uv run pytest tools/tests/test_hw_slots.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 ```
 
 Expected: all pass. If Icarus reports a construct it does not support, change the RTL to the common subset of xsim, Icarus `-g2012` and Vivado synthesis (for example, move a declaration to module scope). Never add a simulator-specific `ifdef`.
@@ -2864,21 +2891,31 @@ def test_scope_argv_is_the_agents_md_line():
 def test_scoped_run_refuses_without_systemd_run(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     with pytest.raises(ScopeError, match="systemd-run"):
-        scope.scoped_run(["true"], what="t", memory_max="1G", cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+        scope.scoped_run(
+            ["true"], what="t", memory_max="1G", cwd=tmp_path, log=tmp_path / "l", timeout_s=5
+        )
 
 
 def _user_scopes_work() -> bool:
     if shutil.which("systemd-run") is None:
         return False
-    r = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--", "true"], capture_output=True)
+    r = subprocess.run(
+        ["systemd-run", "--user", "--scope", "--quiet", "--", "true"], capture_output=True
+    )
     return r.returncode == 0
 
 
-@pytest.mark.skipif(not _user_scopes_work(), reason="no systemd user manager (CI runners have none)")
+@pytest.mark.skipif(
+    not _user_scopes_work(), reason="no systemd user manager (CI runners have none)"
+)
 def test_scoped_run_runs_and_logs(tmp_path):
     rc = scope.scoped_run(
-        ["bash", "-c", "echo hello; exit 3"], what="t", memory_max="256M", cwd=tmp_path,
-        log=tmp_path / "l.log", timeout_s=60,
+        ["bash", "-c", "echo hello; exit 3"],
+        what="t",
+        memory_max="256M",
+        cwd=tmp_path,
+        log=tmp_path / "l.log",
+        timeout_s=60,
     )
     assert rc == 3 and "hello" in (tmp_path / "l.log").read_text()
 
@@ -3341,7 +3378,9 @@ def split_replies(data: bytes, steps: Sequence[Step]) -> list[bytes]:
         out.append(data[pos:end])
         pos = end
     if pos != len(data):
-        raise proto.ProtoError(f"{len(data) - pos} unexpected trailing byte(s): {data[pos:][:80]!r}")
+        raise proto.ProtoError(
+            f"{len(data) - pos} unexpected trailing byte(s): {data[pos:][:80]!r}"
+        )
     return out
 
 
@@ -3423,8 +3462,6 @@ def simulate(
     tx = bytes(int(x, 16) for x in tx_file.read_text().split())
     viol = [ln.strip() for ln in text.splitlines() if "XUT_MARGIN_VIOLATION" in ln]
     return SimResult(tx, split_replies(tx, steps), workdir / "run.log", viol)
-
-
 
 
 def run_replies(replies: list[bytes], programs: dict[int, HwProgram]) -> dict[int, proto.RunReply]:
@@ -3690,8 +3727,6 @@ from xut.testspec import discover, select
 and append:
 
 ```python
-
-
 def _flops_case(test_id: str):
     return select(discover(repo_root()), [test_id])[0]
 
@@ -3717,7 +3752,9 @@ def test_simulated_harness_reproduces_the_golden_trace(sim, test_id, tmp_path):
 ```python
 @hw_grp.command("sim")
 @click.argument("selectors", nargs=-1)
-@click.option("--sim", type=click.Choice(["iverilog", "xsim"]), default="iverilog", show_default=True)
+@click.option(
+    "--sim", type=click.Choice(["iverilog", "xsim"]), default="iverilog", show_default=True
+)
 @click.option("--model-source", default="auto", show_default=True)
 @click.option("--jobs", type=click.IntRange(min=1, max=24), default=1, show_default=True)
 def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: int) -> None:
@@ -3742,7 +3779,9 @@ def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: in
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         results = pool.map(lambda c: sim_case(c, ctx, sim), cases)
         for done, (case, outcomes) in enumerate(zip(cases, results, strict=True), start=1):
-            counts = {s: sum(o.status == s for o in outcomes) for s in ("pass", "fail", "error", "skip")}
+            counts = {
+                s: sum(o.status == s for o in outcomes) for s in ("pass", "fail", "error", "skip")
+            }
             click.echo(
                 f"progress: done={done} total={len(cases)} elapsed_s={time.monotonic() - t0:.1f}"
                 f"  {case.id} {counts}"
@@ -3772,7 +3811,7 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-$(date +%s) -p 
 - [ ] **Step 6: Lint, log, commit, push and open PR A**
 
 ```bash
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
@@ -3891,7 +3930,15 @@ def test_key_is_deterministic_and_input_sensitive():
 def test_build_inputs_carry_the_id_and_everything_the_key_hashes():
     ins = vivado.build_inputs(_slots(), maxwords=8192, margin=16, build_id=0xCAFEF00D)
     assert "`define XUT_HW_BUILD_ID 32'hcafef00d" in ins["xut_hw_cfg.vh"]
-    assert set(ins) >= {"xut_hw_top.sv", "xut_hw_msgs.vh", "xut_hw_slots.v", "timing.tcl", "post_route.tcl", "board.xdc", "build.tcl"}
+    assert set(ins) >= {
+        "xut_hw_top.sv",
+        "xut_hw_msgs.vh",
+        "xut_hw_slots.v",
+        "timing.tcl",
+        "post_route.tcl",
+        "board.xdc",
+        "build.tcl",
+    }
 
 
 def test_build_script_sources_vivado_only_in_a_subshell_and_never_xil_timing():
@@ -3906,7 +3953,11 @@ def test_build_tcl_fails_on_timing_and_sets_userid():
     assert "XUT_TIMING_FAILED" in tcl and "exit 3" in tcl
     assert "BITSTREAM.CONFIG.USERID" in tcl and "source timing.tcl" in tcl
     assert tcl.index("synth_design") < tcl.index("source timing.tcl") < tcl.index("place_design")
-    assert tcl.index("route_design") < tcl.index("source post_route.tcl") < tcl.index("write_bitstream")
+    assert (
+        tcl.index("route_design")
+        < tcl.index("source post_route.tcl")
+        < tcl.index("write_bitstream")
+    )
     assert "BITSTREAM.GENERAL.COMPRESS TRUE" in tcl
 
 
@@ -3942,8 +3993,12 @@ def test_dut_check_flags_a_retargeted_or_missing_cell(text, match):
 
 def test_latency_budget():
     lat, bad = vivado.check_latency("XUT_LATENCY dclk_s1_0 3.25\nXUT_LATENCY dclk_s2_0 17.5\n")
-    assert lat == {"dclk_s1_0": 3.25, "dclk_s2_0": 17.5} and bad == ["dclk_s2_0: 17.500 ns + 2.0 ns > 20.0 ns"]
-    assert vivado.check_latency("XUT_LATENCY dclk_s1_0 unknown\n")[1] == ["dclk_s1_0: latency could not be measured"]
+    assert lat == {"dclk_s1_0": 3.25, "dclk_s2_0": 17.5} and bad == [
+        "dclk_s2_0: 17.500 ns + 2.0 ns > 20.0 ns"
+    ]
+    assert vivado.check_latency("XUT_LATENCY dclk_s1_0 unknown\n")[1] == [
+        "dclk_s1_0: latency could not be measured"
+    ]
 
 
 def test_log_classification():
@@ -4001,8 +4056,8 @@ from xut.hw.slots import (
     timing_tcl,
 )
 from xut.paths import VIVADO_SETTINGS, repo_root
-from xut.wrap import WrapError, literal_value
 from xut.scope import OOM_RCS, VIVADO_MEMORY_MAX, VivadoSlots, scoped_run
+from xut.wrap import WrapError, literal_value
 
 PART = "xc7a35ticsg324-1L"
 BOARD = "arty_a7_35t"
@@ -4109,7 +4164,9 @@ def check_dut_cells(text: str, slots: Sequence[SlotBuild]) -> list[str]:
             problems.append(f"slot {k}: REF_NAME {ref}, configured {m['prim']} (retargeted)")
         for a, v in sorted(m["attrs"].items()):
             if not _same(props.get(a), v):
-                problems.append(f"slot {k}: {a} = {props.get(a)!r} after implementation, configured {v}")
+                problems.append(
+                    f"slot {k}: {a} = {props.get(a)!r} after implementation, configured {v}"
+                )
     return problems
 
 
@@ -4122,7 +4179,9 @@ def check_latency(text: str) -> tuple[dict[str, float], list[str]]:
             continue
         lat[name] = float(value)
         if lat[name] + CLK_TO_Q_AND_BUFG_NS > LATENCY_BUDGET_NS:
-            problems.append(f"{name}: {lat[name]:.3f} ns + {CLK_TO_Q_AND_BUFG_NS} ns > {LATENCY_BUDGET_NS} ns")
+            problems.append(
+                f"{name}: {lat[name]:.3f} ns + {CLK_TO_Q_AND_BUFG_NS} ns > {LATENCY_BUDGET_NS} ns"
+            )
     return lat, problems
 
 
@@ -4251,7 +4310,9 @@ def _flock(path: Path) -> Iterator[None]:
 
 def _load(d: Path) -> Bitstream:
     man = json.loads((d / "manifest.json").read_text())
-    return Bitstream(d / "top.bit", man["key"], int(man["build_id"], 16), man["bitstream_sha256"], man)
+    return Bitstream(
+        d / "top.bit", man["key"], int(man["build_id"], 16), man["bitstream_sha256"], man
+    )
 
 
 def ensure_bitstream(
@@ -4274,7 +4335,9 @@ def ensure_bitstream(
         tmp = cache_root / "bit" / f"{key}.tmp-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         src = tmp / "sources"
         src.mkdir(parents=True)
-        for name, text in build_inputs(slots, maxwords=maxwords, margin=margin, build_id=bid).items():
+        for name, text in build_inputs(
+            slots, maxwords=maxwords, margin=margin, build_id=bid
+        ).items():
             (tmp if name == "build.sh" else src).joinpath(name).write_text(text)
         log = tmp / "build.log"
         with sem.slot():
@@ -4300,7 +4363,9 @@ def ensure_bitstream(
         n_clocks = sum(s.nclk for s in slots)
         if lat_problems or len(latency) != n_clocks:
             raise BuildError(
-                f"DUT clock latency: {'; '.join(lat_problems) or f'{len(latency)} of {n_clocks} measured'}; see {log}"
+                "DUT clock latency: "
+                + ("; ".join(lat_problems) or f"{len(latency)} of {n_clocks} measured")
+                + f"; see {log}"
             )
         wns, whs = _TIMING.findall(text)[-1]
         sha = hashlib.sha256((tmp / "top.bit").read_bytes()).hexdigest()
@@ -4435,7 +4500,8 @@ def hw_build_cmd(selectors: tuple[str, ...], model_source: str, jobs: int) -> No
                 failed += 1
                 what = f"FAILED: {e}"
             click.echo(
-                f"progress: done={done} total={len(wanted)} elapsed_s={time.monotonic() - t0:.1f}  {what}"
+                f"progress: done={done} total={len(wanted)} "
+                f"elapsed_s={time.monotonic() - t0:.1f}  {what}"
             )
     raise SystemExit(4 if failed else 0)
 ```
@@ -4444,7 +4510,7 @@ def hw_build_cmd(selectors: tuple[str, ...], model_source: str, jobs: int) -> No
 
 ```bash
 uv run pytest tools/tests/test_hw_vivado.py -v -m "not vivado" > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/hw/vivado.py tools/xut/cli.py hw/boards tools/tests/test_hw_vivado.py
 git commit -m "hw: Vivado batch build with generated constraints, post-flow DUT check, build IDs and a bitstream cache" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -4473,7 +4539,9 @@ def test_build_selftest_and_toy_then_hit_the_cache(tmp_path):
     again = b.ensure(slots)
     assert again.path == bit.path and again.sha256 == bit.sha256
     assert list((tmp_path / "hw" / "bit").glob("*.tmp-*")) == []
-    assert bit.manifest["dut_check"] == "pass" and set(bit.manifest["dclk_latency_ns"]) == {"dclk_s1_0"}
+    assert bit.manifest["dut_check"] == "pass" and set(bit.manifest["dclk_latency_ns"]) == {
+        "dclk_s1_0"
+    }
 
 
 @pytest.mark.vivado
@@ -4835,6 +4903,7 @@ even when a step times out (the host logs what arrived). Exit 0; 3 on a step tim
 """
 
 import argparse
+import contextlib
 import json
 import os
 import select
@@ -4899,10 +4968,8 @@ def drain(fd: int) -> int:
     while time.monotonic() < deadline:
         ready, _, _ = select.select([fd], [], [], 0.05)
         if ready:
-            try:
+            with contextlib.suppress(BlockingIOError):
                 n += len(os.read(fd, 4096))
-            except BlockingIOError:
-                pass
     return n
 
 
@@ -4924,8 +4991,11 @@ def main(argv: list[str]) -> int:
             rx, ok = read_until(fd, s["until"], float(s["timeout_s"]))
             out["steps"].append({"rx": rx.hex()})
             if not ok:
-                print(f"xut_uart: step {i} ({s['until']}) timed out after {s['timeout_s']}s "
-                      f"with {len(rx)} byte(s)", file=sys.stderr)
+                print(
+                    f"xut_uart: step {i} ({s['until']}) timed out after {s['timeout_s']}s "
+                    f"with {len(rx)} byte(s)",
+                    file=sys.stderr,
+                )
                 rc = 3
                 break
     finally:
@@ -4962,7 +5032,9 @@ from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
 from xut.paths import repo_root
 
 PI = repo_root() / "hw" / "pi"
-FLASH = re.compile(r"(\s-f\b|--write-flash|--external-flash|--bulk-erase|--flash-sector|\s-o\b|--offset)")
+FLASH = re.compile(
+    r"(\s-f\b|--write-flash|--external-flash|--bulk-erase|--flash-sector|\s-o\b|--offset)"
+)
 
 
 #: Prose and this test itself name the forbidden options on purpose.
@@ -4970,7 +5042,9 @@ SRAM_SCAN_SKIP = {"AGENTS.md", "hw/README.md", "tools/tests/test_hw_pi.py"}
 
 
 def test_the_only_programming_line_is_sram():
-    lines = [ln for ln in (PI / "xut_work.sh").read_text().splitlines() if "openFPGALoader -b" in ln]
+    lines = [
+        ln for ln in (PI / "xut_work.sh").read_text().splitlines() if "openFPGALoader -b" in ln
+    ]
     assert lines == ["openFPGALoader -b arty top.bit > program.log 2>&1"]
     root = repo_root()
     tracked = subprocess.run(
@@ -4995,7 +5069,9 @@ def test_the_only_programming_line_is_sram():
 def _lock(tmp_path, *cmd, ttl="30", wait="1", owner="me@test"):
     return subprocess.run(
         ["sh", str(PI / "xut_lock.sh"), str(tmp_path / "fpga.lock"), ttl, wait, owner, "--", *cmd],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -5053,21 +5129,38 @@ def test_only_our_own_stale_holder_is_killed(tmp_path):
     env = {**os.environ, "XUT_LOCK_GRACE_S": "0"}
     lock = tmp_path / "fpga.lock"
     holder = subprocess.Popen(
-        ["sh", str(PI / "xut_lock.sh"), str(lock), "1", "1", "me@client:111", "--",
-         "sh", "-c", 'trap "" TERM; while :; do sleep 1; done'],
-        env=env, start_new_session=True,
+        [
+            "sh",
+            str(PI / "xut_lock.sh"),
+            str(lock),
+            "1",
+            "1",
+            "me@client:111",
+            "--",
+            "sh",
+            "-c",
+            'trap "" TERM; while :; do sleep 1; done',
+        ],
+        env=env,
+        start_new_session=True,
     )
     try:
         threading.Event().wait(2.5)  # past since + ttl, before timeout's KILL at ttl + 10
         inode = lock.stat().st_ino
         other = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "you@client:222", "--", "true"],
-            env=env, capture_output=True, text=True, timeout=60,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert other.returncode == 75 and "(stale)" in other.stderr  # not ours: never killed
         r = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "me@client:333", "--", "true"],
-            env=env, capture_output=True, text=True, timeout=60,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert r.returncode == 0 and "killing our own stale holder" in r.stderr
         assert lock.stat().st_ino == inode
@@ -5099,10 +5192,16 @@ def _serve(master: int, h: Harness, stop: threading.Event) -> None:
 def _session(tmp_path) -> tuple[Path, list]:
     progs = selftest_programs()
     steps = session_steps(progs)
-    sess = {"steps": [
-        {"send": s.send.hex(), "until": "end" if s.send == proto.CMD_RUN else "line", "timeout_s": 10}
-        for s in steps
-    ]}
+    sess = {
+        "steps": [
+            {
+                "send": s.send.hex(),
+                "until": "end" if s.send == proto.CMD_RUN else "line",
+                "timeout_s": 10,
+            }
+            for s in steps
+        ]
+    }
     p = tmp_path / "session.json"
     p.write_text(json.dumps(sess))
     return p, steps
@@ -5110,7 +5209,10 @@ def _session(tmp_path) -> tuple[Path, list]:
 
 def _emulated_tty(build=0x1234):
     master, slave = os.openpty()
-    h = Harness(build, [EmuSlot(16, 16, 0, "0" * 16, PassthroughSim()), EmuSlot(2, 8, 1, "00", CounterSim())])
+    h = Harness(
+        build,
+        [EmuSlot(16, 16, 0, "0" * 16, PassthroughSim()), EmuSlot(2, 8, 1, "00", CounterSim())],
+    )
     stop = threading.Event()
     t = threading.Thread(target=_serve, args=(master, h, stop), daemon=True)
     t.start()
@@ -5122,9 +5224,21 @@ def test_uart_session_against_the_emulator(tmp_path):
     master, slave, stop, t = _emulated_tty()
     try:
         r = subprocess.run(
-            [sys.executable, str(PI / "xut_uart.py"), "--dev", os.ttyname(slave), "--baud", "115200",
-             "--session", str(sess), "--out", str(tmp_path / "resp.json")],
-            capture_output=True, text=True, timeout=60,
+            [
+                sys.executable,
+                str(PI / "xut_uart.py"),
+                "--dev",
+                os.ttyname(slave),
+                "--baud",
+                "115200",
+                "--session",
+                str(sess),
+                "--out",
+                str(tmp_path / "resp.json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
     finally:
         stop.set()
@@ -5154,9 +5268,24 @@ def test_work_sh_programs_sram_then_runs_the_session(tmp_path):
     try:
         env = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}"}
         r = subprocess.run(
-            ["sh", "./xut_lock.sh", str(tmp_path / "fpga.lock"), "60", "1", "me", "--",
-             "sh", "./xut_work.sh", os.ttyname(slave), "115200"],
-            cwd=job, env=env, capture_output=True, text=True, timeout=120,
+            [
+                "sh",
+                "./xut_lock.sh",
+                str(tmp_path / "fpga.lock"),
+                "60",
+                "1",
+                "me",
+                "--",
+                "sh",
+                "./xut_work.sh",
+                os.ttyname(slave),
+                "115200",
+            ],
+            cwd=job,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
     finally:
         stop.set()
@@ -5202,8 +5331,13 @@ def test_ssh_config(tmp_path):
     text = render_ssh_config(cfg, tmp_path / "known_hosts")
     assert "Host xut-jump-tweed\n  HostName 10.99.21.2\n" in text
     block = text.split("Host xut-rig-pi-sw2-p9\n", 1)[1].split("\nHost ", 1)[0]
-    for opt in ("HostName 10.21.2.9", "ProxyJump xut-jump-tweed", "IdentitiesOnly yes",
-                "BatchMode yes", f"UserKnownHostsFile {tmp_path / 'known_hosts'}"):
+    for opt in (
+        "HostName 10.21.2.9",
+        "ProxyJump xut-jump-tweed",
+        "IdentitiesOnly yes",
+        "BatchMode yes",
+        f"UserKnownHostsFile {tmp_path / 'known_hosts'}",
+    ):
         assert f"  {opt}\n" in block + "\n"
     assert "pi-sw2-p12" not in text  # disabled rigs get no host entry
 
@@ -5333,7 +5467,13 @@ def load_rigs(path: Path) -> RigsConfig:
     d = data["defaults"]
     key = Path(d.get("identity_file", "~/.ssh/id_ed25519")).expanduser()
     jumps = {
-        n: Jump(n, j["host"], Path(j.get("identity_file", key)).expanduser(), j.get("user"), j.get("port", 22))
+        n: Jump(
+            n,
+            j["host"],
+            Path(j.get("identity_file", key)).expanduser(),
+            j.get("user"),
+            j.get("port", 22),
+        )
         for n, j in data["jumps"].items()
     }
     rigs, seen = [], set()
@@ -5344,21 +5484,39 @@ def load_rigs(path: Path) -> RigsConfig:
         seen.add(r["name"])
         if r.get("jump") not in jumps:
             raise RigsError(f"{path}: rig {r['name']}: jump {r.get('jump')!r} is not under jumps")
-        missing = [k for k in ("uart", "baud", "lock", "lock_ttl_s", "lock_wait_s", "site", "board") if k not in r]
+        missing = [
+            k
+            for k in ("uart", "baud", "lock", "lock_ttl_s", "lock_wait_s", "site", "board")
+            if k not in r
+        ]
         if missing:
             raise RigsError(f"{path}: rig {r['name']} lacks {missing} (set them in defaults)")
         rigs.append(
             Rig(
-                r["name"], r["host"], r["jump"], r["board"], r["uart"], r["baud"], r["lock"],
-                r["lock_ttl_s"], r["lock_wait_s"], r["site"], Path(r.get("identity_file", key)).expanduser(),
-                r.get("user"), r.get("port", 22), r.get("enabled", True), r.get("reason", ""),
+                r["name"],
+                r["host"],
+                r["jump"],
+                r["board"],
+                r["uart"],
+                r["baud"],
+                r["lock"],
+                r["lock_ttl_s"],
+                r["lock_wait_s"],
+                r["site"],
+                Path(r.get("identity_file", key)).expanduser(),
+                r.get("user"),
+                r.get("port", 22),
+                r.get("enabled", True),
+                r.get("reason", ""),
                 r.get("reboot_command"),
             )
         )
     return RigsConfig(path, tuple(rigs), jumps)
 
 
-def _host(alias: str, host: str, port: int, user: str | None, key: Path, known: Path, jump: str | None) -> list[str]:
+def _host(
+    alias: str, host: str, port: int, user: str | None, key: Path, known: Path, jump: str | None
+) -> list[str]:
     out = [f"Host {alias}", f"  HostName {host}", f"  Port {port}"]
     if user:
         out.append(f"  User {user}")
@@ -5373,9 +5531,13 @@ def _host(alias: str, host: str, port: int, user: str | None, key: Path, known: 
 def render_ssh_config(cfg: RigsConfig, known_hosts: Path) -> str:
     out = ["# GENERATED by xut.hw.rigs from " + str(cfg.path) + ". Do not edit."]
     for j in cfg.jumps.values():
-        out += _host(f"xut-jump-{j.name}", j.host, j.port, j.user, j.identity_file, known_hosts, None)
+        out += _host(
+            f"xut-jump-{j.name}", j.host, j.port, j.user, j.identity_file, known_hosts, None
+        )
     for r in cfg.enabled():
-        out += _host(r.alias, r.host, r.port, r.user, r.identity_file, known_hosts, f"xut-jump-{r.jump}")
+        out += _host(
+            r.alias, r.host, r.port, r.user, r.identity_file, known_hosts, f"xut-jump-{r.jump}"
+        )
     return "\n".join(out) + "\n"
 
 
@@ -5443,7 +5605,7 @@ In `tools/tests/conftest.py`'s `pytest_collection_modifyitems`, add:
 
 ```bash
 uv run pytest tools/tests/test_hw_pi.py tools/tests/test_hw_rigs.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools hw > .cache/ruff.log 2>&1; uv run ruff format --check tools hw >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools hw > .cache/ruff.log 2>&1; uv run ruff check tools hw >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add hw tools/xut/hw/rigs.py tools/xut/schemas/rigs.schema.json tools/tests/test_hw_pi.py tools/tests/test_hw_rigs.py tools/tests/conftest.py pyproject.toml AGENTS.md
 git commit -m "hw: rigs config, generated ssh config, and the Pi-side lock, SRAM programming and UART scripts" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -5486,7 +5648,6 @@ One job, from the session's point of view:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
-import json
 from pathlib import Path
 
 import pytest
@@ -5510,9 +5671,17 @@ from xut.hw.slots import SELFTEST_SLOTS
 
 def rig(name="r1", **kw) -> Rig:
     base = dict(
-        name=name, host="10.0.0.1", jump="j", board="arty_a7_35t", uart="/dev/ttyUSB1",
-        baud=115200, lock="/run/lock/fpga.lock", lock_ttl_s=900, lock_wait_s=600,
-        site="test", identity_file=Path("/nonexistent/key"),
+        name=name,
+        host="10.0.0.1",
+        jump="j",
+        board="arty_a7_35t",
+        uart="/dev/ttyUSB1",
+        baud=115200,
+        lock="/run/lock/fpga.lock",
+        lock_ttl_s=900,
+        lock_wait_s=600,
+        site="test",
+        identity_file=Path("/nonexistent/key"),
     )
     return Rig(**{**base, **kw})
 
@@ -5570,7 +5739,9 @@ def test_reboot_needs_a_configured_command_and_takes_the_lock(tmp_path):
         SshBoardSession(rig(), t).reboot(tmp_path / "l.log")
     SshBoardSession(rig(reboot_command="sudo -n /sbin/reboot"), t).reboot(tmp_path / "l.log")
     cmd = [c for _, c in t.calls if "reboot" in c][-1]
-    assert "xut_lock.sh /run/lock/fpga.lock" in cmd and cmd.endswith("-- sh -c 'sudo -n /sbin/reboot'")
+    assert "xut_lock.sh /run/lock/fpga.lock" in cmd and cmd.endswith(
+        "-- sh -c 'sudo -n /sbin/reboot'"
+    )
 ```
 
 Run it; expected: `No module named 'xut.hw.session'`.
@@ -5640,9 +5811,13 @@ class HarnessError(XutError, RuntimeError):
 class Transport(Protocol):
     def run(self, alias: str, command: str, log: Path, timeout_s: int) -> int: ...
 
-    def put(self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int) -> int: ...
+    def put(
+        self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int
+    ) -> int: ...
 
-    def get(self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int) -> int: ...
+    def get(
+        self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int
+    ) -> int: ...
 
 
 class SshTransport:
@@ -5654,7 +5829,9 @@ class SshTransport:
             f.write(f"$ {shlex.join(argv)}\n")
             f.flush()
             try:
-                return subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s).returncode
+                return subprocess.run(
+                    argv, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s
+                ).returncode
             except subprocess.TimeoutExpired:
                 f.write(f"timeout after {timeout_s}s\n")
                 return RC_SSH
@@ -5662,10 +5839,18 @@ class SshTransport:
     def run(self, alias: str, command: str, log: Path, timeout_s: int) -> int:
         return self._call(["ssh", "-F", self.cfg, alias, command], log, timeout_s)
 
-    def put(self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int) -> int:
-        return self._call(["scp", "-F", self.cfg, "-q", *map(str, files), f"{alias}:{remote_dir}/"], log, timeout_s)
+    def put(
+        self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int
+    ) -> int:
+        return self._call(
+            ["scp", "-F", self.cfg, "-q", *map(str, files), f"{alias}:{remote_dir}/"],
+            log,
+            timeout_s,
+        )
 
-    def get(self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int) -> int:
+    def get(
+        self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int
+    ) -> int:
         srcs = [f"{alias}:{f}" for f in remote_files]
         return self._call(["scp", "-F", self.cfg, "-q", *srcs, str(local_dir)], log, timeout_s)
 
@@ -5736,13 +5921,27 @@ def session_json(job: HwJob, baud: int) -> dict:
     for s in session_steps(progs):
         if s.send == proto.CMD_RUN:
             width = max(p.noutw for p in progs.values())
-            steps.append({"send": s.send.hex(), "until": "end", "timeout_s": _timeout_s(s.lines * (12 + width) + 128, baud)})
+            steps.append(
+                {
+                    "send": s.send.hex(),
+                    "until": "end",
+                    "timeout_s": _timeout_s(s.lines * (12 + width) + 128, baud),
+                }
+            )
         else:
-            steps.append({"send": s.send.hex(), "until": "line", "timeout_s": _timeout_s(len(s.send) + 96, baud)})
+            steps.append(
+                {
+                    "send": s.send.hex(),
+                    "until": "line",
+                    "timeout_s": _timeout_s(len(s.send) + 96, baud),
+                }
+            )
     return {"steps": steps}
 
 
-def parse_session(job: HwJob, resp: dict) -> tuple[proto.IdReply, dict[int, proto.LoadReply], dict[int, proto.RunReply]]:
+def parse_session(
+    job: HwJob, resp: dict
+) -> tuple[proto.IdReply, dict[int, proto.LoadReply], dict[int, proto.RunReply]]:
     rx = [bytes.fromhex(s["rx"]) for s in resp["steps"]]
     slots = sorted(r.slot for r in job.runs)
     if len(rx) != 1 + 2 * len(slots):
@@ -5751,15 +5950,20 @@ def parse_session(job: HwJob, resp: dict) -> tuple[proto.IdReply, dict[int, prot
         ident = proto.parse_id(rx[0])
         if ident.build != job.build_id:
             raise TransportError(
-                f"the board runs build {ident.build:08x}, not {job.build_id:08x} (programming did not take?)"
+                f"the board runs build {ident.build:08x}, not {job.build_id:08x} "
+                "(programming did not take?)"
             )
         loads, runs = {}, {}
         for k, slot in enumerate(slots):
             load = proto.parse_load(rx[1 + 2 * k])
             if load.status == proto.STATUS_CODE["badcrc"]:
-                raise TransportError(f"slot {slot}: the harness received a corrupt program (badcrc)")
+                raise TransportError(
+                    f"slot {slot}: the harness received a corrupt program (badcrc)"
+                )
             if load.status != proto.STATUS_CODE["ok"]:
-                raise HarnessError(f"slot {slot}: load status {proto.STATUS.get(load.status, load.status)}")
+                raise HarnessError(
+                    f"slot {slot}: load status {proto.STATUS.get(load.status, load.status)}"
+                )
             loads[slot], runs[slot] = load, proto.parse_run(rx[2 + 2 * k])
     except proto.ProtoError as e:
         raise TransportError(f"corrupt UART reply: {e}") from e
@@ -5774,8 +5978,8 @@ class SshBoardSession:
     def preflight(self, log: Path) -> Preflight:
         q = shlex.quote
         cmd = (
-            "for t in openFPGALoader flock timeout python3 ps; do command -v \"$t\" || "
-            "{ echo \"missing $t\"; exit 3; }; done; "
+            'for t in openFPGALoader flock timeout python3 ps; do command -v "$t" || '
+            '{ echo "missing $t"; exit 3; }; done; '
             f"test -c {q(self.rig.uart)} || {{ echo 'no UART {self.rig.uart}'; exit 4; }}; "
             "openFPGALoader --Version; echo XUT_PREFLIGHT_OK"
         )
@@ -5801,10 +6005,13 @@ class SshBoardSession:
         rdir, log, t0 = f"xut-hw/{job.job_id}", workdir / "transport.log", time.monotonic()
         try:
             self._ok(self.t.run(rig.alias, f"mkdir -p {q(rdir)}", log, 60), "mkdir")
-            self._ok(self.t.put(rig.alias, sorted(stage.iterdir()), rdir, log, 600), "scp to the rig")
+            self._ok(
+                self.t.put(rig.alias, sorted(stage.iterdir()), rdir, log, 600), "scp to the rig"
+            )
             (stage / "top.bit").unlink()  # 2 MB per attempt adds up; the manifest has its sha256
             cmd = (
-                f"cd {q(rdir)} && sh ./xut_lock.sh {q(rig.lock)} {rig.lock_ttl_s} {rig.lock_wait_s} "
+                f"cd {q(rdir)} && sh ./xut_lock.sh {q(rig.lock)} "
+                f"{rig.lock_ttl_s} {rig.lock_wait_s} "
                 f"{q(self.owner)} -- sh ./xut_work.sh {q(rig.uart)} {rig.baud}"
             )
             rc = self.t.run(rig.alias, cmd, log, rig.lock_wait_s + rig.lock_ttl_s + 120)
@@ -5814,7 +6021,11 @@ class SshBoardSession:
         if rc == RC_BUSY:
             raise BoardBusy(f"{rig.name}: the rig lock {rig.lock} is busy (see {log})")
         if rc in (RC_PROGRAM, RC_NO_UART):
-            raise BoardError(f"{rig.name}: {'programming failed' if rc == RC_PROGRAM else 'no UART device'} (rc {rc}; see {got})")
+            raise BoardError(
+                f"{rig.name}: "
+                + ("programming failed" if rc == RC_PROGRAM else "no UART device")
+                + f" (rc {rc}; see {got})"
+            )
         if rc != 0:
             raise TransportError(f"{rig.name}: the job failed (rc {rc}; see {log} and {got})")
         if got_rc != 0 or not (got / "resp.json").is_file():
@@ -5844,7 +6055,9 @@ class SshBoardSession:
         ``reboot_command``. The connection dropping (rc 255) is the expected outcome."""
         rig, q = self.rig, shlex.quote
         if not rig.reboot_command:
-            raise BoardError(f"{rig.name}: no reboot_command configured; xut never reboots a rig by default")
+            raise BoardError(
+                f"{rig.name}: no reboot_command configured; xut never reboots a rig by default"
+            )
         rdir = f"xut-hw/reboot-{int(time.time())}"
         stage = Path(log).parent / "reboot-stage"
         stage.mkdir(parents=True, exist_ok=True)
@@ -5938,18 +6151,24 @@ class FakeRig:
 
 
 class FakeTransport:
-    def __init__(self, rigs: dict[str, FakeRig], sim_factory: Callable[[dict], DutSim] = default_sim_factory) -> None:
+    def __init__(
+        self, rigs: dict[str, FakeRig], sim_factory: Callable[[dict], DutSim] = default_sim_factory
+    ) -> None:
         self.rigs, self.sim_factory = rigs, sim_factory
         self.remote: dict[str, dict[str, bytes]] = {f"xut-rig-{n}": {} for n in rigs}
         self.calls: list[tuple[str, str]] = []
         self.programmings: dict[str, int] = {n: 0 for n in rigs}
 
-    def put(self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int) -> int:
+    def put(
+        self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int
+    ) -> int:
         for f in files:
             self.remote[alias][f"{remote_dir}/{Path(f).name}"] = Path(f).read_bytes()
         return 0
 
-    def get(self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int) -> int:
+    def get(
+        self, alias: str, remote_files: Sequence[str], local_dir: Path, log: Path, timeout_s: int
+    ) -> int:
         rc = 0
         for f in remote_files:
             if f in self.remote[alias]:
@@ -6013,7 +6232,9 @@ class FakeTransport:
         if rig.corrupt:
             rig.corrupt -= 1
             rx[-1][len(rx[-1]) // 2] ^= 0x01
-        store[f"{rdir}/resp.json"] = json.dumps({"steps": [{"rx": r.hex()} for r in rx], "discarded": 0}).encode()
+        store[f"{rdir}/resp.json"] = json.dumps(
+            {"steps": [{"rx": r.hex()} for r in rx], "discarded": 0}
+        ).encode()
         store[f"{rdir}/serial.txt"] = f"{rig.serial}\n".encode()
         store[f"{rdir}/ofl-version.txt"] = b"openFPGALoader v0.13.1 (fake)\nrc=0\n"
         store[f"{rdir}/program.log"] = b"fake: programmed SRAM\n"
@@ -6033,7 +6254,9 @@ class FakeBuilder:
 
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream:
         if self.flow_mismatch:
-            raise FlowMismatch("post-flow DUT check: slot 2: REF_NAME LUT1, configured TOYFF (retargeted)")
+            raise FlowMismatch(
+                "post-flow DUT check: slot 2: REF_NAME LUT1, configured TOYFF (retargeted)"
+            )
         key = hashlib.sha256("".join(s.digest() for s in slots).encode()).hexdigest()
         bid = int(key[:8], 16)
         d = self.cache_root / "bit" / key
@@ -6042,7 +6265,14 @@ class FakeBuilder:
             "fake": True,
             "build_id": bid,
             "slots": [
-                {"kind": s.kind, "nin": s.nin, "nout": s.nout, "nclk": s.nclk, "t0": s.t0, "map_json": s.map_json}
+                {
+                    "kind": s.kind,
+                    "nin": s.nin,
+                    "nout": s.nout,
+                    "nclk": s.nclk,
+                    "t0": s.t0,
+                    "map_json": s.map_json,
+                }
                 for s in slots
             ],
         }
@@ -6259,9 +6489,13 @@ def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
             s = lease.__enter__()
         except NoBoard:
             if failed is not None:
-                return JobOutcome(failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts)
+                return JobOutcome(
+                    failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts
+                )
             if busy:
-                raise BoardBusy(f"every usable rig is busy (retryable harness error): {'; '.join(busy)}") from None
+                raise BoardBusy(
+                    f"every usable rig is busy (retryable harness error): {'; '.join(busy)}"
+                ) from None
             raise
         try:
             rig = s.rig.name
@@ -6288,7 +6522,10 @@ def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
                 continue
         finally:
             lease.__exit__(None, None, None)
-        bad = [selftest.check(slot, res.runs[slot]) for slot in (selftest.PASS_SLOT, selftest.COUNT_SLOT)]
+        bad = [
+            selftest.check(slot, res.runs[slot])
+            for slot in (selftest.PASS_SLOT, selftest.COUNT_SLOT)
+        ]
         detail = "; ".join(b for b in bad if b) or None
         if detail is None:
             attempts.append(f"attempt {n} on {rig}: ok")
@@ -6337,10 +6574,15 @@ def _hw_checks(p: Probe) -> list[Check]:
         return out
     vivado = p.exists(VIVADO_SETTINGS)
     enables = ("hw",) if vivado and all(k.ok for k in keys) else ()
-    why = "" if enables else f" (hw unavailable: {'no Vivado' if not vivado else 'key check failed'})"
+    why = (
+        "" if enables else f" (hw unavailable: {'no Vivado' if not vivado else 'key check failed'})"
+    )
     for r in cfg.enabled():
         cmd = [
-            "ssh", "-F", str(written[0]), r.alias,
+            "ssh",
+            "-F",
+            str(written[0]),
+            r.alias,
             'for t in openFPGALoader flock timeout python3 ps; do command -v "$t" || exit 3; done; '
             f"test -c {r.uart}",
         ]
@@ -6393,7 +6635,10 @@ def hw_rigs_cmd() -> None:
         log.write_text("")
         pf = SshBoardSession(r, t).preflight(log)
         bad += not pf.ok
-        click.echo(f"{r.name:<14} {'ok  ' if pf.ok else 'FAIL'} {r.host} via {r.jump}  {pf.ofl_version or pf.detail}  (log: {log})")
+        click.echo(
+            f"{r.name:<14} {'ok  ' if pf.ok else 'FAIL'} {r.host} via {r.jump}  "
+            f"{pf.ofl_version or pf.detail}  (log: {log})"
+        )
     raise SystemExit(1 if bad else 0)
 ```
 
@@ -6599,7 +6844,9 @@ def test_flow_rtl_is_a_skip(tmp_path, fake_hw):
     assert res.status == "skip" and "does not run flow rtl" in res.reason
 
 
-@pytest.mark.parametrize("mod", ["xut.hw.plan", "xut.hw.hwsim", "xut.hw.session", "xut.hw.fake", "xut.runners"])
+@pytest.mark.parametrize(
+    "mod", ["xut.hw.plan", "xut.hw.hwsim", "xut.hw.session", "xut.hw.fake", "xut.runners"]
+)
 def test_each_module_imports_first(mod):
     """xut.hw.plan and xut.hw.hwsim import xut.runners, whose registry imports the hw
     runner: each module must import cleanly as the first one in a fresh interpreter."""
@@ -6647,9 +6894,16 @@ and run every python pair with `rtl` (`_one(c, n, rtl if n == "python" else ctx)
 In `tools/xut/cli.py` `run_cmd`: `--flow` becomes `click.Choice(["rtl", "vivado"])`. The default runner list becomes `[r for r in RUNNERS if r != "iverilog-vz" and flow in RUNNERS[r].flows]` (flow `vivado`: `["hw"]`; python runs first regardless). Add
 
 ```python
-@click.option("--hw-repeats", type=click.IntRange(min=1, max=20), default=3, show_default=True,
-              help="hw: programmings per bitstream; repeats that differ are nondeterminism (spec §5.6)")
-@click.option("--hw-rig", "hw_rigs", multiple=True, help="hw: only these rigs (default: every enabled rig)")
+@click.option(
+    "--hw-repeats",
+    type=click.IntRange(min=1, max=20),
+    default=3,
+    show_default=True,
+    help="hw: programmings per bitstream; repeats that differ are nondeterminism (spec §5.6)",
+)
+@click.option(
+    "--hw-rig", "hw_rigs", multiple=True, help="hw: only these rigs (default: every enabled rig)"
+)
 ```
 
 and pass them into the `RunContext` (`hw_repeats=hw_repeats, hw_rigs=tuple(hw_rigs)`).
@@ -6741,8 +6995,8 @@ from xut.hw.vivado import PART, Builder, FlowMismatch, VivadoBuilder
 from xut.runners.base import (
     ConfigResult,
     RunContext,
-    RunResult,
     Runner,
+    RunResult,
     error_reason,
     sha256_file,
     workdir,
@@ -6816,7 +7070,10 @@ class HwRunner(Runner):
 
     def available(self, ctx: RunContext) -> tuple[bool, str]:
         if ctx.model_source.name != REFERENCE:
-            return False, f"hw results are recorded against the reference model source {REFERENCE} only"
+            return (
+                False,
+                f"hw results are recorded against the reference model source {REFERENCE} only",
+            )
         if not settings_available():
             return False, "Vivado 2025.2 not installed (bitstreams cannot be built)"
         try:
@@ -6829,14 +7086,19 @@ class HwRunner(Runner):
         return True, ""
 
     def tools(self, ctx: RunContext) -> dict:
-        return {"vivado": backend(ctx.root, ctx.hw_rigs).builder.version(), "harness": f"xut-hw {proto.PROTO}"}
+        return {
+            "vivado": backend(ctx.root, ctx.hw_rigs).builder.version(),
+            "harness": f"xut-hw {proto.PROTO}",
+        }
 
     def run_config(self, case: TestCase, cfg: str, cd: Path, ctx: RunContext) -> ConfigResult:
         if self._done is None:
             self._done = self._batch(case, ctx, workdir(ctx, self.name, case.id))
         done = self._done.get(cfg)
         if done is None:
-            return ConfigResult(cfg, "error", "the python run lists this configuration but the hw plan does not")
+            return ConfigResult(
+                cfg, "error", "the python run lists this configuration but the hw plan does not"
+            )
         (cd / "run.log").write_text("".join(f"{ln}\n" for ln in done.log))
         r = done.result
         if done.traces:
@@ -6853,9 +7115,13 @@ class HwRunner(Runner):
             res.tools = {**res.tools, "openFPGALoader": self._ofl}
 
     @staticmethod
-    def _settle(done: dict[str, _Done], members: list[CfgPlan], status: str, why: str, log: list[str]) -> None:
+    def _settle(
+        done: dict[str, _Done], members: list[CfgPlan], status: str, why: str, log: list[str]
+    ) -> None:
         for it in members:
-            done[it.cfg] = _Done(ConfigResult(it.cfg, status, why, it.stim_sha256), log=[*log, f"{status}: {why}"])
+            done[it.cfg] = _Done(
+                ConfigResult(it.cfg, status, why, it.stim_sha256), log=[*log, f"{status}: {why}"]
+            )
 
     def _batch(self, case: TestCase, ctx: RunContext, d: Path) -> dict[str, _Done]:
         # Imported here: xut.hw.plan imports xut.runners.base, and importing that package
@@ -6886,7 +7152,9 @@ class HwRunner(Runner):
                 self._settle(done, members, "error", f"flow-mismatch: {e}", log)
                 continue
             except Exception as e:
-                self._settle(done, members, "error", f"bitstream build failed: {error_reason(e)}", log)
+                self._settle(
+                    done, members, "error", f"bitstream build failed: {error_reason(e)}", log
+                )
                 continue
             if hw["dut_check"] == "not-run":
                 hw["dut_check"] = "pass"
@@ -6898,7 +7166,12 @@ class HwRunner(Runner):
             reps: dict[int, list[tuple[str, ...]]] = {s: [] for s in dut_slots}
             why: str | None = None
             for r in range(1, ctx.hw_repeats + 1):
-                job = HwJob(f"{_SAFE.sub('_', case.id)}-g{g}-r{r}-{uuid.uuid4().hex[:8]}", bit.path, bit.build_id, runs)
+                job = HwJob(
+                    f"{_SAFE.sub('_', case.id)}-g{g}-r{r}-{uuid.uuid4().hex[:8]}",
+                    bit.path,
+                    bit.build_id,
+                    runs,
+                )
                 try:
                     out = run_job(be.pool, job, d / "jobs" / f"g{g}-r{r}")
                 except Exception as e:  # a second transport error, no board, a harness bug
@@ -6912,7 +7185,10 @@ class HwRunner(Runner):
                 self._ofl = res.ofl_version or self._ofl
                 if out.selftest == "fail":
                     hw["selftest"] = "fail"
-                    why = f"harness self-test failed on {res.rig} (a harness error, not a DUT result): {out.selftest_detail}"
+                    why = (
+                        f"harness self-test failed on {res.rig} (a harness error, "
+                        f"not a DUT result): {out.selftest_detail}"
+                    )
                     break
                 if hw["selftest"] == "not-run":
                     hw["selftest"] = "pass"
@@ -6934,7 +7210,9 @@ class HwRunner(Runner):
         self._hw = hw
         return done
 
-    def _judge(self, case: TestCase, ctx: RunContext, it: CfgPlan, reps: list[tuple[str, ...]], rig: str) -> _Done:
+    def _judge(
+        self, case: TestCase, ctx: RunContext, it: CfgPlan, reps: list[tuple[str, ...]], rig: str
+    ) -> _Done:
         header = {
             "runner": self.name,
             "flow": ctx.flow,
@@ -6951,10 +7229,16 @@ class HwRunner(Runner):
             for m in xtr.diff(traces[0], traces[k], a_x=False, b_x=False)
         ]
         mm = xtr.compare(it.expected, traces[0], x_observable=False)
-        reasons = [f"nondeterminism ({len(differ)} difference(s)): " + "; ".join(differ[:3])] if differ else []
+        reasons = (
+            [f"nondeterminism ({len(differ)} difference(s)): " + "; ".join(differ[:3])]
+            if differ
+            else []
+        )
         reasons += [str(m) for m in mm[:3]]
         status = "fail" if differ or mm else "pass"
-        res = ConfigResult(it.cfg, status, "; ".join(reasons) or None, it.stim_sha256, None, len(mm))
+        res = ConfigResult(
+            it.cfg, status, "; ".join(reasons) or None, it.stim_sha256, None, len(mm)
+        )
         return _Done(res, traces, [str(m) for m in mm] + differ, [], bool(differ))
 ```
 
@@ -6966,7 +7250,7 @@ Register it in `tools/xut/runners/__init__.py`: `from xut.runners.hw import HwRu
 uv run pytest tools/tests/test_runner_hw.py tools/tests/test_run.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_run.py
 git commit -m "runners: add the hw runner (flow vivado; self-test, repeats, silicon cross-check) and xut run --flow vivado" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -7025,19 +7309,26 @@ def _lut_factory(slot: dict):
 
 def test_smoke_on_a_fake_board(tmp_path):
     t = FakeTransport({"a": FakeRig()}, sim_factory=_lut_factory)
-    problems = smoke_board(repo_root(), SshBoardSession(rig("a"), t), FakeBuilder(tmp_path / "c"), tmp_path / "w")
+    problems = smoke_board(
+        repo_root(), SshBoardSession(rig("a"), t), FakeBuilder(tmp_path / "c"), tmp_path / "w"
+    )
     assert problems == []
 
 
 def test_smoke_detects_a_wrong_lut(tmp_path):
     t = FakeTransport({"a": FakeRig(flip_dut={4: 0})}, sim_factory=_lut_factory)
-    problems = smoke_board(repo_root(), SshBoardSession(rig("a"), t), FakeBuilder(tmp_path / "c"), tmp_path / "w")
+    problems = smoke_board(
+        repo_root(), SshBoardSession(rig("a"), t), FakeBuilder(tmp_path / "c"), tmp_path / "w"
+    )
     assert problems and "slot 4" in problems[0]
 
 
 @pytest.mark.container
 def test_smoke_in_icarus(tmp_path):
-    assert smoke_sim(repo_root(), "iverilog", tmp_path / "sim", resolve("auto"), work_root=tmp_path) == []
+    assert (
+        smoke_sim(repo_root(), "iverilog", tmp_path / "sim", resolve("auto"), work_root=tmp_path)
+        == []
+    )
 
 
 @pytest.mark.hw
@@ -7140,7 +7431,9 @@ def _expected(s: SmokeSlot) -> list[str]:
     return run_program(s.prog.words, s.prog.nin, s.prog.nclk, sim, s.prog.t0).samples
 
 
-def smoke_layout(root: Path) -> tuple[tuple[SlotBuild, ...], dict[int, HwProgram], dict[int, list[str]]]:
+def smoke_layout(
+    root: Path,
+) -> tuple[tuple[SlotBuild, ...], dict[int, HwProgram], dict[int, list[str]]]:
     ss = smoke_slots(root)
     slots = (*SELFTEST_SLOTS, *(s.slot for s in ss))
     progs = selftest_programs()
@@ -7160,20 +7453,37 @@ def check_replies(runs: dict[int, proto.RunReply], expected: dict[int, list[str]
             continue
         wrong = [i for i, (g, e) in enumerate(zip(r.samples, exp, strict=False)) if g != e]
         if len(r.samples) != len(exp) or wrong:
-            problems.append(f"slot {slot}: {len(wrong)} wrong sample(s) (first: {wrong[:3]}), {len(r.samples)}/{len(exp)} received")
+            problems.append(
+                f"slot {slot}: {len(wrong)} wrong sample(s) (first: {wrong[:3]}), "
+                f"{len(r.samples)}/{len(exp)} received"
+            )
     return problems
 
 
-def smoke_sim(root: Path, sim: str, workdir: Path, model_source: ModelSource, *, work_root: Path | None = None) -> list[str]:
+def smoke_sim(
+    root: Path, sim: str, workdir: Path, model_source: ModelSource, *, work_root: Path | None = None
+) -> list[str]:
     slots, progs, exp = smoke_layout(root)
-    r = simulate(slots, session_steps(progs), sim, workdir, model_source=model_source, work_root=work_root or root)
+    r = simulate(
+        slots,
+        session_steps(progs),
+        sim,
+        workdir,
+        model_source=model_source,
+        work_root=work_root or root,
+    )
     return check_replies(run_replies(r.replies, progs), exp) + r.margin_violations
 
 
 def smoke_board(root: Path, session: BoardSession, builder: Builder, workdir: Path) -> list[str]:
     slots, progs, exp = smoke_layout(root)
     bit = builder.ensure(slots)
-    job = HwJob(f"smoke-{uuid.uuid4().hex[:8]}", bit.path, bit.build_id, tuple(SlotRun(s, p) for s, p in progs.items()))
+    job = HwJob(
+        f"smoke-{uuid.uuid4().hex[:8]}",
+        bit.path,
+        bit.build_id,
+        tuple(SlotRun(s, p) for s, p in progs.items()),
+    )
     res = session.run_job(job, workdir)
     return check_replies(res.runs, exp)
 ```
@@ -7182,7 +7492,9 @@ def smoke_board(root: Path, session: BoardSession, builder: Builder, workdir: Pa
 
 ```python
 @hw_grp.command("smoke")
-@click.option("--sim", type=click.Choice(["iverilog", "xsim"]), help="simulate instead of using boards")
+@click.option(
+    "--sim", type=click.Choice(["iverilog", "xsim"]), help="simulate instead of using boards"
+)
 @click.option("--rig", "rigs", multiple=True, help="only these rigs (default: every enabled rig)")
 @click.option("--model-source", default="auto", show_default=True)
 def hw_smoke_cmd(sim: str | None, rigs: tuple[str, ...], model_source: str) -> None:
@@ -7198,7 +7510,9 @@ def hw_smoke_cmd(sim: str | None, rigs: tuple[str, ...], model_source: str) -> N
     root = repo_root()
     stamp = time.strftime("%Y%m%dT%H%M%S")
     if sim:
-        problems = smoke_sim(root, sim, root / "build" / "hwsmoke" / f"{sim}-{stamp}", resolve(model_source))
+        problems = smoke_sim(
+            root, sim, root / "build" / "hwsmoke" / f"{sim}-{stamp}", resolve(model_source)
+        )
         click.echo(f"smoke ({sim}): {'PASS' if not problems else 'FAIL'}")
         for p in problems:
             click.echo(f"  {p}")
@@ -7208,7 +7522,12 @@ def hw_smoke_cmd(sim: str | None, rigs: tuple[str, ...], model_source: str) -> N
     builder, failed = VivadoBuilder(root), 0
     for r in [cfg.get(n) for n in rigs] if rigs else cfg.enabled():
         try:
-            problems = smoke_board(root, SshBoardSession(r, t), builder, root / "build" / "hwsmoke" / f"{r.name}-{stamp}")
+            problems = smoke_board(
+                root,
+                SshBoardSession(r, t),
+                builder,
+                root / "build" / "hwsmoke" / f"{r.name}-{stamp}",
+            )
         except Exception as e:  # reported per rig, never swallowed
             problems = [f"{type(e).__name__}: {e}"]
         failed += bool(problems)
@@ -7226,7 +7545,7 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsmoke-$(date +%s) -
   uv run xut hw smoke --sim iverilog > .cache/hwsmoke-iverilog.log 2>&1; echo "exit=$?"; cat .cache/hwsmoke-iverilog.log
 systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsmoke-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run xut hw smoke --sim xsim > .cache/hwsmoke-xsim.log 2>&1; echo "exit=$?"; cat .cache/hwsmoke-xsim.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
 git add tools/xut/hw/smoke.py tools/xut/cli.py tools/tests/test_hw_smoke.py
 git commit -m "hw: LUT6 smoke design and xut hw smoke (board bring-up, also in simulation)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -7473,7 +7792,7 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 - **Placeholder scan.** No step says "TBD" or "similar to". Every code block is complete for its module. `<ts>` in log file names is the AGENTS.md pattern. The rigs' `user` is intentionally absent (it comes from #124), and the plan says how and where it is added. The p10/p12/p15 addresses are marked as inferred and are confirmed in Task 12, Step 2.
 - **Type consistency.** These names are used identically across tasks: `HwProgram(nin, nclk, noutw, t0, words, labels)`, `SlotBuild`, `TestPlan.members/slots/programs`, `session_steps`/`run_replies`, `HwJob(job_id, bitstream, build_id, runs)`, `SlotRun(slot, program)`, `JobResult.runs: dict[int, RunReply]`, `JobOutcome(result, selftest, selftest_detail, attempts)`, `Bitstream(path, key, build_id, sha256, manifest)`, `Builder.ensure/version`, `RunContext.hw_repeats/hw_rigs`, `proto.STATUS_CODE`.
 
-**Spec ambiguities resolved in this plan** (for a spec rev 3.5, proposed below):
+**Spec ambiguities resolved in this plan** (recorded in spec rev 3.6, below):
 
 1. **Stimulus over the UART, not in the bitstream.** Spec §7.1 says timed events are compiled into "a BRAM image". They still are, but the image is loaded into the harness's BRAM over the UART at run time (`L`), not baked into the bitstream's BRAM INIT. A bitstream then depends only on its DUT slots, so tests with the same slot set share one cached bitstream, and changing a stimulus never costs a Vivado run.
 2. **The harness streams raw samples; the host writes the `.xtr`.** Spec §7.1: "streams `.xtr` with a header carrying the build ID, the configuration and a CRC". The fabric has no port names (they live in the wrapper's map), so the harness streams `S <n> <out_vec bits>` lines framed by a `run` line (build ID, slot) and an `end` line (sample count, status, CRC-32). The host checks the CRC and renders the `.xtr` with the map (`samples_to_trace`). The slot is the configuration, via the build manifest.
@@ -7489,8 +7808,9 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 12. **`xut hw sim` is not a runner.** Simulating the harness is evidence about the harness, not about the primitive, so it writes no `result.json` or status. It gates every hardware run, in Tasks 5, 11 and 13.
 13. **The rigs file.** p9's address comes from the task brief. The p10, p12 and p15 addresses are inferred from its pattern, and the account from fpgas-online/fpgas.online-infra#124 (pending). Both are confirmed at bring-up (Task 12, Step 2), and corrected through an infra PR.
 
-**Proposed spec amendments (rev 3.5; a `docs/` branch for the orchestrator to apply if accepted):**
-- §7.1: ambiguities 1–4, 8 and 11 as rules;
-- §7.5: ambiguity 7 (the lock's mechanics, reboots only under the lock and only when configured) and "SRAM only";
-- §6 `result.json`: the `hw` object's fields, and ambiguity 6 (DNA deferred to the configuration unit);
+**Spec rev 3.6** (committed in this plan's docs PR, before the plan; it follows PR C's rev 3.5, which amends only §6.2, so the orchestrator merges the two status lines when rebasing):
+- §7.1: ambiguities 1–4, 8, 10 and 11 as rules, including the checked clock-latency budget;
+- §7.5: ambiguity 7 as ruling S49 (the lock is never deleted or broken; busy rigs move the job; only a verified own holder may be killed), "SRAM only", and ambiguity 6;
+- §6: the post-flow DUT check for the `vivado` flow, and the `hw` fields of `result.json`;
+- §8: a failed post-flow DUT check is a `flow-mismatch`;
 - §5.6: N = 3 by default.
