@@ -18,3 +18,15 @@
 ## Next steps
 - Two reviewers, then merge.
 - Schedule P2 and P3 on infra branches alongside carry, muxf, srl and lutram.
+
+## Correctness review fix
+- Must-fix: every documented claim stays in `claims`, so the Tier 2 debt shows as uncovered
+  bins. Every deferral is a leading-bin gap (`claim:X.C7 — tier-2: …`), which lint
+  `bins-accounted` accounts for.
+- Nits:
+  - reject tests are Tier 1;
+  - a legal value the model does not model yet is not an illegal value;
+  - a skipped GSR test's bins get `tier-2:` gaps;
+  - "Tier 1" goes in the README header, not in status notes (AGENTS.md §7);
+  - the P2 wording now matches Appendix W and D11;
+  - Appendix W's order sentence defers to Appendix T.
