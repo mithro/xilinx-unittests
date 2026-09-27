@@ -1328,3 +1328,43 @@ def test_an_unconfirmed_verilator_pass_is_an_incomplete_issue(repo):
     _result(repo, "rtl", "iverilog-vz", "ms1", TID, trace=T(Q0))
     rep = xc.check(repo, _case(repo))
     assert not any("not confirmed" in i for i in rep.issues), rep.issues
+
+
+# --- an iverilog-vz fail explained by its iverilog companion --------------------------------
+
+
+def _cx_views(vz_trace, iv_status="fail"):
+    return views(
+        V("python", EXP(Q0, "inferred:silent")),
+        V("iverilog", T(Q1), status=iv_status, reason="mismatch"),
+        V("xsim", T(Q1), status="fail", reason="mismatch"),
+        V("iverilog-vz", vz_trace, status="fail", reason="mismatch"),
+    )
+
+
+def test_iverilog_vz_fail_is_explained_by_its_iverilog_companion():
+    vs = _cx_views(T(Q1))
+    found = classify(TID, vs, (ED,))
+    assert [f.known_of for f in found] == ["doc-gap"]
+    assert xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found, views=vs) == []
+
+
+def test_a_transform_bug_is_never_explained_away_by_the_companion():
+    vs = _cx_views(T(Q0))  # vz differs from iverilog: a transform-bug finding
+    found = classify(TID, vs, (ED,))
+    assert "transform-bug" in [f.cls for f in found]  # reported as a finding, not hidden
+    assert not xc._companion_explained(vs[("rtl", "iverilog-vz")], found, vs)
+
+
+def test_iverilog_vz_fail_is_not_explained_when_iverilog_passed():
+    vs = _cx_views(T(Q1), iv_status="pass")
+    found = classify(TID, vs, (ED,))
+    issues = xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found, views=vs)
+    assert issues and "fail not explained" in issues[0]
+
+
+def test_without_views_an_iverilog_vz_fail_stays_unexplained():
+    vs = _cx_views(T(Q1))
+    found = classify(TID, vs, (ED,))
+    issues = xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found)
+    assert issues and "fail not explained" in issues[0]

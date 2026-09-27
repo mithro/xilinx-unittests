@@ -792,9 +792,36 @@ def _explained(v: View, findings: list[Finding]) -> bool:
     )
 
 
-def _result_issues(ms: str, v: View, findings: list[Finding], classified: bool = True) -> list[str]:
+def _companion_explained(
+    v: View, findings: list[Finding], views: dict[tuple[str, str], View] | None
+) -> bool:
+    """An iverilog-vz ``fail`` is explained by its iverilog companion: iverilog failed the
+    same flow and model source, a value finding explains that fail, and no
+    ``transform-bug`` finding separates the two (their traces agree), so iverilog-vz
+    shows exactly the disagreement already classified for iverilog."""
+    if v.runner != "iverilog-vz" or views is None:
+        return False
+    iv = views.get((v.flow, "iverilog"))
+    if iv is None or iv.status != "fail" or not _explained(iv, findings):
+        return False
+    return not any(
+        (f.known_of or f.cls) == "transform-bug"
+        and f.flow == v.flow
+        and f.model_source in (v.model_source, None)
+        for f in findings
+    )
+
+
+def _result_issues(
+    ms: str,
+    v: View,
+    findings: list[Finding],
+    classified: bool = True,
+    views: dict[tuple[str, str], View] | None = None,
+) -> list[str]:
     """Errors (per configuration, else the result's), and a fail that no value finding
-    explains; the latter only when the views were ``classified``."""
+    explains (for iverilog-vz, nor its iverilog companion: ``_companion_explained``); the
+    latter only when the views were ``classified``."""
     where = f"{ms} {v.flow}/{v.runner}"
     cfg_errors = [
         f"{where}: cfg {c.get('cfg')}: error: {c.get('reason') or 'no reason recorded'}"
@@ -806,7 +833,12 @@ def _result_issues(ms: str, v: View, findings: list[Finding], classified: bool =
     reason = v.result.get("reason") or "no reason recorded"
     if v.status == "error":
         return [f"{where}: error: {reason}"]
-    if classified and v.status == "fail" and not _explained(v, findings):
+    if (
+        classified
+        and v.status == "fail"
+        and not _explained(v, findings)
+        and not _companion_explained(v, findings, views)
+    ):
         return [f"{where}: fail not explained by any disagreement: {reason}"]
     return []
 
@@ -927,7 +959,7 @@ def check(root: Path, case: TestCase, model_source: str | None = None) -> Report
         rep.coverage_gaps += _coverage_gaps(ms, views) + notes
         rep.issues += cfg_issues
         for _, v in sorted(views.items()):
-            rep.issues += _result_issues(ms, v, found)
+            rep.issues += _result_issues(ms, v, found, views=views)
     for e in case.expected_divergence:
         path = Path(root) / e["finding"]
         if not path.is_file():
