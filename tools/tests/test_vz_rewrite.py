@@ -275,6 +275,9 @@ def _write(tmp_path, name, text):
             "VZHELPER: in helper module VZHELPER_CORE: q: trigger cone contains NBA-written "
             "reg rst_q",
         ),
+        # PR #10 review must-fix 1: the NBA stage inside a same-file helper instance
+        ("vz_bad_nbahelper.v", "VZNBASUB", "q: trigger cone contains NBA-written reg vznba_stage.r"),
+        ("vz_bad_nbahelper4.v", "VZCES", "q: trigger cone contains NBA-written reg vzce_stage.q"),
     ],
 )
 def test_nba_written_reg_in_trigger_cone_is_refused(fname, model, reg):
@@ -291,6 +294,52 @@ def test_nba_cone_without_deassign_is_accepted(tmp_path):
     an = analyze(f, "VZCE", GLBL)
     assert an.forced["q"].nba_cone == {"r"}
     check_clean(rewrite(an), "VZCE", GLBL, [{}])
+
+
+HELPER_STAGE = """\
+`timescale 1ps/1ps
+module VZHS (output Q, input C, input D, input R);
+  reg q;
+  wire rq;
+  assign Q = q;
+  vzhs_stage st (.y(rq), .c(C), .a(R));
+  always @(posedge C) q <= D;
+  always @(rq)
+    if (rq) assign q = 1'b0;
+    else deassign q;
+endmodule
+module vzhs_stage (output y, input c, input a);
+  STAGE
+endmodule
+"""
+
+
+def test_helper_output_driven_combinationally_is_not_nba(tmp_path):
+    """The helper's output is a blocking/continuous function of its inputs: no NBA reg in
+    the cone, so the rewrite is accepted (the helper's triggers still over-approximate)."""
+    f = _write(tmp_path, "vz_hs.v", HELPER_STAGE.replace("STAGE", "assign y = a & c;"))
+    an = analyze(f, "VZHS", GLBL)
+    assert an.forced["q"].nba_cone == set() and an.triggers == ["C", "R"]
+    check_clean(rewrite(an), "VZHS", GLBL, [{}])
+
+
+@pytest.mark.parametrize(
+    ("stage", "why"),
+    [
+        # a blocking-written reg fed by an NBA reg: still NBA through the helper's cone
+        ("reg r, s;\n  assign y = s;\n  always @(posedge c) r <= a;\n  always @(r) s = r;",
+         "trigger cone contains NBA-written reg vzhs_stage.r"),
+        # the helper's output comes from a module outside the file: undeterminable
+        ("blackbox bb (.o(y), .i(a));", "driven by an instance output of a module"),
+    ],
+)  # fmt: skip
+def test_helper_output_with_an_nba_or_unknown_driver_is_refused(tmp_path, stage, why):
+    """Ruling S50 (PR #10 must-fix 1): a trigger cone that crosses a same-file helper
+    instance is traced inside the helper; an NBA-written reg there refuses the rewrite, and
+    a driver that cannot be determined refuses the model."""
+    f = _write(tmp_path, "vz_hs.v", HELPER_STAGE.replace("STAGE", stage))
+    with pytest.raises(TransformError, match=re.escape(why)):
+        rewrite(analyze(f, "VZHS", GLBL))
 
 
 def test_nonconstant_overrides_flag():
