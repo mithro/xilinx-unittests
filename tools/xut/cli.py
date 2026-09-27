@@ -358,12 +358,27 @@ def container_versions_cmd() -> None:
 
 
 @main.command("doctor")
-def doctor_cmd() -> None:
+@click.option(
+    "--sweep-containers",
+    is_flag=True,
+    help="remove xut containers whose owning xut process is gone, then exit",
+)
+def doctor_cmd(sweep_containers: bool) -> None:
     """Preflight checks: what's installed, and which runners it enables (spec §15).
 
-    Always exits 0 — it's informational, not a gate.
+    Always exits 0 — it's informational, not a gate. --sweep-containers instead removes
+    the orphaned xut containers (label xut.owner=<pid> of a dead process).
     """
+    from xut import container
     from xut.doctor import available_runners, run_checks
+
+    if sweep_containers:
+        gone = container.sweep_orphans()
+        if gone:
+            click.echo(f"removed {len(gone)} orphaned xut container(s): {', '.join(gone)}")
+        else:
+            click.echo("no orphaned xut containers")
+        return
 
     checks = run_checks()
     name_w = max(len(c.name) for c in checks)

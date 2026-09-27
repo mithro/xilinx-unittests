@@ -66,8 +66,9 @@ def with_companions(names: list[str]) -> list[str]:
 def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -> list[RunResult]:
     """Run every selected runner on every case; the results, python runs first.
 
-    On KeyboardInterrupt, queued jobs are cancelled, running ones finish, the summary
-    records what completed, and the KeyboardInterrupt propagates (the CLI exits 130)."""
+    On KeyboardInterrupt, queued jobs are cancelled, running containers are killed
+    (``xut.container.kill_live``), the summary records what completed before that, and
+    the KeyboardInterrupt propagates (the CLI exits 130)."""
     known = runner_registry.RUNNERS
     names = with_companions(runner_names)
     unknown = [n for n in names if n not in known]
@@ -113,8 +114,15 @@ def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -
             f.result()  # in order; re-raises a KeyboardInterrupt from a worker
     except KeyboardInterrupt:
         stop.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-        results += [f.result() for f in futures if not f.cancelled() and f.exception() is None]
+        pool.shutdown(wait=False, cancel_futures=True)
+        # S48a M-1: kill the running containers rather than wait for them; a killed run's
+        # result is an artefact of the kill, so only runs done before it are recorded
+        finished = [f for f in futures if f.done()]
+        from xut import container
+
+        container.kill_live()
+        pool.shutdown(wait=True)
+        results += [f.result() for f in finished if not f.cancelled() and f.exception() is None]
         write_summary(results, ctx, interrupted=True)
         raise
     results += [f.result() for f in futures]
