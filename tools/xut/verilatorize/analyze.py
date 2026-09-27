@@ -52,7 +52,12 @@ _LOOPS = (
 )
 _NOOPS = (_SK.Empty, _SK.Disable, _SK.Return, _SK.Break, _SK.Continue)
 #: Early exits: their jump target is not modelled by ``track`` (PR #10 must-fix 5).
-_JUMPS = {_SK.Disable: "disable", _SK.Return: "return", _SK.Break: "break", _SK.Continue: "continue"}
+_JUMPS = {
+    _SK.Disable: "disable",
+    _SK.Return: "return",
+    _SK.Break: "break",
+    _SK.Continue: "continue",
+}
 # Gate primitives whose leading terminals are all outputs (buf/not may drive several).
 _MULTI_OUT = ("buf", "not")
 _LITERALS = {
@@ -1300,8 +1305,9 @@ class _Walker:
         if e.kind == _EK.Call and not e.isSystemCall:
             for a in e.arguments:
                 self.stale(a.right if a.kind == _EK.Assignment else a, st, in_task)
-            forcing, self._forcing = self._forcing, self._forcing or bool(
-                self.forced_in(e.subroutine.body)
+            forcing, self._forcing = (
+                self._forcing,
+                self._forcing or bool(self.forced_in(e.subroutine.body)),
             )
             try:
                 return self.track(e.subroutine.body, st, e.subroutine.name)

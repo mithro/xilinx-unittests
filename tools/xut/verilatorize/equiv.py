@@ -109,7 +109,6 @@ from xut.wrap import DutMap, spec_from_hdl, write_dut
 
 GLBL_CHANNEL = ("GSR", "GTS", "GRESTORE")
 HW_REASON = "verilatorize equivalence stimulus: simulation only (spec §6.2)"
-ORACLES = ("iverilog", "xsim")
 DONE = "XUT_DONE"
 #: A compiler line that makes an Icarus build unclean, whatever the exit code.
 _UNCLEAN = re.compile(r"\b(error|sorry):", re.IGNORECASE)
@@ -593,12 +592,9 @@ def _check(
     m = replace(write_dut(spec, out / "dut"), attrs={})
     vec = equiv_stimulus(an, m, seed)
     if "zcmp" in _rewrites(an):  # the rewrite's validity condition (ruling S38)
-        have = zcmp.connected(m)
-        missing = sorted(
-            p.name
-            for p in parse_module(an.path, an.model).ports
-            if p.direction == "input" and have.get(p.name, 0) < p.width
-        )
+        from xut.verilatorize.driver import undriven_ports  # driver imports this lazily
+
+        missing = undriven_ports(parse_module(an.path, an.model), zcmp.connected(m))
         if missing:
             res.reason = zcmp.undriven_reason(an.model, missing)
             return
@@ -614,7 +610,7 @@ def _check(
         res.reason = f"xsim oracle needed ({need_xsim}) but Vivado 2025.2 is unavailable"
         return
     own = an.model in _lib_models(an)
-    copies = [Path(lib) / f"{m}.v" for m in _lib_models(an)]
+    copies = [Path(lib) / f"{name}.v" for name in _lib_models(an)]
     missing = [c for c in copies if not c.is_file()]
     if missing or not copies:
         res.reason = f"no transformed copy of {an.model}'s hierarchy at {missing or lib}"

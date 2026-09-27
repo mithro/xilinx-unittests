@@ -695,7 +695,10 @@ class VerilatorRunner(ContainerSim, Runner):
         shutil.copy(sd1 / "raw.txt", cd / "raw.txt")
         first = vector_check(cd, m, comp.labels, exp, header, self.x_observable, t1)
         second = vector_check(sd2, m, comp.labels, exp, header, self.x_observable, t2)
-        _xdep(cd, xtr.load(cd / "trace.xtr"), xtr.load(sd2 / "trace.xtr"), seeds)
+        try:
+            _xdep(cd, xtr.load(cd / "trace.xtr"), xtr.load(sd2 / "trace.xtr"), seeds)
+        except (xtr.XtrError, OSError) as e:  # as _seeds_done: the same error reason
+            return ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
         return _pair(first, second, seeds[1])
 
     def _sv(
@@ -774,7 +777,7 @@ class VerilatorRunner(ContainerSim, Runner):
         if all(t.is_file() for t in traces):
             try:
                 _xdep(cd, xtr.load(traces[0]), xtr.load(traces[1]), seeds)
-            except xtr.XtrError as e:
+            except (xtr.XtrError, OSError) as e:
                 return ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
         return _pair(results[0], results[1], seeds[1])
 
@@ -797,6 +800,11 @@ class IverilogVzRunner(IverilogRunner):
         """``gate_config`` without requiring verdicts (this run is the guard itself; every
         parameterisation is still ensured, so a verdict exists): a refused hierarchy is
         ``skip "model not transformed: ..."``, a validity-condition failure an error."""
+        if (
+            case.style == "vector"
+            and not (python_dir(ctx, case) / f"cfg-{cfg}" / "stim.xvec").is_file()
+        ):
+            return super().run_config(case, cfg, cd, ctx)  # prepare_vector says why
         reject = case.style == "vector" and config_attrs(case, cfg, ctx)[1]
         got = gate_config(
             case,

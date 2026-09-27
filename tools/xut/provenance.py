@@ -59,6 +59,20 @@ def _git(root: Path, *args: str, stdin: str | None = None) -> subprocess.Complet
         return None
 
 
+def short_head(root: Path) -> str:
+    """``git rev-parse --short HEAD`` of ``root``; ``"unknown"`` outside a checkout (the
+    stamp of generated files and portability runs)."""
+    r = _git(Path(root), "rev-parse", "--short", "HEAD")
+    return r.stdout.strip() if r is not None and r.returncode == 0 else "unknown"
+
+
+def utc_stamp() -> str:
+    """The current UTC time, to the minute, as generated files record it."""
+    import datetime as dt
+
+    return dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%MZ")
+
+
 def head(root: Path) -> str | None:
     """``git rev-parse HEAD`` (the full SHA) of ``root``; ``None`` outside a checkout."""
     r = _git(Path(root), "rev-parse", "--verify", "--quiet", "HEAD")

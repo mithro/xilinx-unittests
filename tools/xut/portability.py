@@ -68,6 +68,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from xut import provenance
 from xut.catalog.unisim import HdlModule, HdlParam, parse_module
 from xut.errors import XutError
 from xut.modelsrc import ModelSource
@@ -227,7 +228,8 @@ _MISSING_MODULE = (
 
 def missing_modules(log_text: str) -> list[str]:
     """The modules a smoke log's error lines say are missing."""
-    return [m.group(1) for ln in error_lines(log_text) for rx in _MISSING_MODULE if (m := rx.search(ln))]
+    lines = error_lines(log_text)
+    return [m.group(1) for ln in lines for rx in _MISSING_MODULE if (m := rx.search(ln))]
 
 
 def error_lines(log_text: str) -> list[str]:
@@ -656,38 +658,13 @@ def run_smoke(
     ctx = multiprocessing.get_context("forkserver")
     with ProcessPoolExecutor(max_workers=max(1, jobs), mp_context=ctx) as ex:
         plans = list(ex.map(_plan, list(todo), list(todo.values())))
-    from xut.verilatorize.equiv import config_dir, config_key
-
     work = out_dir(ms, root, partial=bool(models))
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
     exe = executor_for(ms, root)
     tools = sim_tool_versions(exe, work)
-    jobs_list: list[tuple[int, str]] = []
-    dirs: dict[str, list[tuple[str, Path]]] = {}
-    for p in plans:
-        dirs[p.model] = []
-        if p.mod is None:
-            continue
-        built = _gate(man.models.get(p.model)) is None
-        size = p.path.stat().st_size
-        for cfg in p.configs:
-            key = config_key(cfg)
-            d = work / p.model / config_dir(key)
-            d.mkdir(parents=True)
-            (d / "smoke.v").write_text(smoke_top(p.mod, cfg))
-            scripts = _scripts(exe, ms, root, d, key, p.model)
-            for tool in TOOLS if built else ("iverilog",):
-                (d / f"{tool}.sh").write_text(scripts[tool])
-                # Verilator first, then the largest models: the slowest start first
-                jobs_list.append(
-                    (size * (4 if tool == "verilator" else 1), f"{p.model}/{d.name}/{tool}.sh")
-                )
-            dirs[p.model].append((key, d))
-    jobs_list.sort(key=lambda j: (-j[0], j[1]))
-    (work / "jobs.txt").write_text("".join(f"{j}\n" for _, j in jobs_list))
-    (work / "done.txt").write_text("")
+    dirs, jobs_list = _write_scripts(exe, ms, root, work, plans, man.models)
     n_cfg = sum(len(v) for v in dirs.values())
     progress(
         f"portability {ms.name}: {len(plans)} models, {n_cfg} configurations, "
@@ -703,8 +680,8 @@ def run_smoke(
     ]
     doc = {
         "model_source": ms.name,
-        "generated": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
-        "head": git_head(root),
+        "generated": provenance.utc_stamp(),
+        "head": provenance.short_head(root),
         "image": SIM_IMAGE,
         "digest": image_digest(SIM_IMAGE) or "native",
         "tools": tools,
@@ -719,6 +696,45 @@ def run_smoke(
     dest.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
     progress(f"portability {ms.name}: wrote {dest}")
     return rows
+
+
+def _write_scripts(
+    exe: Executor,
+    ms: ModelSource,
+    root: Path,
+    work: Path,
+    plans: list[_Plan],
+    entries: Mapping[str, ModelEntry],
+) -> tuple[dict[str, list[tuple[str, Path]]], list[tuple[int, str]]]:
+    """Each plan's configuration directories under ``work`` (``smoke.v`` and the scripts:
+    no Verilator script for a model that is not built, ruling S47), ``jobs.txt`` (the
+    slowest first: Verilator, then the largest models) and an empty ``done.txt``. Returns
+    ``(model -> [(config key, dir)], [(weight, script)])``."""
+    from xut.verilatorize.equiv import config_dir, config_key
+
+    jobs_list: list[tuple[int, str]] = []
+    dirs: dict[str, list[tuple[str, Path]]] = {}
+    for p in plans:
+        dirs[p.model] = []
+        if p.mod is None:
+            continue
+        built = _gate(entries.get(p.model)) is None
+        size = p.path.stat().st_size
+        for cfg in p.configs:
+            key = config_key(cfg)
+            d = work / p.model / config_dir(key)
+            d.mkdir(parents=True)
+            (d / "smoke.v").write_text(smoke_top(p.mod, cfg))
+            scripts = _scripts(exe, ms, root, d, key, p.model)
+            for tool in TOOLS if built else ("iverilog",):
+                (d / f"{tool}.sh").write_text(scripts[tool])
+                weight = size * (4 if tool == "verilator" else 1)
+                jobs_list.append((weight, f"{p.model}/{d.name}/{tool}.sh"))
+            dirs[p.model].append((key, d))
+    jobs_list.sort(key=lambda j: (-j[0], j[1]))
+    (work / "jobs.txt").write_text("".join(f"{j}\n" for _, j in jobs_list))
+    (work / "done.txt").write_text("")
+    return dirs, jobs_list
 
 
 def _needed(ms: ModelSource, model: str, e: ModelEntry) -> list[str]:
@@ -759,15 +775,6 @@ def _row(
     return Row(
         p.model, cells["iverilog"], cells["verilator"], vz, equiv, trig, en, "; ".join(reasons)
     )
-
-
-def git_head(root: Path) -> str:
-    import subprocess
-
-    p = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True
-    )
-    return p.stdout.strip() if p.returncode == 0 else "unknown"
 
 
 # ---- the table ----------------------------------------------------------------------------
@@ -857,6 +864,11 @@ def parse(md: str) -> dict[str, dict[str, Row]]:
         c = _cells(line)
         if len(c) != 8:
             raise PortabilityError(f"a model row needs 8 cells, got {len(c)}: {line!r}")
+        if c[4] not in EQUIV:
+            raise PortabilityError(f"{c[0]}: equiv cell {c[4]!r} is not one of {EQUIV}")
+        for cell in (c[1], c[2]):
+            if cell not in ("yes", "no") and not cell.startswith("no: "):
+                raise PortabilityError(f"{c[0]}: simulator cell {cell!r} is not yes/no/no: ...")
         trig, en = ([] if v == NONE else v.split(", ") for v in (c[5], c[6]))
         section[c[0]] = Row(c[0], c[1], c[2], c[3], c[4], trig, en, c[7])
     return out

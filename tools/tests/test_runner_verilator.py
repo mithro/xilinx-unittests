@@ -1197,3 +1197,11 @@ def test_defines_over_a_gated_model_fail_closed(work, ztoy, no_container, monkey
     ctx = dataclasses.replace(ztoy, defines={"XIL_XECLIB": ""})
     got = gate_config(_sv_tree(work), "default", ctx, 5, lambda _l: None, verdicts=True)
     assert got[0] == "error" and "defines XIL_XECLIB are set" in got[1], got
+
+
+def test_iverilog_vz_without_a_python_run_says_why(ctx, toy, no_container, monkeypatch):
+    """PR #10 nit: no stim.xvec is prepare_vector's reason, not a FileNotFoundError."""
+    _fake_ensure(monkeypatch, _entry("unchanged"))
+    res = IverilogVzRunner().run(_case("7series.TOYFF.L1.capture"), ctx)
+    assert res.status == "error"
+    assert all("FileNotFoundError" not in (c.reason or "") for c in res.configs), res.configs

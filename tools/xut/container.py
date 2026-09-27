@@ -81,16 +81,21 @@ _UNIT = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
 OOM_MARK = "xut-container: oom-killed"
 
 
+def _parse_size(value: str) -> int | None:
+    """``<digits><k|m|g>`` in bytes, or None (the one size parser)."""
+    m = _SIZE_RE.fullmatch(value)
+    return int(m.group(1)) * _UNIT[m.group(2)] if m else None
+
+
 def size_bytes(value: str, what: str, hi: str | None = None) -> int:
     """``value`` (``<digits><k|m|g>``) in bytes; ``XutError`` (naming ``what``) unless it
     is at least ``MEMORY_MIN`` and, with ``hi``, at most ``hi``."""
-    m = _SIZE_RE.fullmatch(value)
     rng = f"{MEMORY_MIN} to {hi}" if hi else f"at least {MEMORY_MIN}"
-    if m is None:
+    n = _parse_size(value)
+    if n is None:
         raise XutError(f"{what}={value!r} is not <digits><k|m|g> ({rng}, e.g. 4g)")
-    n = int(m.group(1)) * _UNIT[m.group(2)]
-    lo_b = int(MEMORY_MIN[:-1]) * _UNIT[MEMORY_MIN[-1]]
-    hi_b = int(hi[:-1]) * _UNIT[hi[-1]] if hi else None
+    lo_b, hi_b = _parse_size(MEMORY_MIN), _parse_size(hi) if hi else None
+    assert lo_b is not None
     if n < lo_b or (hi_b is not None and n > hi_b):
         raise XutError(f"{what}={value!r} is out of range: it must be {rng}")
     return n

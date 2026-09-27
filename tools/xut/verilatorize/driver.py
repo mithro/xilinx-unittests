@@ -54,6 +54,7 @@ from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pyslang
 
@@ -69,6 +70,10 @@ from xut.verilatorize.analyze import (
     has_procedural_assign,
 )
 from xut.verilatorize.rewrite import check_clean, rewrite, write_text
+
+if TYPE_CHECKING:
+    from xut.catalog.unisim import HdlModule
+    from xut.verilatorize.equiv import Checked
 
 STATUSES = ("transformed", "unchanged", "unsupported")
 
@@ -515,7 +520,7 @@ def _link(man: Manifest) -> None:
 _DEP_KEY = ("source_sha256", "glbl_sha256", "tool_sha256", "choices_sha256", "xut_version")
 
 
-def checked(man: Manifest, model: str, files: dict[str, Path]) -> object:
+def checked(man: Manifest, model: str, files: dict[str, Path]) -> Checked:
     """The equivalence subject (``equiv.Checked``) of a gated ``model``: its original file
     against its vz hierarchy, whose copies (its own when it is transformed, and every
     transformed dependency's) are compiled explicitly (``lib_models``). Its triggers add the
@@ -772,8 +777,13 @@ def undriven_inputs(ms: ModelSource, model: str, connected: dict[str, int]) -> l
     """The input ports of ``model`` (its HDL) not fully driven: absent from ``connected``
     (port -> bits driven), or with fewer bits driven than the port has (review M3). A
     wrapper leaving one undriven breaks the z-compare rewrite's validity condition (S38)."""
+    return undriven_ports(parsed(ms, model), connected)
+
+
+def undriven_ports(mod: HdlModule, connected: dict[str, int]) -> list[str]:
+    """``undriven_inputs`` of a parsed module."""
     out = []
-    for p in parsed(ms, model).ports:
+    for p in mod.ports:
         n = connected.get(p.name, 0)
         if p.direction == "input" and n < p.width:
             out.append(p.name if n == 0 else f"{p.name} ({n} of {p.width} bits)")
@@ -781,13 +791,13 @@ def undriven_inputs(ms: ModelSource, model: str, connected: dict[str, int]) -> l
 
 
 @functools.lru_cache(maxsize=256)
-def _module(path: str, mtime_ns: int, model: str) -> object:
+def _module(path: str, mtime_ns: int, model: str) -> HdlModule:
     from xut.catalog.unisim import parse_module
 
     return parse_module(Path(path), model)
 
 
-def parsed(ms: ModelSource, model: str) -> object:
+def parsed(ms: ModelSource, model: str) -> HdlModule:
     """``parse_module`` of ``model``'s file, cached while the file is unchanged."""
     f = model_files(ms)[model]
     return _module(str(f), f.stat().st_mtime_ns, model)

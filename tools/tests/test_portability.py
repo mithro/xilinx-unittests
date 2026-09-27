@@ -745,7 +745,7 @@ def test_exit_137_without_the_oom_mark_is_a_timeout_or_kill():
     """PR #10 nit: 137 is timeout -k's kill or an OOM kill; only docker's OOMKilled mark
     makes it oom (pinned: checked on this host for a child killed at the cap)."""
     script = portability._SCRIPT
-    assert '"{timeout_mark}-or-kill ($rc)"' in script and '-eq 137' in script
+    assert '"{timeout_mark}-or-kill ($rc)"' in script and "-eq 137" in script
     assert classify("xut-smoke: build exit 0\nxut-smoke: timeout-or-kill (137)\n") == "timeout"
 
 
@@ -814,7 +814,10 @@ def test_other_errors_are_not_config(log):
 
 def test_a_missing_module_absent_from_the_model_source_is_secureip():
     ivl = "/m/ISERDESE2.v:605: error: Unknown module type: B_ISERDESE2\n"
-    vl = "%Error-MODMISSING: /m/ISERDESE2.v:575:3: Cannot find file containing module: 'B_ISERDESE2'\n"
+    vl = (
+        "%Error-MODMISSING: /m/ISERDESE2.v:575:3: Cannot find file containing module: "
+        "'B_ISERDESE2'\n"
+    )
     for log in (ivl, vl):
         assert portability.missing_modules(log) == ["B_ISERDESE2"]
         assert classify(log, {"ISERDESE2", "FDRE"}) == "secureip"
@@ -857,3 +860,61 @@ def test_render_counts_config_apart():
     assert "| iverilog | 1 | 1 | 1 |\n| verilator | 3 | 0 | 0 |\n" in md
     assert "_config: every failing smoke configuration was refused" in md
     assert parse(md)["s"]["B"].config("iverilog")
+
+
+# --- PR #10 nits: smoke_models, load_results and parse refusals ------------------------------
+
+
+def test_smoke_models_add_retarget_entries_and_never_shadow_unisims(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from xut.modelsrc import ModelSource
+
+    src = tmp_path / "src"
+    (src / "unisims").mkdir(parents=True)
+    (src / "retarget").mkdir()
+    for f in ("unisims/FDRE.v", "unisims/LUT1.v", "retarget/FDRE.v", "retarget/SRL_RT.v",
+              "retarget/UNLISTED.v"):  # fmt: skip
+        (src / f).write_text("module x; endmodule\n")
+    (src / "glbl.v").write_text("module glbl; endmodule\n")
+    cat = tmp_path / "catalog" / "7series"
+    cat.mkdir(parents=True)
+    models = {"FDRE": ("retarget", "FDRE.v"), "SRLX": ("retarget", "SRL_RT.v"),
+              "LUT1": ("unisim", "LUT1.v")}  # fmt: skip
+    for name in (*models, "SRLX.overrides"):
+        (cat / f"{name}.yaml").write_text("x: 1\n")
+    monkeypatch.setattr("xut.workunits.load_family", lambda root: "7series")
+    monkeypatch.setattr(
+        "xut.catalog.model.load_entry",
+        lambda family, name, root: SimpleNamespace(
+            model={"library": models[name][0], "file": models[name][1]}
+        ),
+    )
+    got = portability.smoke_models(ModelSource("s", src), tmp_path)
+    # the retarget FDRE never shadows the UNISIM one; UNLISTED has no retarget entry
+    assert got == {
+        "FDRE": src / "unisims/FDRE.v",
+        "LUT1": src / "unisims/LUT1.v",
+        "SRL_RT": src / "retarget/SRL_RT.v",
+    }
+
+
+def test_load_results_refuses_a_malformed_file(tmp_path):
+    d = tmp_path / "build" / "portability"
+    d.mkdir(parents=True)
+    (d / "unisim-2025.2.json").write_text("{not json")
+    with pytest.raises(portability.PortabilityError, match="cannot read portability results"):
+        portability.load_results(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "why"),
+    [
+        ("| pass |", "| passs |", "equiv cell 'passs'"),
+        ("| FDRE | yes |", "| FDRE | maybe |", "'maybe'"),
+    ],
+)
+def test_parse_refuses_unknown_cells(old, new, why):
+    md = render({"s": ROWS[:1]}, _meta()).replace(old, new, 1)
+    with pytest.raises(portability.PortabilityError, match=why):
+        parse(md)
