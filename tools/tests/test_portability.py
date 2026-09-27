@@ -703,11 +703,50 @@ def test_run_scripts_record_the_container_exit_when_no_rc(tmp_path):
     portability._run_scripts(ex, work, scripts, jobs=2, progress=lambda _: None)
     d, tool = work / Path(scripts[0]).parent, Path(scripts[0]).stem
     want = "xut-container: exit 125: docker: Error response from daemon: boom"
-    assert want in (d / f"{tool}.log").read_text()
+    assert f"{portability.INFRA_MARK} {want}" in (d / f"{tool}.log").read_text()
     ok, why = portability._outcome(d, tool)
-    assert not ok and why == f"other: {want}"
+    assert not ok and why == f"infra-error: {want}"  # CQ1: never a model verdict
     assert not (d / f"{tool}.rc").exists()
     assert len((work / "done.txt").read_text().splitlines()) == 2
+
+
+def test_a_host_error_is_an_infra_error_with_its_note(tmp_path):
+    """PR #10 CQ1: an executor that raises (ContainerError: docker is gone) is category
+    infra-error, and the reason carries the host's note instead of "did not finish"."""
+    from xut.container import ContainerError
+
+    work, scripts = _pool_work(tmp_path, 1)
+
+    class Broken(_PoolEx):
+        def run(self, argv, cwd, log, timeout_s, env=None):
+            if argv[1] == scripts[0]:
+                raise ContainerError("docker daemon not reachable")
+            return super().run(argv, cwd, log, timeout_s, env)
+
+    ex = Broken(dict.fromkeys(scripts, "ok"), delay=0)
+    portability._run_scripts(ex, work, scripts, jobs=2, progress=lambda _: None)
+    d, tool = work / Path(scripts[0]).parent, Path(scripts[0]).stem
+    ok, why = portability._outcome(d, tool)
+    assert not ok
+    assert why == "infra-error: host error: ContainerError: docker daemon not reachable"
+    assert portability.error_lines((d / f"{tool}.log").read_text())  # the note is kept
+
+
+def test_an_unreadable_rc_is_named(tmp_path):
+    (tmp_path / "iverilog.rc").write_text("garbage\n")
+    (tmp_path / "iverilog.log").write_text("xut-smoke: build exit 0\n")
+    assert portability._outcome(tmp_path, "iverilog") == (
+        False,
+        "other: unreadable iverilog.rc 'garbage'",
+    )
+
+
+def test_exit_137_without_the_oom_mark_is_a_timeout_or_kill():
+    """PR #10 nit: 137 is timeout -k's kill or an OOM kill; only docker's OOMKilled mark
+    makes it oom (pinned: checked on this host for a child killed at the cap)."""
+    script = portability._SCRIPT
+    assert '"{timeout_mark}-or-kill ($rc)"' in script and '-eq 137' in script
+    assert classify("xut-smoke: build exit 0\nxut-smoke: timeout-or-kill (137)\n") == "timeout"
 
 
 def test_run_scripts_count_every_script_done_exactly_once(tmp_path):

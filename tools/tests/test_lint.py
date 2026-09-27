@@ -1199,3 +1199,61 @@ def test_portability_failing_equivalence_with_verilator_yes_is_an_error(
     assert [i.rule for i in issues] == want
     if want:
         assert "3 mismatch(es)" in issues[0].message and "blocks" in issues[0].message
+
+
+def test_portability_infra_error_asks_for_a_regenerated_table(tmp_path):
+    """PR #10 CQ1: an infrastructure failure is not a model verdict: the test is not told
+    to declare the runner unsupported, the table is to be regenerated."""
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    _table(
+        tmp_path,
+        ("FDRE", "yes", "no", "unchanged", "—", [], [],
+         "verilator: infra-error: host error: ContainerError: docker gone [default]"),
+    )  # fmt: skip
+    (issue,) = check_portability(tmp_path)
+    assert (issue.rule, issue.severity) == ("portability-agreement", "error")
+    assert "infrastructure failure" in issue.message and "regenerated" in issue.message
+    assert '"unsupported"' not in issue.message
+
+
+def test_portability_unsupported_matching_no_row_is_a_warning(tmp_path):
+    """PR #10 nit: a declared unsupported must match a row that does not run."""
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(
+        _VALID_TEST_YAML.replace('verilator: "yes"', 'verilator: "unsupported"').replace(
+            "flows: [rtl]", 'flows: [rtl]\n    unsupported_reasons: {verilator: "hide it"}'
+        )
+    )
+    _table(tmp_path, ("FDRE", "yes", "yes", "unchanged", "—"))
+    (issue,) = check_portability(tmp_path)
+    assert (issue.rule, issue.severity) == ("portability-agreement", "warning")
+    assert "matches no row" in issue.message
+
+
+def test_portability_a_test_without_a_row_is_a_warning(tmp_path):
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    _table(tmp_path, ("FDSE", "yes", "no", "unchanged", "—"))
+    (issue,) = check_portability(tmp_path)
+    assert (issue.rule, issue.severity) == ("portability-agreement", "warning")
+    assert "has no row for FDRE" in issue.message
+
+
+def test_portability_rows_are_found_by_the_model_file(tmp_path, monkeypatch):
+    """PR #10 nit: a retargeted primitive's row is its model file's, not its own name."""
+    from types import SimpleNamespace
+
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    monkeypatch.setattr(
+        "xut.catalog.model.load_entry",
+        lambda family, prim, root: SimpleNamespace(model={"file": "FDRE_RT.v"}),
+    )
+    _table(tmp_path, ("FDRE_RT", "yes", "no", "unchanged", "—", [], [], "verilator: real: x"))
+    (issue,) = check_portability(tmp_path)
+    assert issue.severity == "error" and "FDRE (model FDRE_RT) does not run" in issue.message
