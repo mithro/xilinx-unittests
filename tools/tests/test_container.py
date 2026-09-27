@@ -498,7 +498,11 @@ def test_docker_memory_from_env_and_constructor(tmp_path, monkeypatch):
     assert "--memory=512m" in argv and "--memory-swap=512m" in argv
 
 
-@pytest.mark.parametrize("bad", ["4G", "4gb", "", "g", "1.5g", "4 g", "-1g", "4t"])
+@pytest.mark.parametrize(
+    "bad",
+    ["4G", "4gb", "", "g", "1.5g", "4 g", "-1g", "4t", "0g", "00g", "0m", "00m", "1k", "63m",
+     "33g", "99999g", "32769m"],
+)  # fmt: skip
 def test_docker_memory_refuses_a_malformed_cap(tmp_path, monkeypatch, bad):
     from xut.errors import XutError
 
@@ -607,3 +611,48 @@ def test_docker_oom_kill_is_detected_live(tmp_path):
     )
     assert rc == 137, log.read_text()
     assert "xut-container: oom-killed at memory cap 64m" in log.read_text()
+
+
+@pytest.mark.parametrize(
+    ("cap", "nbytes"),
+    [("64m", 64 << 20), ("4g", 4 << 30), ("32g", 32 << 30), ("32768m", 32 << 30),
+     ("65536k", 64 << 20)],
+)  # fmt: skip
+def test_docker_memory_accepts_64m_to_32g(tmp_path, monkeypatch, cap, nbytes):
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    assert container.size_bytes(cap, "memory") == nbytes
+    argv = DockerExecutor(root=tmp_path, memory=cap).argv(["true"], tmp_path, "n", None)
+    assert f"--memory={cap}" in argv
+
+
+def test_memory_cap_error_names_the_range(tmp_path):
+    from xut.errors import XutError
+
+    with pytest.raises(XutError, match="64m.*32g"):
+        DockerExecutor(root=tmp_path, memory="0g")
+
+
+@pytest.mark.parametrize(
+    ("cap", "budget", "want"),
+    [(None, None, 25), ("16g", None, 6), ("4g", "200g", 50), ("32g", "100g", 3),
+     ("64m", "1g", 16), ("8g", "4g", 0)],
+)  # fmt: skip
+def test_max_jobs_is_the_budget_over_the_cap(monkeypatch, cap, budget, want):
+    for env, v in (("XUT_CONTAINER_MEMORY", cap), ("XUT_MEMORY_BUDGET", budget)):
+        if v is None:
+            monkeypatch.delenv(env, raising=False)
+        else:
+            monkeypatch.setenv(env, v)
+    n, b, c = container.max_jobs()
+    assert n == want
+    assert (b, c) == (budget or "100g", cap or "4g")
+
+
+@pytest.mark.parametrize("bad", ["0g", "100G", "", "1k", "lots"])
+def test_memory_budget_refuses_a_malformed_value(monkeypatch, bad):
+    from xut.errors import XutError
+
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    monkeypatch.setenv("XUT_MEMORY_BUDGET", bad)
+    with pytest.raises(XutError, match="XUT_MEMORY_BUDGET"):
+        container.max_jobs()

@@ -11,7 +11,9 @@ environment that already provides the pinned tools. CI's `sim` job does not set 
 builds the image and runs pytest on the host through `DockerExecutor`.
 
 Every container is memory-capped (Ruling S48): `--memory=<m> --memory-swap=<m>`, where
-`<m>` is `DockerExecutor(memory=...)`, else `$XUT_CONTAINER_MEMORY`, else `4g`. Rootful
+`<m>` is `DockerExecutor(memory=...)`, else `$XUT_CONTAINER_MEMORY`, else `4g` (64m to
+32g: docker reads 0 as no limit), and a command runs at most `max_jobs()` containers at
+once: `$XUT_MEMORY_BUDGET` (default 100g) // the cap, 25 at the defaults. Rootful
 docker puts containers outside the user's systemd slices, where systemd-oomd cannot see
 them; the cap makes the kernel OOM-kill inside the container instead. `run` checks
 `docker inspect`'s `State.OOMKilled` after every run and appends
@@ -41,17 +43,55 @@ _KILL_TIMEOUT_S = 30
 #: How long `docker inspect` / `docker rm -f` may take after a run.
 _CLEANUP_TIMEOUT_S = 60
 
-#: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`.
+#: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`, and
+#: its accepted range (S48a: docker reads 0 as "no limit"; below 6m it refuses to start).
 DEFAULT_MEMORY = "4g"
 MEMORY_ENV = "XUT_CONTAINER_MEMORY"
-_MEMORY_RE = re.compile(r"[0-9]+[kmg]")
+MEMORY_MIN, MEMORY_MAX = "64m", "32g"
+#: The memory all of one command's containers may hold at once (S48a), overridable by
+#: `XUT_MEMORY_BUDGET`: a command runs at most budget // cap containers (`max_jobs`).
+DEFAULT_BUDGET = "100g"
+BUDGET_ENV = "XUT_MEMORY_BUDGET"
+_SIZE_RE = re.compile(r"([0-9]+)([kmg])")
+_UNIT = {"k": 1 << 10, "m": 1 << 20, "g": 1 << 30}
 
 #: The start of the line `run` appends to the log when the container was OOM-killed.
 OOM_MARK = "xut-container: oom-killed"
 
-#: The most containers a run may start at once: the memory budget is 100G, at 4G per
-#: container (Ruling S48).
-MAX_JOBS = 64
+
+def size_bytes(value: str, what: str, hi: str | None = None) -> int:
+    """``value`` (``<digits><k|m|g>``) in bytes; ``XutError`` (naming ``what``) unless it
+    is at least ``MEMORY_MIN`` and, with ``hi``, at most ``hi``."""
+    m = _SIZE_RE.fullmatch(value)
+    rng = f"{MEMORY_MIN} to {hi}" if hi else f"at least {MEMORY_MIN}"
+    if m is None:
+        raise XutError(f"{what}={value!r} is not <digits><k|m|g> ({rng}, e.g. 4g)")
+    n = int(m.group(1)) * _UNIT[m.group(2)]
+    lo_b = int(MEMORY_MIN[:-1]) * _UNIT[MEMORY_MIN[-1]]
+    hi_b = int(hi[:-1]) * _UNIT[hi[-1]] if hi else None
+    if n < lo_b or (hi_b is not None and n > hi_b):
+        raise XutError(f"{what}={value!r} is out of range: it must be {rng}")
+    return n
+
+
+def container_memory(memory: str | None = None) -> str:
+    """The container memory cap: ``memory``, else ``$XUT_CONTAINER_MEMORY``, else ``4g``;
+    ``XutError`` outside ``MEMORY_MIN``..``MEMORY_MAX``."""
+    if memory is None:
+        memory, what = os.environ.get(MEMORY_ENV, DEFAULT_MEMORY), f"${MEMORY_ENV}"
+    else:
+        what = "container memory cap"
+    size_bytes(memory, what, MEMORY_MAX)
+    return memory
+
+
+def max_jobs() -> tuple[int, str, str]:
+    """(the most containers one command may run at once, the budget, the cap): the memory
+    budget (``$XUT_MEMORY_BUDGET``, else ``100g``) // the container cap (S48a)."""
+    cap = container_memory()
+    budget = os.environ.get(BUDGET_ENV, DEFAULT_BUDGET)
+    n = size_bytes(budget, f"${BUDGET_ENV}") // size_bytes(cap, f"${MEMORY_ENV}", MEMORY_MAX)
+    return n, budget, cap
 
 
 def oom_line(memory: str) -> str:
@@ -141,15 +181,7 @@ class DockerExecutor:
         self.image = image
         self.root = (root or repo_root()).resolve()
         self.mounts = mounts
-        if memory is None:
-            memory, where = os.environ.get(MEMORY_ENV, DEFAULT_MEMORY), f"${MEMORY_ENV}"
-        else:
-            where = "memory"
-        if not _MEMORY_RE.fullmatch(memory):
-            raise XutError(
-                f"container memory cap {where}={memory!r} is not <digits><k|m|g> (e.g. 4g)"
-            )
-        self.memory = memory
+        self.memory = container_memory(memory)
 
     def guest(self, path: Path) -> str:
         p = Path(path).resolve()

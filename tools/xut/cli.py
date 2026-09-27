@@ -31,14 +31,16 @@ class _CleanErrorGroup(click.Group):
 
 
 def _jobs_cap(ctx: click.Context, param: click.Parameter, value: int) -> int:
-    """Refuse a --jobs that would start more memory-capped containers than the host's
-    memory budget allows (Ruling S48)."""
-    from xut.container import MAX_JOBS
+    """Refuse a --jobs above the memory budget // the container cap (Ruling S48a): every
+    job may hold one memory-capped container."""
+    from xut.container import max_jobs
 
-    if value > MAX_JOBS:
+    limit, budget, cap = max_jobs()
+    if value > limit:
         raise click.BadParameter(
-            f"--jobs {value} is refused: at most {MAX_JOBS} containers run at once (the "
-            "memory budget is 100G ÷ 4G per container, Ruling S48)"
+            f"--jobs {value} is refused: at most {limit} containers run at once (memory "
+            f"budget {budget} // container cap {cap}; set XUT_MEMORY_BUDGET or "
+            "XUT_CONTAINER_MEMORY to change them, Ruling S48a)"
         )
     return value
 
@@ -735,7 +737,9 @@ def portability_cmd(
 @main.command("verilatorize")
 @click.argument("models", nargs=-1)
 @click.option("--model-source", default="auto", show_default=True)
-@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option(
+    "--jobs", type=click.IntRange(min=1), default=1, show_default=True, callback=_jobs_cap
+)
 @click.option(
     "--check",
     is_flag=True,
