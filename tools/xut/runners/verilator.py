@@ -63,8 +63,8 @@ with the verilatorized directory first on the library path; each seed is judged 
 ``cocotb_check``. For both, the configuration's status is the worse of the two seeds'.
 
 Build and run timeouts are the test's (``timeout_for``: test.yaml ``timeout_s``,
-``--timeout``, 600 s). Verilator builds are slow: use ``xut run --jobs 40`` or more for
-full runs (88 CPUs).
+``--timeout``, 600 s). Verilator builds are slow: use the most ``xut run --jobs`` the
+memory budget allows for full runs (``xut.container.max_jobs``: 25 at the defaults).
 
 ``TRISTATE`` (ruling S35.3; Task 13 report, S29.3). Verilator 5.048's V3Tristate lowers a
 case comparison with z, such as ``CE === 1'bz`` (the FD* models test for an unconnected

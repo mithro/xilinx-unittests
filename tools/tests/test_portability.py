@@ -529,26 +529,79 @@ def test_run_scripts_record_a_host_timeout(tmp_path):
     assert len((work / "done.txt").read_text().splitlines()) == 2
 
 
-# --- Ruling S48: --jobs is capped -------------------------------------------------------------
+# --- Ruling S48/S48a: --jobs is capped by the memory budget --------------------------------
+
+JOBS_COMMANDS = ["portability", "run", "verilatorize"]
 
 
-@pytest.mark.parametrize("cmd", ["portability", "run"])
-def test_cli_refuses_more_than_64_jobs(cmd, monkeypatch):
+def _stub_runs(monkeypatch):
+    """Every real run raises: a missing refusal must never start one from a unit test."""
+    import xut.verilatorize.driver as vz
     from xut import run as run_mod
 
-    def never(*a, **kw):  # a missing check must never start a real run from a unit test
-        raise AssertionError("--jobs 65 reached the run")
+    def never(*a, **kw):
+        raise AssertionError("a refused --jobs reached the run")
 
     monkeypatch.setattr(portability, "run_smoke", never)
     monkeypatch.setattr(run_mod, "run_tests", never)
-    r = CliRunner().invoke(main, [cmd, "--jobs", "65"])
-    assert r.exit_code != 0
-    assert "--jobs 65" in r.output and "64" in r.output and "100G" in r.output, r.output
+    monkeypatch.setattr(vz, "verilatorize", never)
 
 
-def test_cli_jobs_default_is_at_most_24():
+def _jobs_options():
+    """(command path, option) for every --jobs / -j option of the CLI."""
+    import click
+
+    out = []
+
+    def walk(cmd, path):
+        for p in cmd.params:
+            if isinstance(p, click.Option) and ({"--jobs", "-j"} & set(p.opts + p.secondary_opts)):
+                out.append((path, p))
+        for name, sub in getattr(cmd, "commands", {}).items():
+            walk(sub, [*path, name])
+
+    walk(main, [])
+    return out
+
+
+def test_every_jobs_option_is_capped():
+    from xut.cli import _jobs_cap
+
+    found = _jobs_options()
+    assert sorted(" ".join(p) for p, _ in found) == sorted(JOBS_COMMANDS)
+    assert all(opt.callback is _jobs_cap for _, opt in found)
+
+
+@pytest.mark.parametrize("cmd", JOBS_COMMANDS)
+def test_cli_refuses_jobs_over_the_budget(cmd, monkeypatch):
+    _stub_runs(monkeypatch)
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
+    r = CliRunner().invoke(main, [cmd, "--jobs", "26"])
+    assert r.exit_code == 2, r.output
+    for want in ("--jobs 26", "100g", "4g", "25"):
+        assert want in r.output, r.output
+
+
+@pytest.mark.parametrize("cmd", JOBS_COMMANDS)
+def test_cli_jobs_limit_follows_the_container_cap(cmd, monkeypatch):
+    _stub_runs(monkeypatch)
+    monkeypatch.setenv("XUT_CONTAINER_MEMORY", "16g")
+    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
+    r = CliRunner().invoke(main, [cmd, "--jobs", "7"])
+    assert r.exit_code == 2 and "--jobs 7" in r.output and "16g" in r.output, r.output
+    assert "at most 6" in r.output, r.output
+
+
+def test_cli_jobs_defaults_stay_within_the_limit(monkeypatch):
+    """The defaults are 1, below min(cpu_count, 24, max_jobs()); this guards that upper
+    bound (with the default budget and cap, max_jobs() is 25) should a default grow."""
     import os
 
-    for name in ("portability", "run"):
-        opt = next(p for p in main.commands[name].params if p.name == "jobs")
-        assert opt.default <= min(os.cpu_count() or 1, 24)
+    from xut.container import max_jobs
+
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
+    limit = min(os.cpu_count() or 1, 24, max_jobs()[0])
+    for path, opt in _jobs_options():
+        assert 1 <= opt.default <= limit, (path, opt.default)
