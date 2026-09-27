@@ -125,12 +125,12 @@ def entry(
         "exercises": list(dict.fromkeys(exercises)),
         "attr_sampling": dict(sampling or {}),
         "runners": runs,
-        "flows": list(flows),
-        "related": list(related),
-        "gaps": list(gaps),
     }
     if reasons:
         e["unsupported_reasons"] = reasons
+    e["flows"] = list(flows)
+    e["related"] = list(related)
+    e["gaps"] = list(gaps)
     if configs:
         e["configs"] = list(configs)
     return e

@@ -243,7 +243,8 @@ smoke simulation whose memory grows without bound. Its container peaked at
   Vivado and xsim:
 
   ```bash
-  systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
+  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" \
+    systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
     -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
   ```
 
@@ -269,7 +270,11 @@ smoke simulation whose memory grows without bound. Its container peaked at
   Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
   time, each scope capped at 16G: that is 64G. The 4 slots
   (`XUT_VIVADO_SLOTS`) are counted inside the one heavy command that holds the
-  lock below, so they are that command's jobs, not a second budget. These are conservative starting values, not yet measured for our
+  lock below, so they are that command's jobs, not a second budget. The slots
+  are only a semaphore: xsim and Vivado run inside the calling command's own
+  scope, so that scope's cap must cover them (four 16G jobs need at least a
+  64G scope; with less, an OOM kill is a retryable result). These are
+  conservative starting values, not yet measured for our
   Vivado runs: measure the first runs with the scope's `memory.peak` and
   adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
