@@ -203,3 +203,27 @@ Verification, all on the scratch copy of `main` plus P1 and luts:
 - the cocotb stand-in: exit 0;
 - ruff: clean;
 - the non-container suite under the heavy lock in a 16G scope: `1866 passed, 5 skipped`.
+
+## Follow-up: PR #12 code-quality re-review (M5, N13–N22)
+
+The correctness reviewer approves. The code-quality re-review raised M5 and ten nits, and all are fixed with no change to crediting semantics.
+
+- **M5.** `unitkit` has a public `doc_mismatches(case, root, model) -> int`, built on the cached replay. It and `mutant_fails` share one per-bit doc-tag comparison, `_doc_diffs`. `test_luts_tests.py` calls it; `_edge_polarity_mismatches`, with its own GenContext, seed and whole-token tag check, is deleted.
+- **N13.** Every mutant factory now lives in `luts_tests.py`'s mutant section, including `both_edges` and `init_reversed`. The guard file imports them.
+- **N14.** `_CFGLUT5` is defined right after the imports.
+- **N15.** A public `unitkit.cases(root, family, prim)`, which `UnitGuards` also uses.
+- **N16.** `clock_edge_with_ce(ce: int)` rejects anything but 0 or 1.
+- **N17.** The CDO-stuck mutant reads bit `m.WIDTH - 1`.
+- **N18.** LUT6_2.C4 has its own mutant, which misreads only the p509 example INIT as `…FFFC`.
+- **N19.**
+  - The 14 `# fmt: skip` markers and the stray `,]` are gone, and ruff formats the file.
+  - `main` renders each primitive once.
+- **N20.** The unitkit module docstring covers S55a and the declaring-tests-only scope.
+- **N21.** `CfgLut5` computes `_init_uniform` once.
+- **N22.** `class_bins`' parameter is renamed `catalog_entry`, and so are the local `ent` names.
+
+Verification, on the scratch copy of `main` plus P1 and luts:
+- luts pytest plus P1's focused tests in a 4G scope: `233 passed`, the 8 mutant-guard cases included, with the same verdicts;
+- the cocotb stand-in: exit 0;
+- ruff: clean;
+- the non-container suite under the heavy lock in a 16G scope: `1868 passed, 5 skipped` (1701 with P1 alone).
