@@ -184,6 +184,8 @@ def _results(root: Path, ms: str = REFERENCE_MODEL_SOURCE) -> None:
     _result(root, ce, "python", "pass", ms, bins=["port:C"])  # CE declared, not reached
     _result(root, ce, "iverilog", "fail", ms)
     _result(root, ce, "verilator", "pass", ms)
+    _result(root, ce, "iverilog-vz", "pass", ms)  # its companion confirms it (S50a)
+    _vz_traces(root, ce, "1", ms)
     _result(root, ce, "xsim", "skip", ms, reason="runner unavailable: no Vivado")
     _result(root, sv, "iverilog", "pass", ms, style="sv")
     _result(root, sv, "xsim", "error", ms, style="sv")
@@ -668,22 +670,56 @@ def test_tree_state_outside_git_is_none(tmp_path):
     assert (st.tree_hash, st.head, st.dirty) == (None, None, None)
 
 
-@pytest.mark.parametrize(("vz_q", "want"), [("1", "pass"), ("0", "error")])
-def test_a_transform_bug_blocks_the_recorded_verilator_pass(repo, vz_q, want):
-    """Spec §6.2 (PR #10 nit): an iverilog-vz trace that differs from iverilog's is a
-    transform-bug, which blocks the Verilator results: the pass is recorded as error."""
+def _vz_traces(repo: Path, tid: str, vz_q: str, ms: str = REFERENCE_MODEL_SOURCE) -> None:
     from xut.formats import xtr
 
-    _results(repo)
-    ce = TESTS[1]["id"]
-    _result(repo, ce, "iverilog-vz", "pass")
     for runner, q in (("iverilog", "1"), ("iverilog-vz", vz_q)):
-        hdr = {"runner": runner, "flow": "rtl", "model": REFERENCE_MODEL_SOURCE,
+        hdr = {"runner": runner, "flow": "rtl", "model": ms,
                "prim": "FDRE", "cfg": "a", "seed": "1"}  # fmt: skip
         t = xtr.Trace(hdr)
         t.add("a/S0", {"Q": q})
-        xtr.dump(t, repo / "build/rtl" / runner / REFERENCE_MODEL_SOURCE / ce / "trace.xtr")
+        xtr.dump(t, repo / "build/rtl" / runner / ms / tid / "trace.xtr")
+
+
+@pytest.mark.parametrize(
+    ("vz", "want", "gap"),
+    [
+        ("pass-same", "pass", None),
+        ("pass-diff", "error", "transform-bug"),  # a trace difference
+        ("fail-same", "pass", None),  # fails its expectation exactly as iverilog does
+        ("fail-notrace", "error", "error"),
+        ("missing", "error", "missing"),
+        ("error", "error", "error"),
+        ("z-refused", "error", "error"),  # a cocotb run XutDut refused (Z_MARK): error
+    ],
+)
+def test_a_verilator_pass_needs_its_iverilog_vz_companion(repo, vz, want, gap):
+    """Ruling S50a (PR #10 re-review): status record records a Verilator pass as error
+    unless iverilog-vz, same test, flow and model source, is a pass or a fail with no trace
+    difference against iverilog."""
+    _results(repo)
+    ce = TESTS[1]["id"]
+    d = repo / "build/rtl/iverilog-vz" / REFERENCE_MODEL_SOURCE / ce
+    shutil.rmtree(d)
+    if vz in ("pass-same", "pass-diff"):
+        _result(repo, ce, "iverilog-vz", "pass")
+        _vz_traces(repo, ce, "0" if vz == "pass-diff" else "1")
+    elif vz in ("fail-same", "fail-notrace"):
+        _result(repo, ce, "iverilog-vz", "fail")
+        if vz == "fail-same":
+            _vz_traces(repo, ce, "1")
+    elif vz == "error":
+        _result(repo, ce, "iverilog-vz", "error")
+    elif vz == "z-refused":
+        _result(repo, ce, "iverilog-vz", "error", style="cocotb", configs=[("a", "error")],
+                reason="cocotb test drove z into the DUT: FDRE: in_vec = 0z0")  # fmt: skip
     warnings: list[str] = []
     s = record(repo, "FDRE", warn=warnings.append)
     assert s["results"]["L1/verilator/rtl"] == want
-    assert any("transform-bug" in w for w in warnings) == (want == "error")
+    msgs = [w for w in warnings if "not confirmed by iverilog-vz" in w]
+    if gap is None:
+        assert msgs == []
+    else:
+        assert msgs and msgs[0].endswith(
+            f"verilator pass not confirmed by iverilog-vz: {gap}; recorded as error"
+        ), msgs

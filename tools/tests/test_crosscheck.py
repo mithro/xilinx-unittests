@@ -1297,3 +1297,34 @@ def test_reject_configurations_agree_on_the_rejection(repo):
         )
     rep = xc.check(repo, _case(repo))
     assert rep.verdict == "agree" and rep.exit_code == 0, rep.issues
+
+
+@pytest.mark.parametrize(
+    ("vz", "gap"),
+    [
+        (None, "missing"),
+        (V("iverilog-vz", T(Q0)), None),
+        (V("iverilog-vz", T(Q1)), "transform-bug"),
+        (V("iverilog-vz", None, status="error", reason="cocotb test drove z into the DUT"),
+         "error"),
+        (V("iverilog-vz", None, status="fail"), "error"),  # a fail that cannot be compared
+        (V("iverilog-vz", T(Q0), status="fail"), None),
+        (V("iverilog-vz", None, status="skip"), "error"),
+    ],
+)  # fmt: skip
+def test_companion_gap(vz, gap):
+    """Ruling S50a: what confirms a Verilator pass."""
+    assert xc.companion_gap(vz, V("iverilog", T(Q0))) == gap
+
+
+def test_an_unconfirmed_verilator_pass_is_an_incomplete_issue(repo):
+    _test_yaml(repo, runners={"python": "yes", "iverilog": "yes", "verilator": "yes"})
+    _result(repo, "rtl", "python", "ms1", TID, trace=EXP(Q0))
+    _result(repo, "rtl", "iverilog", "ms1", TID, trace=T(Q0))
+    _result(repo, "rtl", "verilator", "ms1", TID, trace=T(Q0))
+    rep = xc.check(repo, _case(repo))
+    assert "ms1 rtl/verilator: verilator pass not confirmed by iverilog-vz: missing" in rep.issues
+    assert rep.verdict == "incomplete"
+    _result(repo, "rtl", "iverilog-vz", "ms1", TID, trace=T(Q0))
+    rep = xc.check(repo, _case(repo))
+    assert not any("not confirmed" in i for i in rep.issues), rep.issues
