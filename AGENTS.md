@@ -248,8 +248,10 @@ smoke simulation whose memory grows without bound. Its container peaked at
   `XUT_MEMORY_BUDGET` (100g) ÷ the cap, which is 25 with the defaults.
   **Until PR C is merged, xut containers on `main` are uncapped: keep
   `--jobs` at 8 or below.** Never start an uncapped container by hand.
-- **Parallelism from measured memory, not cores.** Use `--jobs` at most 24,
-  one below the enforced limit of 25, as a margin. Use `pytest -n` at most 8.
+- **Parallelism from measured memory, not cores.** Once PR C is merged, use
+  `--jobs` at most 24, one below the enforced limit of 25, as a margin.
+  **Before that, the limit is 8**, because containers are uncapped. Use
+  `pytest -n` at most 8.
   Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
   time, each scope capped at 16G. That is 64G, within this project's 100G
   share. These are conservative starting values, not yet measured for our
@@ -257,7 +259,8 @@ smoke simulation whose memory grows without bound. Its container peaked at
   adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
   value in a plan or task brief is capped by this section. For example, the
-  step-2 plan's `--jobs 80` and `--jobs 40` predate this section; use 24.
+  step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
+  until PR C is merged, and 24 after.
 - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
 - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
