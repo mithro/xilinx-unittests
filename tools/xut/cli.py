@@ -610,17 +610,26 @@ def run_cmd(
     required=True,
     help="the most containers the command runs at once (its --jobs or pytest -n)",
 )
+@click.option(
+    "--vivado",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="the most Vivado/xsim runs it starts at once in 16G scopes of their own",
+)
 @click.option("--name", default="job", show_default=True, help="scope unit: xut-<name>-<epoch>")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED)
-def heavy_cmd(mem: str, containers: int, name: str, command: tuple[str, ...]) -> None:
+def heavy_cmd(mem: str, containers: int, vivado: int, name: str, command: tuple[str, ...]) -> None:
     """Run COMMAND (after --) as a heavy command (AGENTS.md §10.1): wait until its memory
-    (--mem plus --containers x the container cap) fits in the project's 96G budget beside
-    the heavy commands already running, then run it in a capped systemd scope. Exits with
-    the command's exit code."""
+    (--mem, plus --containers x the container cap, plus --vivado x 16G) fits in the
+    project's 96G budget beside the heavy commands already running, then run it in a
+    capped systemd scope. Exits with the command's exit code."""
     from xut import heavy
 
     raise SystemExit(
-        heavy.run(mem, containers, name, command, log=lambda s: click.echo(s, err=True))
+        heavy.run(
+            mem, containers, name, command, vivado=vivado, log=lambda s: click.echo(s, err=True)
+        )
     )
 
 

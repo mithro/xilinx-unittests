@@ -269,15 +269,22 @@ smoke simulation whose memory grows without bound. Its container peaked at
   the budget formula gives the usable number. **Before PR C, the limit is 8**,
   because containers are uncapped. Use `pytest -n` at most 8.
   Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
-  time, each scope capped at 16G: that is 64G. The 4 slots
-  (`XUT_VIVADO_SLOTS`) are host-wide and are not a second budget. They are
-  only a semaphore: xsim and Vivado run inside the calling command's own
-  scope, so that scope's cap must cover the ones it runs. Four Vivado
-  synthesis jobs need 16G each, so a 64G scope; with less, an OOM kill is a
-  retryable result. xsim simulations are far smaller: a unit run with four
-  xsim at once peaked at 1.4G for the whole scope (see the table below).
-  Measure new kinds of runs with the scope's `memory.peak` (`journalctl --user`
-  prints it when the scope ends) and adjust.
+  time. The 4 slots (`XUT_VIVADO_SLOTS`) are host-wide and are only a
+  semaphore, not a budget. Every Vivado/xsim run is counted in the budget of
+  the heavy command that starts it, in one of two ways:
+  - **In the caller's own scope** (today's xsim runner and verilatorize
+    oracle): covered by the caller's `--mem`. xsim simulations are small: a
+    unit run with four xsim at once peaked at 1.4G for the whole scope (see
+    the table below).
+  - **In a 16G scope of its own** (step 3's `scoped_run`: Vivado builds and
+    `xut hw sim` xsim): counted through `xut heavy --vivado N`, which reserves
+    N × 16G inside the 96G. A command that can start them declares `--vivado`
+    with the most it runs at once. `scoped_run` refuses to start one (fail
+    closed) when its caller reserved none (`xut.heavy.vivado_reserved`).
+
+  With too small a cap, an OOM kill is a retryable result. Measure new kinds
+  of runs with the scope's `memory.peak` (`journalctl --user` prints it when
+  the scope ends) and adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
   value in a plan or task brief is capped by this section. For example, the
   step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
@@ -288,26 +295,41 @@ smoke simulation whose memory grows without bound. Its container peaked at
   `xut verilatorize --check`, `xut hw sim`, `xut hw build`, a direct Vivado or
   xsim run, and `pytest` with `-n` above 1) runs through `xut heavy`, which
   admits it only while **the sum of the budgets of every running heavy
-  command, each scope cap + jobs × container cap, is at most 96G**:
+  command, each scope cap + jobs × container cap + Vivado scopes × 16G, is at
+  most 96G**:
 
   ```bash
   uv run xut heavy --mem 8G --containers 16 --name flops-run -- \
     uv run xut run unit:flops --jobs 16 > <log> 2>&1
   ```
 
-  - `--mem` is the scope's `MemoryMax`; `--containers` is the most containers
-    the command runs at once: its `--jobs`, or pytest's `-n`. `xut heavy`
-    refuses a `--jobs`/`-n` in the command above `--containers`, `-n auto`,
-    and a budget over 96G.
+  - The declarations:
+    - `--mem` is the scope's `MemoryMax`.
+    - `--containers` is the most containers the command runs at once: its
+      `--jobs`, or pytest's `-n`.
+    - `--vivado` is the most Vivado/xsim runs it starts at once in 16G
+      scopes of their own. The default is 0.
+  - They are **your declarations**. `xut heavy` refuses a budget over 96G,
+    `-n auto`, and a `--jobs`, `-j` or `-n` above `--containers` in the
+    command or in a `bash -c` script. That check is best effort: it cannot
+    see inside a script file.
   - The budget is 24 tokens of 4G (`flock`s under
-    `$XDG_RUNTIME_DIR/xut-heavy.d/`, per user, shared by every session). A
-    command waits until it holds all the tokens it needs. The first command
-    in the queue is admitted first, so a large command is never starved.
-    The tokens are held until the command exits.
+    `$XDG_RUNTIME_DIR/xut-heavy.d/`, per user, shared by every session).
+    `$XDG_RUNTIME_DIR` must be set; there is no fallback.
+  - A command waits until it holds all the tokens it needs. Once it holds
+    the admission gate, later commands never overtake it. Commands waiting
+    for the gate itself are not woken in strict FIFO order. The tokens are
+    held until the command exits.
+  - Docker containers do not inherit the tokens. If a command is killed, its
+    containers (4g each) can outlive it until they end or `xut container`
+    sweeps them. The single mutex had the same gap.
+  - `xut heavy` inside `xut heavy` is refused, because it would deadlock on
+    its parent's tokens. Declare everything on the outer command.
   - The old `flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run ...` form
-    still works: `xut heavy` holds that lock shared, so an old-style command
-    waits for every admitted command and then runs alone, with the whole
-    budget. Use `xut heavy` for every new command.
+    still works: `xut heavy` holds that lock shared. An old-style command
+    waits until no admitted command runs and then runs alone, with the whole
+    budget. That moment can take a long time to come while `xut heavy`
+    commands keep arriving, so use `xut heavy` for every command.
   - Declare what the command needs, not the most it may use: the smaller the
     budget, the sooner it runs beside the others. Measured `memory.peak` of
     the scopes (containers not included; each is capped separately):
