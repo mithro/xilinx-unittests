@@ -156,7 +156,7 @@ FDPE is a single D flip-flop with clock enable and an asynchronous preset input 
 Findings:
 
 - [FDPE-doc-gap-L1-gsr_vs_preset](../../../../findings/FDPE-doc-gap-L1-gsr_vs_preset.md)
-- [FDPE-doc-gap-init-default](../../../../findings/FDPE-doc-gap-init-default.md)
+- [FDPE-doc-gap-doc-init_default](../../../../findings/FDPE-doc-gap-doc-init_default.md)
 
 ## Related tests
 
