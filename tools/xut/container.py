@@ -9,9 +9,19 @@ repository at `/work` and model sources read-only under `/models/`. `NativeExecu
 runs it on the host `PATH`; `executor_for` selects it when `XUT_NATIVE=1`, for an
 environment that already provides the pinned tools. CI's `sim` job does not set it: it
 builds the image and runs pytest on the host through `DockerExecutor`.
+
+Every container is memory-capped (Ruling S48): `--memory=<m> --memory-swap=<m>`, where
+`<m>` is `DockerExecutor(memory=...)`, else `$XUT_CONTAINER_MEMORY`, else `4g`. Rootful
+docker puts containers outside the user's systemd slices, where systemd-oomd cannot see
+them; the cap makes the kernel OOM-kill inside the container instead. `run` checks
+`docker inspect`'s `State.OOMKilled` after every run and appends
+`xut-container: oom-killed at memory cap <m>` to the log when it is set (the kernel may kill
+a child, not the main process, so the exit code alone does not tell), then removes the
+container itself (no `--rm`: the check needs the stopped container).
 """
 
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -27,6 +37,25 @@ SIM_IMAGE = "xut-sim:1"
 
 #: How long `docker kill` may take after a timed-out run.
 _KILL_TIMEOUT_S = 30
+
+#: How long `docker inspect` / `docker rm -f` may take after a run.
+_CLEANUP_TIMEOUT_S = 60
+
+#: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`.
+DEFAULT_MEMORY = "4g"
+MEMORY_ENV = "XUT_CONTAINER_MEMORY"
+_MEMORY_RE = re.compile(r"[0-9]+[kmg]")
+
+#: The start of the line `run` appends to the log when the container was OOM-killed.
+OOM_MARK = "xut-container: oom-killed"
+
+#: The most containers a run may start at once: the memory budget is 100G, at 4G per
+#: container (Ruling S48).
+MAX_JOBS = 64
+
+
+def oom_line(memory: str) -> str:
+    return f"{OOM_MARK} at memory cap {memory}"
 
 
 class RunTimeout(RuntimeError):
@@ -99,17 +128,28 @@ class NativeExecutor:
 
 
 class DockerExecutor:
-    """Runs commands in `image`, with `root` (default: the repository) at `/work`."""
+    """Runs commands in `image`, with `root` (default: the repository) at `/work`, capped
+    at `memory` (default: `$XUT_CONTAINER_MEMORY`, else `4g`)."""
 
     def __init__(
         self,
         image: str = SIM_IMAGE,
         root: Path | None = None,
         mounts: tuple[Mount, ...] = (),
+        memory: str | None = None,
     ) -> None:
         self.image = image
         self.root = (root or repo_root()).resolve()
         self.mounts = mounts
+        if memory is None:
+            memory, where = os.environ.get(MEMORY_ENV, DEFAULT_MEMORY), f"${MEMORY_ENV}"
+        else:
+            where = "memory"
+        if not _MEMORY_RE.fullmatch(memory):
+            raise XutError(
+                f"container memory cap {where}={memory!r} is not <digits><k|m|g> (e.g. 4g)"
+            )
+        self.memory = memory
 
     def guest(self, path: Path) -> str:
         p = Path(path).resolve()
@@ -126,11 +166,12 @@ class DockerExecutor:
         out = [
             "docker",
             "run",
-            "--rm",
             "--name",
             name,
             "--network=none",
             "--pull=never",
+            f"--memory={self.memory}",
+            f"--memory-swap={self.memory}",
             "-u",
             f"{os.getuid()}:{os.getgid()}",
             "-e",
@@ -175,7 +216,39 @@ class DockerExecutor:
                         f"timed out after {_KILL_TIMEOUT_S}s (the container may still run)"
                     ) from k
                 raise RunTimeout(f"timeout after {timeout_s}s: {argv[0]}") from e
+            finally:
+                # Every path (a result, a timeout, an exception): record an OOM kill, then
+                # remove the container (no --rm: the check needs it stopped, not gone).
+                self._finish(name, f)
         return p.returncode
+
+    def _finish(self, name: str, f: TextIO) -> None:
+        """Append the OOM line to `f` if container `name` was OOM-killed, then remove it.
+        A failure of either step is logged, never raised: it must not mask the run's own
+        result or exception."""
+        try:
+            q = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.OOMKilled}}", name],
+                capture_output=True,
+                text=True,
+                timeout=_CLEANUP_TIMEOUT_S,
+            )
+            if q.returncode == 0 and (q.stdout or "").strip() == "true":
+                f.write(oom_line(self.memory) + "\n")
+        except (OSError, subprocess.SubprocessError) as e:
+            f.write(f"xut-container: docker inspect {name} failed: {e}\n")
+        try:
+            r = subprocess.run(
+                ["docker", "rm", "-f", name],
+                capture_output=True,
+                text=True,
+                timeout=_CLEANUP_TIMEOUT_S,
+            )
+            if r.returncode != 0 and "No such container" not in (r.stderr or ""):
+                f.write(f"xut-container: docker rm -f {name} failed: {(r.stderr or '').strip()}\n")
+        except (OSError, subprocess.SubprocessError) as e:
+            f.write(f"xut-container: docker rm -f {name} failed: {e}\n")
+        f.flush()
 
 
 class _HasModelSrc(Protocol):
