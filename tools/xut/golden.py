@@ -75,7 +75,13 @@ def polarity_bins(bins: set[str], active: dict[str, str], attrs: dict[str, objec
 def attr_bins(attributes: list[dict], attrs: Mapping[str, object]) -> set[str]:
     """``attr:<A>`` for every explicitly-set attribute whose catalog ``allowed`` list is
     not enumerated (a range, prose, or nothing): spec §9 gives such an attribute the one
-    bin ``attr:<A>``, which ``Reach.bins()``'s ``attr:<A>=<v>`` never names."""
+    bin ``attr:<A>``, which ``Reach.bins()``'s ``attr:<A>=<v>`` never names.
+
+    Any explicitly set value reaches the bin, the catalog default included (e.g.
+    ``INIT=64'h0`` on LUT6), as an explicit default reaches the enumerated
+    ``attr:<A>=<default>``. So the bin alone does not show that a test left the default:
+    the spread of values (spec §4.2 boundary/walking/random) is the test's
+    ``attr_sampling``, which nothing checks against the reach yet (ruling S57)."""
     return {
         f"attr:{a['name']}"
         for a in attributes
