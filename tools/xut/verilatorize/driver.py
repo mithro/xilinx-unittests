@@ -55,6 +55,8 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+import pyslang
+
 from xut import __version__
 from xut.errors import XutError
 from xut.modelsrc import ModelSource
@@ -104,6 +106,10 @@ class ModelEntry:
     #: some override expression is not a constant: Icarus 12 evaluates such a procedural
     #: continuous assign once ("sorry"), so it cannot be the original's oracle (ruling S28b)
     nonconstant_overrides: bool = False
+    #: config key -> the transformed descendants its elaborated hierarchy instantiates under
+    #: that configuration: ``[{"model", "attrs", "key"}]`` (``descendant_configs``). Each needs
+    #: its own equivalence pass for that parameterisation (ruling S50, PR #10 must-fix 2)
+    dep_configs: dict[str, list[dict]] = field(default_factory=dict)
     xut_version: str = __version__
     # The rest of the incremental key (ruling S28c): the entry is redone when any changes.
     glbl_sha256: str = ""
@@ -503,6 +509,7 @@ def _link(man: Manifest) -> None:
             e.deps_sha256 = sha
             for verdicts in (e.equiv, e.equiv_oracle, e.equiv_reason, e.equiv_tools):
                 verdicts.clear()
+            e.dep_configs.clear()
 
 
 _DEP_KEY = ("source_sha256", "glbl_sha256", "tool_sha256", "choices_sha256", "xut_version")
@@ -528,6 +535,113 @@ def checked(man: Manifest, model: str, files: dict[str, Path]) -> object:
         tuple(e.effective_rewrites or e.rewrites),
         own + tuple(e.depends_on_transformed),
     )
+
+
+def param_literal(kind: str, value: object) -> object:
+    """A pyslang ``ConstantValue`` as a value ``render_attr`` takes for a parameter of
+    ``kind``; a value with x/z bits stays a literal (refused later, fail closed)."""
+    v = value.value  # type: ignore[attr-defined]
+    if isinstance(v, float) or kind == "real":
+        return float(v)
+    if value.hasUnknown():  # type: ignore[attr-defined]
+        return str(value)
+    if kind == "string":
+        return '"' + str(value.convertToStr()).strip('"') + '"'  # type: ignore[attr-defined]
+    return int(v)
+
+
+def instance_attrs(ms: ModelSource, model: str, inst: pyslang.ast.InstanceSymbol) -> dict:
+    """Every non-local parameter of an elaborated instance of ``model``, as ``param_literal``."""
+    kinds = {p.name: p.kind for p in parsed(ms, model).params}
+    return {
+        p.name: param_literal(kinds.get(p.name, "bits"), p.value)
+        for p in inst.body.parameters
+        if not p.isLocalParam
+    }
+
+
+def model_instances(
+    root: pyslang.ast.RootSymbol, ms: ModelSource, under: str
+) -> list[pyslang.ast.InstanceSymbol]:
+    """Every elaborated instance below ``under`` (an instance path) of a model of ``ms``."""
+    names = model_files(ms)
+    found: list[pyslang.ast.InstanceSymbol] = []
+
+    def visit(o: object) -> bool:
+        if (
+            isinstance(o, pyslang.ast.InstanceSymbol)
+            and o.definition.name in names
+            and o.hierarchicalPath.startswith(f"{under}.")
+        ):
+            found.append(o)
+        return True
+
+    root.visit(visit)
+    return found
+
+
+def descendant_configs(
+    ms: ModelSource, model: str, cfg: dict[str, str], transformed: list[str]
+) -> list[dict]:
+    """``[{"model", "attrs", "key"}]`` (sorted, deduplicated): each instance of a model of
+    ``transformed`` in ``model``'s hierarchy, elaborated (pyslang, the originals) with ``cfg``
+    as the top's parameter overrides, with the parameterisation it is instantiated with
+    (``model_attrs``, canonical). Raises ``XutError`` when the hierarchy does not elaborate
+    cleanly (fail closed: ruling S50)."""
+    from xut.catalog.unisim import is_benign
+    from xut.verilatorize.equiv import config_key
+
+    files = model_files(ms)
+    opts = pyslang.ast.CompilationOptions()
+    opts.paramOverrides = [f"{k}={v}" for k, v in cfg.items()]
+    bag = pyslang.Bag([opts])
+    comp = pyslang.ast.Compilation(bag)
+    for f in [*(files[m] for m in hierarchy(ms, [model])), ms.glbl]:
+        comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromFile(str(f)))
+    errors = [d for d in comp.getAllDiagnostics() if d.isError() and not is_benign(d)]
+    if errors:
+        report = pyslang.DiagnosticEngine.reportAll(comp.sourceManager, errors).strip()
+        raise XutError(
+            f"{model} [{config_key(cfg)}]: its hierarchy does not elaborate, so the "
+            "parameterisations of its transformed descendants cannot be derived (fail "
+            f"closed): {' | '.join(report.splitlines()[:2])}"
+        )
+    out: dict[tuple[str, str], dict] = {}
+    for inst in model_instances(comp.getRoot(), ms, model):
+        name = inst.definition.name
+        if name not in transformed:
+            continue
+        attrs = model_attrs(ms, name, instance_attrs(ms, name, inst))
+        key = config_key(attrs)
+        out[(name, key)] = {"model": name, "attrs": attrs, "key": key}
+    return [out[k] for k in sorted(out)]
+
+
+def descendants_blocked(
+    e: ModelEntry, key: str, lookup: Callable[[str], ModelEntry | None]
+) -> tuple[str, str] | None:
+    """Why ``e``'s transformed descendants block its configuration ``key``: ``(status,
+    reason)`` with ``status`` the first non-passing descendant's verdict (``fail``,
+    ``error``, or ``""`` for none), or None when every one passes for the parameterisation
+    it is instantiated with (ruling S50). ``lookup`` gives a model's current entry.
+    Fail closed: descendants never derived for ``key`` block it."""
+    if not e.depends_on_transformed:
+        return None
+    if key not in e.dep_configs:
+        return "", (
+            f"the parameterisations of its transformed descendant(s) "
+            f"{', '.join(e.depends_on_transformed)} under [{key}] were never derived"
+        )
+    for d in e.dep_configs[key]:
+        c = lookup(d["model"])
+        status = c.equiv.get(d["key"], "") if c is not None else ""
+        if status != "pass":
+            why = (c.equiv_reason.get(d["key"], "") if c is not None else "") or "no reason"
+            return status, (
+                f"transformed descendant {d['model']} [{d['key']}] has equivalence "
+                f"{status or 'no verdict'}: {why}"
+            )
+    return None
 
 
 def sim_tools(ms: ModelSource, work: Path) -> str:
@@ -570,22 +684,37 @@ def _check_all(
     from xut.verilatorize.equiv import check_model, config_dir, config_key
 
     tools = sim_tools(ms, out_dir / "equiv")
-    todo: list[tuple[str, dict[str, str]]] = []
+    todo: dict[tuple[str, str], dict[str, str]] = {}
+
+    def need(m: str, k: str, cfg: dict[str, str]) -> None:
+        e = man.models[m]
+        if e.equiv.get(k) not in ("pass", "fail") or e.equiv_tools.get(k) != tools:
+            todo.setdefault((m, k), cfg)
+
     for m in models:
         e = man.models.get(m)
         if e is None or not e.gated or e.depends_on_unsupported:
             continue
         cfgs = {config_key(c): c for c in (model_attrs(ms, m, c) for c in e.generate_configs)}
         for k, cfg in ({"default": {}} | cfgs).items():
-            if e.equiv.get(k) not in ("pass", "fail") or e.equiv_tools.get(k) != tools:
-                todo.append((m, cfg))
+            need(m, k, cfg)
+            # ruling S50: each transformed descendant is proved for the parameterisation
+            # this configuration instantiates it with
+            if e.depends_on_transformed and k not in e.dep_configs:
+                try:
+                    e.dep_configs[k] = descendant_configs(ms, m, cfg, e.depends_on_transformed)
+                except XutError as err:  # recorded: never derived blocks the configuration
+                    progress(f"equiv: {m} [{k}]: {err}")
+            for d in e.dep_configs.get(k, []):
+                if d["model"] in man.models:
+                    need(d["model"], d["key"], d["attrs"])
     files = model_files(ms)
     total, done, t0 = len(todo), 0, time.monotonic()
     progress(f"progress: equiv done=0 total={total} elapsed_s=0")
     # threads: each check waits on its simulator subprocesses
     with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
         futs = {}
-        for m, cfg in todo:
+        for (m, _), cfg in todo.items():
             subject = checked(man, m, files)
             work = out_dir / "equiv" / m / config_dir(config_key(cfg))
             futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
@@ -711,7 +840,35 @@ def ensure_model(
     receives the driver's progress lines. The first call per process transforms the model's
     whole hierarchy (``verilatorize`` follows it), re-transforming any stale copy; a gated
     model (``ModelEntry.gated``: transformed, or over a transformed dependency) is checked,
-    one with an unsupported dependency is not. ``check=False`` only transforms."""
+    one with an unsupported dependency is not. ``check=False`` only transforms.
+
+    A gated model with transformed descendants (ruling S50, PR #10 must-fix 2) also has the
+    parameterisation of each descendant instance derived from its elaborated hierarchy under
+    ``attrs`` (``ModelEntry.dep_configs``, recorded in the manifest), and each descendant is
+    ensured (checked) for it; ``descendants_blocked`` then reads their verdicts. A hierarchy
+    that does not elaborate raises ``XutError`` (fail closed)."""
+    e, k = _ensure_one(ms, model, attrs, root=root, log=log, check=check)
+    if k is not None:
+        # every transformed descendant, for the parameterisation this configuration
+        # instantiates it with (one model's lock at a time: never nested)
+        for d in e.dep_configs.get(k, []):
+            ensure_model(ms, d["model"], d["attrs"], root=root, log=log)
+    return e
+
+
+def _ensure_one(
+    ms: ModelSource,
+    model: str,
+    attrs: dict | None,
+    *,
+    root: Path | None,
+    log: Callable[[str], None],
+    check: bool,
+) -> tuple[ModelEntry, str | None]:
+    """``ensure_model`` for ``model`` alone: its entry, and the configuration key it
+    checked (None when it needs no check). A gated model with transformed descendants has
+    ``dep_configs[key]`` derived (``descendant_configs``) and recorded; a derivation that
+    fails raises ``XutError`` (fail closed)."""
     from xut.verilatorize.equiv import check_model, config_dir, config_key
 
     out = vz_dir(ms, root)
@@ -723,14 +880,17 @@ def ensure_model(
                 man = verilatorize(ms, [model], progress=log, out_dir=out)
             e = _ENTRIES[key] = man.models[model]
         if not check or not e.gated or e.status == "unsupported" or e.depends_on_unsupported:
-            return e
+            return e, None
         cfg = model_attrs(ms, model, attrs)
         k = config_key(cfg)
+        if e.depends_on_transformed and k not in e.dep_configs:
+            e.dep_configs[k] = descendant_configs(ms, model, cfg, e.depends_on_transformed)
+            _record(out, e, model, k, log, deps=True)
         if (str(out), model, k) in _CHECKED:
-            return e
+            return e, k
         tools = _sim_tools(ms, out)
         if e.equiv.get(k) in ("pass", "fail") and e.equiv_tools.get(k) == tools:
-            return e
+            return e, k
         with _MANIFEST_LOCK:
             subject = checked(Manifest.load(out / "manifest.json"), model, model_files(ms))
         why = "no verdict" if k not in e.equiv else f"was {e.equiv[k]}, or other simulators"
@@ -740,20 +900,32 @@ def ensure_model(
         _CHECKED.add((str(out), model, k))
         e.equiv[k], e.equiv_oracle[k], e.equiv_reason[k] = r.status, r.oracle, r.reason
         e.equiv_tools[k] = tools
-        with _MANIFEST_LOCK:
-            mpath = out / "manifest.json"
-            man = Manifest.load(mpath)
-            cur = man.models.get(model)
-            if cur is not None and (cur.source_sha256, cur.deps_sha256) == (
-                e.source_sha256,
-                e.deps_sha256,
-            ):
-                cur.equiv[k], cur.equiv_oracle[k] = r.status, r.oracle
-                cur.equiv_reason[k], cur.equiv_tools[k] = r.reason, tools
-                man.save(mpath)
-            else:  # the manifest moved on (another process re-transformed): say so
-                log(
-                    f"equiv: {model} [{k}] {r.status} not recorded in {mpath}: its entry "
-                    "changed since this process read it (review M5)"
-                )
-        return e
+        _record(out, e, model, k, log)
+        return e, k
+
+
+def _record(
+    out: Path, e: ModelEntry, model: str, k: str, log: Callable[[str], None], deps: bool = False
+) -> None:
+    """Copy ``e``'s verdict for ``k`` (``deps``: its ``dep_configs[k]``) into the manifest,
+    unless the manifest's entry moved on (another process re-transformed): then say so."""
+    with _MANIFEST_LOCK:
+        mpath = out / "manifest.json"
+        man = Manifest.load(mpath)
+        cur = man.models.get(model)
+        what = "descendant configurations" if deps else e.equiv.get(k, "")
+        if cur is None or (cur.source_sha256, cur.deps_sha256) != (
+            e.source_sha256,
+            e.deps_sha256,
+        ):
+            log(
+                f"equiv: {model} [{k}] {what} not recorded in {mpath}: its entry changed "
+                "since this process read it (review M5)"
+            )
+            return
+        if deps:
+            cur.dep_configs[k] = e.dep_configs[k]
+        else:
+            cur.equiv[k], cur.equiv_oracle[k] = e.equiv[k], e.equiv_oracle[k]
+            cur.equiv_reason[k], cur.equiv_tools[k] = e.equiv_reason[k], e.equiv_tools[k]
+        man.save(mpath)

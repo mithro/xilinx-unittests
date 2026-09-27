@@ -998,7 +998,7 @@ def test_sv_gate_checks_every_instantiated_parameterisation(work, ztoy, no_conta
     res = VerilatorRunner().run(case, ztoy)
     assert res.status == "error"
     assert res.configs[0].reason.startswith(
-        "transform-bug: Icarus equivalence fail for TOYFF INIT=1'b1"
+        "tb_toy_inc.u1: transform-bug: Icarus equivalence fail for TOYFF INIT=1'b1"
     ), res.configs[0].reason
     assert sorted(str(c[1]) for c in calls) == ["{'INIT': \"1'b1\"}", "{}"]
 
@@ -1056,3 +1056,144 @@ def test_parent_over_a_transformed_child_on_the_runners(work, toy):
     assert (e["TOYFF"].status, e["TOYFF"].depends_on_transformed) == ("unchanged", ["TOYSUB"])
     assert e["TOYFF"].equiv == {"default": "pass", "INIT=1'b1": "pass"}
     assert sorted(f.name for f in vz_dir(ms, work).glob("*.v")) == ["TOYSUB.v"]
+
+
+# --- PR #10 must-fix 3, 4, 6: the sv guard (ruling S50) ------------------------------------
+
+_PINIT = SV_BODY.replace("reg c", "parameter PINIT = 1'b0;\nreg c").replace(
+    "`PRIM #(.INIT(1'b1)) u1", "`PRIM #(.INIT(PINIT)) u1"
+)
+
+
+def _only_fail(monkeypatch, bad) -> list:
+    """``_fake_check``, but a check for which ``bad(model, attrs)`` holds fails."""
+    calls = _fake_check(monkeypatch, "pass")
+    import xut.verilatorize.equiv as equiv
+
+    passing = equiv.check_model
+
+    def split(an, ms, out_dir, attrs=None, **kw):
+        r = passing(an, ms, out_dir, attrs, **kw)
+        if bad(an.model, dict(attrs or {})):
+            r.status, r.reason = "fail", "3 mismatch(es) against the original on iverilog"
+        return r
+
+    monkeypatch.setattr(equiv, "check_model", split)
+    return calls
+
+
+def test_sv_guard_elaborates_the_configuration_parameters(work, ztoy, no_container, monkeypatch):
+    """The reviewer's test_sv_cfg_param_not_applied: the testbench passes its top parameter
+    PINIT down to u1, and the configuration sets it with -G. The guard elaborates the same
+    values, so u1 is gated on INIT=1'b1, not on the testbench default."""
+    from xut.runners.verilator import gate_config, sv_instances
+
+    case = dataclasses.replace(
+        _sv_tree(work, _PINIT), configs=[{"cfg": "p1", "attrs": {"PINIT": "1'b1"}}]
+    )
+    insts = sv_instances(case, ztoy, "TOYFF", 5, {"PINIT": "1'b1"})
+    assert [(i.path, i.model, i.attrs) for i in insts] == [
+        ("tb_toy_inc.u0", "TOYFF", {"INIT": 0}),
+        ("tb_toy_inc.u1", "TOYFF", {"INIT": 1}),
+    ]
+    assert [i.attrs for i in sv_instances(case, ztoy, "TOYFF", 5)] == [{"INIT": 0}] * 2
+    calls = _only_fail(monkeypatch, lambda m, a: a == {"INIT": "1'b1"})
+    got = gate_config(case, "p1", ztoy, 5, lambda _l: None, verdicts=True)
+    assert got[0] == "error" and got[1].startswith(
+        "tb_toy_inc.u1: transform-bug: Icarus equivalence fail for TOYFF INIT=1'b1"
+    ), got
+    assert {"INIT": "1'b1"} in [c[1] for c in calls]
+
+
+def test_sv_guard_refuses_an_attribute_that_is_not_a_testbench_parameter(
+    work, ztoy, no_container, monkeypatch
+):
+    from xut.runners.verilator import gate_config
+
+    _fake_check(monkeypatch)
+    case = dataclasses.replace(_sv_tree(work), configs=[{"cfg": "x", "attrs": {"NOPE": 1}}])
+    got = gate_config(case, "x", ztoy, 5, lambda _l: None, verdicts=True)
+    assert got[0] == "error" and "NOPE are not parameters of tb_toy_inc" in got[1], got
+
+
+TOYOTH = ZTOY.replace("module TOYFF", "module TOYOTH")
+_OTH = "TOYOTH #(.INIT(1'b1)) o1 (.Q(), .C(c), .D(d), .E(e));\n"
+
+
+@pytest.mark.parametrize(
+    ("line", "other", "bad", "why"),
+    [
+        # another gated model's verdict for its own parameterisation blocks the run
+        (_OTH, TOYOTH, lambda m, a: m == "TOYOTH",
+         "tb_toy_inc.o1: transform-bug: Icarus equivalence fail for TOYOTH INIT=1'b1"),
+        # another z-compare model's input left open: the S38 guard covers it too
+        (_OTH.replace(".E(e)", ".E()"), TOYOTH, lambda m, a: False,
+         "tb_toy_inc.o1: input port(s) E of TOYOTH not driven"),
+        # another model the transform refuses: never taken ungated from the vz directory
+        ("TOYOTH o1 (.Q(), .C(c), .D({d, d}), .S(e));\n",
+         (VZ_FIX / "vz_bad_select.v").read_text().replace("VZBADSEL", "TOYOTH"),
+         lambda m, a: False, "verilatorize cannot transform TOYOTH"),
+    ],
+)  # fmt: skip
+def test_sv_guard_gates_every_model_instance(
+    work, ztoy, no_container, monkeypatch, line, other, bad, why
+):
+    """PR #10 must-fix 4: a testbench instance of any model of the source is gated like
+    the primitive's, not only case.prim's."""
+    (ztoy.model_source.unisims / "TOYOTH.v").write_text(other)
+    _only_fail(monkeypatch, bad)
+    case = _sv_tree(work, SV_BODY.replace("initial begin", line + "initial begin", 1))
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ztoy)
+        if runner is IverilogVzRunner and "verilatorize" in why:
+            assert res.status == "skip", res.reason
+            continue
+        if runner is IverilogVzRunner and "transform-bug" in why:
+            continue  # verdicts are not required on the guard itself
+        assert res.status == "error", (runner.name, res.reason)
+        assert why in res.configs[0].reason, res.configs[0].reason
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "why"),
+    [
+        # the reviewer's test_sv_variable_z: an initialiser holding z
+        ("e = 1'b1;", "e = 1'bz;", "E (variable tb_toy_inc.e is written from a z constant)"),
+        # a procedural write of z, somewhere in the testbench
+        ("initial begin", "initial #5 e = 1'bz;\ninitial begin", "variable tb_toy_inc.e"),
+        # a z through another variable and a conditional
+        ("initial begin", "reg zz = 1'bz;\ninitial #5 e = c ? zz : 1'b0;\ninitial begin",
+         "variable tb_toy_inc.e is written from variable tb_toy_inc.zz"),
+        # a write that cannot be followed fails closed
+        ("initial begin", "initial if ($value$plusargs(\"E=%b\", e)) ;\ninitial begin",
+         "output argument of $value$plusargs (not followed)"),
+    ],
+)  # fmt: skip
+def test_sv_guard_refuses_a_variable_that_can_hold_z(
+    work, ztoy, no_container, monkeypatch, old, new, why
+):
+    """PR #10 must-fix 6: a testbench variable written z floats z into a z-compare input."""
+    _fake_check(monkeypatch)
+    case = _sv_tree(work, SV_BODY.replace(old, new, 1))
+    for runner in (VerilatorRunner, IverilogVzRunner):
+        res = runner().run(case, ztoy)
+        assert res.status == "error", (runner.name, res.reason)
+        assert why in res.configs[0].reason, res.configs[0].reason
+
+
+def test_sv_guard_accepts_variables_that_never_hold_z(work, ztoy):
+    from xut.runners.verilator import sv_instances
+
+    body = SV_BODY.replace("initial begin", "initial #5 e = c ^ d;\ninitial begin", 1)
+    insts = sv_instances(_sv_tree(work, body), ztoy, "TOYFF", 5)
+    assert [(i.undriven, i.zdriven, i.floating) for i in insts] == [([], [], [])] * 2
+
+
+def test_defines_over_a_gated_model_fail_closed(work, ztoy, no_container, monkeypatch):
+    """PR #10 nit: the transform and the equivalence check never see ctx.defines."""
+    from xut.runners.verilator import gate_config
+
+    _fake_check(monkeypatch)
+    ctx = dataclasses.replace(ztoy, defines={"XIL_XECLIB": ""})
+    got = gate_config(_sv_tree(work), "default", ctx, 5, lambda _l: None, verdicts=True)
+    assert got[0] == "error" and "defines XIL_XECLIB are set" in got[1], got

@@ -12,9 +12,19 @@ from pathlib import Path
 import pytest
 
 from xut.container import SIM_IMAGE, image_digest
+from xut.errors import XutError
 from xut.modelsrc import ModelSource
+from xut.runners.base import RunContext
 from xut.verilatorize import driver, zcmp
-from xut.verilatorize.driver import Manifest, ensure_model, hierarchy, instantiated, vz_dir
+from xut.verilatorize.driver import (
+    Manifest,
+    descendant_configs,
+    ensure_model,
+    hierarchy,
+    instantiated,
+    model_attrs,
+    vz_dir,
+)
 from xut.verilatorize.equiv import EquivResult, check_model, config_key
 
 FIX = Path(__file__).parent / "fixtures" / "verilatorize"
@@ -33,6 +43,8 @@ def _source(tmp_path: Path) -> ModelSource:
     shutil.copy(FIX / "glbl.v", tmp_path / "src" / "glbl.v")
     shutil.copy(FIX / "vz_parent.v", uni / "VZPARENT.v")
     shutil.copy(FIX / "vz_child.v", uni / "VZCHILD.v")
+    shutil.copy(FIX / "vz_dsp.v", uni / "VZDSP.v")
+    shutil.copy(FIX / "vz_dspe1.v", uni / "VZDSPE1.v")
     (uni / "PLAIN.v").write_text(
         "// SPDX-License-Identifier: Apache-2.0\nmodule PLAIN (output O, input I);\n"
         "  assign O = I;\nendmodule\n"
@@ -40,7 +52,9 @@ def _source(tmp_path: Path) -> ModelSource:
     return ModelSource("hier-src", tmp_path / "src")
 
 
-def _fake_check(monkeypatch, status: str = "pass") -> list:
+def _fake_check(monkeypatch, status: str = "pass", child: str | None = None) -> list:
+    """Every check gives ``status``; with ``child``, a non-default configuration of
+    VZDSPE1 gives ``child`` instead (the DSP48E1 AREG=0 verdicts)."""
     calls = []
     lock = threading.Lock()
     monkeypatch.setattr(driver, "sim_tools", lambda ms, work: "T1")
@@ -48,7 +62,8 @@ def _fake_check(monkeypatch, status: str = "pass") -> list:
     def fake(an, ms, out_dir, attrs=None, *, lib=None, seed=1, force_xsim=False):
         with lock:
             calls.append((an.model, dict(attrs or {}), tuple(an.lib_models), an.rewrites))
-        return EquivResult(an.model, status, "why", config=config_key(attrs), oracle="iverilog")
+        st = child if child and an.model == "VZDSPE1" and attrs else status
+        return EquivResult(an.model, st, f"why {st}", config=config_key(attrs), oracle="iverilog")
 
     monkeypatch.setattr("xut.verilatorize.equiv.check_model", fake)
     return calls
@@ -74,8 +89,12 @@ def test_unchanged_parent_over_a_transformed_child_is_gated(tmp_path, monkeypatc
     assert e.gated and e.effective_rewrites == ["zcmp"]
     # its hierarchy was transformed although only the parent was asked for
     assert (out / "VZCHILD.v").is_file() and not (out / "VZPARENT.v").exists()
-    # the check: the original parent over the vz child, with the z-compare stimulus
-    assert calls == [("VZPARENT", {"INIT": "1'b1"}, ("VZCHILD",), ("zcmp",))]
+    # the check: the original parent over the vz child, with the z-compare stimulus; then
+    # the child alone for the parameterisation the parent instantiates (ruling S50)
+    assert calls == [
+        ("VZPARENT", {"INIT": "1'b1"}, ("VZCHILD",), ("zcmp",)),
+        ("VZCHILD", {"INIT": "1'b1"}, ("VZCHILD",), ("zcmp",)),
+    ]
     man = Manifest.load(out / "manifest.json").models["VZPARENT"]
     assert man.depends_on_transformed == ["VZCHILD"] and man.equiv == {"INIT=1'b1": "fail"}
     from xut.runners.verilator import blocked
@@ -96,7 +115,8 @@ def test_a_stale_child_is_retransformed_and_the_parent_rechecked(tmp_path, monke
         monkeypatch.setattr(driver, name, value)  # a new process
     ensure_model(ms, "VZPARENT", {}, root=tmp_path, log=lambda _l: None)
     assert "// edited" in (out / "VZCHILD.v").read_text()  # the copy is current again
-    assert [c[0] for c in calls] == ["VZPARENT", "VZPARENT"]  # the parent's verdict reset
+    # both verdicts reset: the parent's (its dependency changed) and the child's
+    assert [c[0] for c in calls] == ["VZPARENT", "VZCHILD"] * 2
     man = Manifest.load(out / "manifest.json").models
     assert man["VZPARENT"].equiv == {"default": "pass"}
 
@@ -150,7 +170,7 @@ def test_check_covers_gated_parents(tmp_path, monkeypatch):
     out = tmp_path / "vz"
     monkeypatch.setattr(driver, "vz_dir", lambda ms: out)
     man = driver.verilatorize(ms, progress=lambda _l: None, check=True)
-    assert sorted(c[0] for c in calls) == ["VZCHILD", "VZPARENT"]
+    assert sorted(c[0] for c in calls if "DSP" not in c[0]) == ["VZCHILD", "VZPARENT"]
     assert man.models["VZPARENT"].equiv == {"default": "pass"}
     assert man.models["PLAIN"].equiv == {} and not man.models["PLAIN"].gated
 
@@ -174,3 +194,89 @@ def test_hierarchy_equivalence_passes_and_catches_a_wrong_child(tmp_path, monkey
     assert driver.transform_one(ms.unisims / "VZCHILD.v", ms.glbl, bad).status == "transformed"
     r = check_model(subject, ms, bad / "equiv", {}, lib=bad)
     assert r.status == "fail" and r.mismatches, r.reason
+
+
+# ---- ruling S50 (PR #10 must-fix 2): a parent needs each transformed descendant's verdict ----
+
+
+def test_descendant_configs_come_from_the_elaborated_hierarchy(tmp_path):
+    ms = _source(tmp_path)
+    areg0 = model_attrs(ms, "VZDSPE1", {"AREG": 0})
+    assert areg0 == {"AREG": "0"}
+    assert descendant_configs(ms, "VZDSP", {}, ["VZDSPE1"]) == [
+        {"model": "VZDSPE1", "attrs": areg0, "key": config_key(areg0)}
+    ]
+    got = descendant_configs(ms, "VZDSP", {"INIT": "1'b1"}, ["VZDSPE1"])
+    assert got[0]["attrs"] == {"AREG": "0", "INIT": "1'b1"}
+    assert descendant_configs(ms, "VZPARENT", {}, ["VZCHILD"]) == [
+        {"model": "VZCHILD", "attrs": {}, "key": "default"}
+    ]
+    assert descendant_configs(ms, "VZPARENT", {}, []) == []  # none transformed: none needed
+
+
+@pytest.mark.parametrize(("child", "prefix"), [("error", ""), ("fail", "transform-bug: ")])
+def test_a_parent_is_blocked_by_its_child_verdict_for_the_instantiated_parameterisation(
+    tmp_path, monkeypatch, child, prefix
+):
+    """The DSP48-over-DSP48E1 AREG=0 shape: VZDSP's own hierarchy check passes and VZDSPE1's
+    default passes, but VZDSP instantiates VZDSPE1 with AREG=0, whose verdict is not a pass.
+    The runner, ensure_model and blocked all refuse VZDSP (fail closed)."""
+    from xut.runners import verilator as vl
+
+    ms = _source(tmp_path)
+    calls = _fake_check(monkeypatch, "pass", child)
+    ctx = RunContext(tmp_path, "rtl", ms)
+    why = vl._verdict(ms, "VZDSP", {}, ctx, lambda _l: None)
+    assert why == (
+        f"{prefix}equivalence of VZDSP default is blocked by its hierarchy: transformed "
+        f"descendant VZDSPE1 [AREG=0] has equivalence {child}: why {child}; blocks Verilator "
+        "results (spec §6.2)"
+    )
+    assert [c[:2] for c in calls] == [("VZDSP", {}), ("VZDSPE1", {"AREG": "0"})]
+    man = Manifest.load(vz_dir(ms, tmp_path) / "manifest.json").models
+    assert man["VZDSP"].equiv == {"default": "pass"}
+    assert man["VZDSP"].dep_configs == {
+        "default": [{"model": "VZDSPE1", "attrs": {"AREG": "0"}, "key": "AREG=0"}]
+    }
+    assert man["VZDSPE1"].equiv == {"AREG=0": child}
+    # without the descendants' entries, blocked fails closed
+    assert "VZDSPE1 [AREG=0] has equivalence no verdict" in vl.blocked(man["VZDSP"], "VZDSP",
+                                                                         "default")
+    # never derived for a configuration: blocked too, even with the parent's own pass
+    man["VZDSP"].equiv["INIT=1'b1"] = "pass"
+    assert "were never derived" in vl.blocked(man["VZDSP"], "VZDSP", "INIT=1'b1", man.get)
+    # every descendant passing lets the parent through
+    for name, value in (("_ENTRIES", {}), ("_TOOLS", {}), ("_CHECKED", set())):
+        monkeypatch.setattr(driver, name, value)
+    man["VZDSPE1"].equiv["AREG=0"] = "pass"
+    assert vl.blocked(man["VZDSP"], "VZDSP", "default", man.get) is None
+
+
+def test_check_all_checks_each_child_parameterisation_a_parent_needs(tmp_path, monkeypatch):
+    """``verilatorize --check`` derives the parent's descendant configurations and checks
+    the child for them too, and the portability cell folds the child's verdict in."""
+    from xut.portability import _equiv
+
+    ms = _source(tmp_path)
+    calls = _fake_check(monkeypatch, "pass", "error")
+    out = tmp_path / "vz"
+    monkeypatch.setattr(driver, "vz_dir", lambda ms: out)
+    man = driver.verilatorize(ms, ["VZDSP"], progress=lambda _l: None, check=True)
+    assert sorted((c[:2] for c in calls if c[0] == "VZDSPE1"), key=str) == [
+        ("VZDSPE1", {"AREG": "0"}),
+        ("VZDSPE1", {}),
+    ]
+    assert man.models["VZDSP"].dep_configs["default"][0]["key"] == "AREG=0"
+    cell, why = _equiv(man.models["VZDSP"], man.models, ["default"])
+    assert cell == "error"
+    assert why.startswith("equiv: error via transformed descendant VZDSPE1 [AREG=0] ")
+    assert _equiv(man.models["VZDSPE1"], man.models, ["default"])[0] == "error"
+
+
+def test_a_hierarchy_that_does_not_elaborate_fails_closed(tmp_path, monkeypatch):
+    ms = _source(tmp_path)
+    _fake_check(monkeypatch)
+    f = ms.unisims / "VZDSP.v"
+    f.write_text(f.read_text().replace(".D(D));", ".D(D), .NOPORT(C));"))
+    with pytest.raises(XutError, match="does not elaborate, so the parameterisations"):
+        ensure_model(ms, "VZDSP", {}, root=tmp_path, log=lambda _l: None)
