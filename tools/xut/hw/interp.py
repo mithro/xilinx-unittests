@@ -16,9 +16,12 @@ SAMPLE captures in DECODE. Printing time is not modelled: the DUT is static mean
 Two approximations, neither of which changes a sample or a reply byte:
 
 - a ``CycleEvent`` is stamped at DECODE. The RTL registers ``commit``/``edge_we``, so
-  its pins change one cycle later: change-to-change gaps are exact, while
-  change-to-capture gaps are overstated by one cycle (the margin still holds, since
-  every hold is MARGIN + 1 cycles);
+  its pins change one cycle later (edge D+1 for a DECODE at edge D): change-to-change
+  gaps are exact. A SAMPLE decoded at edge E copies ``cur_out`` into ``p_bits`` at E,
+  and ``cur_out`` last took the DUT's out_vec at E-1. So a change-to-capture gap is
+  overstated by one cycle against the ``p_bits`` capture and by two against the
+  physical capture into ``cur_out``. The shortest real gap is MARGIN + 1 cycles
+  (stamped MARGIN + 3), so the margin still holds;
 - ``RunOutcome.cycles`` leaves out the one-cycle ``S_SAMPLED`` state per SAMPLE and
   the print time, so it is not an RTL cycle count.
 """
@@ -149,7 +152,8 @@ def margin_violations(events: list[CycleEvent], margin: int = MARGIN) -> list[st
 
 
 class EmuError(ValueError):
-    """A mis-wired emulator slot: its DUT's samples do not have the slot's out_vec width."""
+    """A mis-wired emulator slot (its DUT's samples do not have the slot's out_vec width),
+    or a host that broke the one-command-in-flight rule of ``xut.hw.proto``."""
 
 
 @dataclass
@@ -166,7 +170,13 @@ class EmuSlot:
 
 class Harness:
     """The harness as seen from its UART: ``feed`` the host's bytes, get its replies.
-    Construction is "configuring the FPGA": every slot's DUT is reset to its ``t0``."""
+    Construction is "configuring the FPGA": every slot's DUT is reset to its ``t0``.
+
+    One command in flight (``xut.hw.proto``): a command may arrive in pieces over several
+    ``feed`` calls, but a byte after a complete command, in the same call, would reach
+    the RTL while it replies or runs, and the RTL discards it. ``feed`` raises
+    ``EmuError`` instead, so host-side pipelining fails a unit test rather than timing
+    out on hardware."""
 
     def __init__(
         self,
@@ -191,7 +201,13 @@ class Harness:
             n = self._step(out)
             if n == 0:
                 break
+            cmd = chr(self._buf[0])
             del self._buf[:n]
+            if self._buf:
+                raise EmuError(
+                    f"{len(self._buf)} byte(s) pipelined behind {cmd!r}: the harness "
+                    "discards bytes while it replies or runs (one command in flight)"
+                )
         return bytes(out)
 
     def _step(self, out: bytearray) -> int:

@@ -158,3 +158,25 @@ def test_a_sample_wider_or_narrower_than_nout_is_refused():
     h.feed(proto.load_frame(0, [image.W_SAMPLE, image.W_END]))
     with pytest.raises(EmuError, match=r"width\(nout\)=8"):
         h.feed(b"R")
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [b"II", b"IR", b"ZI", proto.load_frame(0, [image.W_END]) + b"R"],
+    ids=["id-id", "id-run", "badcmd-id", "load-run"],
+)
+def test_a_pipelined_command_is_refused(stream):
+    """One command in flight (xut.hw.proto): the RTL discards bytes that arrive while it
+    replies or runs, so the emulator refuses them rather than answering them."""
+    with pytest.raises(EmuError, match="one command in flight"):
+        _harness().feed(stream)
+
+
+def test_one_command_per_feed_is_the_legal_pacing():
+    h = _harness()
+    frame = proto.load_frame(0, [image.W_END])
+    for part in (frame[:1], frame[1:5], frame[5:]):  # a frame in pieces is still legal
+        reply = h.feed(part)
+    assert proto.parse_load(reply).status == 0
+    assert proto.parse_run(h.feed(b"R")).status == 0
+    assert h.feed(b"I").startswith(b"#")

@@ -4,6 +4,12 @@
 // xut.hw.interp.Harness, which must predict this module's UART output byte for byte
 // (tools/tests/test_hw_rtl.py).
 //
+// One command in flight (xut.hw.proto): the host sends the next command only after the
+// whole reply to the previous one (for R, through the end line). There is no receive
+// FIFO: rx bytes are read only in S_IDLE and S_LD_*, and a byte that arrives while the
+// harness prints or runs is discarded. The printer's done (so the return to S_IDLE)
+// comes when the UART accepts the final newline, a byte time before the host has it.
+//
 // A lost or garbled host byte leaves the loader waiting in S_LD_* for bytes that never
 // come; later command bytes are then taken as program data and the session times out.
 // There is deliberately no inter-byte timeout: the host treats any timeout as a
@@ -13,6 +19,16 @@
 // in_nxt) and every EDGE (one of its clock flip-flops changes), S_WAITM holds MARGIN + 1
 // cycles before the next word, so no two changes and no change and capture are closer
 // than MARGIN cycles, whatever the program says.
+//
+// Strobe timing, for a monitor of commit, edge_we and sample_take (all registered, set
+// at the DECODE edge):
+// - commit and edge_we are high in the cycle that ends at the edge where the slot's
+//   in_vec or clock flip-flop changes;
+// - sample_take is high in the cycle after the DECODE edge E that copies cur_out into
+//   p_bits, and cur_out took the DUT's out_vec at edge E-1. So the physical capture is
+//   2 cycles before the edge that ends sample_take's cycle: a monitor must measure
+//   change-to-capture as (sample_take edge - 2) - change edge, which is MARGIN + 1 at
+//   its shortest (strobe to strobe: MARGIN + 3).
 `timescale 1ps / 1ps
 module xut_hw_ctrl #(
   parameter [31:0] BUILD_ID = 32'h00000000,
