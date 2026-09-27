@@ -174,6 +174,8 @@ class PythonRunner(Runner):
     name: ClassVar[str] = "python"
     x_observable: ClassVar[bool] = True
     styles: ClassVar[frozenset[str]] = frozenset({"vector"})
+    #: per-test generator state on self (``_gen``, ``_bins``): configurations in order
+    parallel_configs: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._gen: dict[str, tuple[Vec, DutSpec]] = {}
