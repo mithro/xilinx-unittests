@@ -179,3 +179,21 @@ def test_evidence_must_name_an_illegal_attribute():
 )
 def test_error_and_fatal_lines_are_evidence(line):
     assert _r(SimOutcome(True, "", 0, line + "\n")).status == "pass"
+
+
+@pytest.mark.parametrize(
+    "out",
+    [
+        SimOutcome(True, "", 137, UNISIM_MSG + "\nxut-container: oom-killed at memory cap 4g\n"),
+        SimOutcome(True, "", 0, UNISIM_MSG + "\nxut-container: oom-killed at memory cap 4g\n"),
+        SimOutcome(
+            False, "error: INIT bad\nxut-container: oom-killed at memory cap 4g\n", None, ""
+        ),
+    ],
+)
+def test_an_oom_kill_is_never_a_rejection(out):
+    """S48a M-3: an OOM kill at the container cap is an infrastructure error, even next to
+    an evidence line naming the attribute."""
+    r = _r(out)
+    assert r.status == "error" and r.reason.startswith("infrastructure failure")
+    assert "oom-killed at memory cap 4g" in r.reason
