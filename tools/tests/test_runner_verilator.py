@@ -480,9 +480,7 @@ def test_xut_run_verilator_also_runs_iverilog_vz(work, toy, monkeypatch):
 
 @pytest.fixture
 def shared_toy(monkeypatch):
-    from test_runner_cocotb import _shared_dirs
-
-    monkeypatch.setattr(TestCase, "shared_dirs", property(_shared_dirs))
+    """TOYFF's catalog entry; its _shared/toy dir is found by TestCase.shared_dirs."""
     monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: TOY_ENTRY)
 
 
@@ -692,8 +690,6 @@ def test_vpi_release_coincident_with_an_edge_matches_the_vector_testbench(work, 
     release written through cocotb/VPI in the same step as a rising edge (either write
     order) gives the same Q as the vector testbench's blocking drive, on Verilator, and
     both match the original model on Icarus."""
-    from test_runner_cocotb import _shared_dirs
-
     sys_path = VL_FIX / "cocotb_vztrig.py"
     expected = dict(
         line.split(": ")
@@ -719,7 +715,6 @@ def test_vpi_release_coincident_with_an_edge_matches_the_vector_testbench(work, 
     shutil.copy(VZ_FIX / "glbl.v", src / "glbl.v")
     ms = ModelSource("vztrig-test", src)
     ctx = RunContext(work, "rtl", ms)
-    monkeypatch.setattr(TestCase, "shared_dirs", property(_shared_dirs))
     monkeypatch.setattr("xut.catalog.model.load_entry", lambda f, n, r: VZTRIG_ENTRY)
     vec_case, coco = discover(work)
     _fake_python_run(ctx, vec_case, expected)
@@ -870,11 +865,8 @@ def _sv_tree(work: Path, body: str = SV_BODY) -> TestCase:
 
 
 @pytest.fixture
-def ztoy(work, monkeypatch):
-    """A gated TOYFF (its E input defaults through a z-compare) and the Task 18 shared dirs."""
-    from test_runner_cocotb import _shared_dirs
-
-    monkeypatch.setattr(TestCase, "shared_dirs", property(_shared_dirs))
+def ztoy(work):
+    """A gated TOYFF (its E input defaults through a z-compare)."""
     ms = make_model_source(work / "ms")
     (ms.unisims / "TOYFF.v").write_text(ZTOY)
     return RunContext(work, "rtl", ms)
