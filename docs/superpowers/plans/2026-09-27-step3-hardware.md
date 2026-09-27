@@ -119,6 +119,8 @@ Expected: `step-2 interfaces OK FDRE`, both paths listed, and the spec's `Status
    - The margin is enforced in RTL (`xut_hw_ctrl` `S_WAITM`), not only by the compiler. `xut_hw_tb.sv`'s margin monitor and `xut.hw.interp.margin_violations` both check it.
    - Every constraint in the generated `timing.tcl` goes through `xut_must`, so a constraint that matches no object stops the build (exit 4) instead of silently constraining nothing.
    - Timing must close (`WNS >= 0`, `WHS >= 0`) or the build is an error.
+   - The DUT clock latency (flip-flop → BUFG → global net) is measured after routing and must fit the 2 periods the margin leaves (Task 6).
+   - The post-flow DUT check (spec §6) confirms every DUT cell's `REF_NAME` and configured attributes after implementation; a mismatch is a `flow-mismatch`, never a DUT result.
    - Every in_vec bit and every DUT clock is driven straight from a harness flip-flop (no logic in between), so nothing glitches, async CLR/PRE included.
 3. **Byte-exact reference.** The RTL harness's UART output equals `Harness.feed()` byte for byte on Icarus and on xsim (Task 5a), including the error paths (`noload`, `used`, `badcrc`, `badcmd`). The message ROM is generated from `proto.MESSAGES` and pinned by a test.
 4. **No silent skips and no masking** (spec §14, §8).
@@ -7782,7 +7784,7 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
   - *`BoardSession` adapter:* Task 9a (Protocol + SSH implementation + fake).
   - *Preflight:* `xut doctor` hw checks and `xut hw rigs` (Task 9b).
 - **§5.6 hw runner capabilities:** `x_observable = False` (2-state; x/z expectations are skipped in the comparison). The run repeats N = 3 times; any difference is `nondeterminism` (Task 10).
-- **§6 flows and runners:** `hw` runs flow `vivado` ("bitstream on hw"). `runner_flows` already maps `hw` to non-`rtl` flows. `result.json` records the bitstream hashes, build IDs, serial, site and rig (DNA: ambiguity 6).
+- **§6 flows and runners:** the post-flow DUT check (cell type and attributes after implementation) is Task 6's `check_dut_cells`, reported as `flow-mismatch` (Task 10). `hw` runs flow `vivado` ("bitstream on hw"). `runner_flows` already maps `hw` to non-`rtl` flows. `result.json` records the bitstream hashes, build IDs, serial, site and rig (DNA: ambiguity 6).
 - **§8 crosscheck:** `silicon-mismatch`, `nondeterminism` and `harness-error` come from the existing classifier, fed by the `hw` object. Task 10's tests pin all three with the fake board. `expected_divergence` never masks (Task 12).
 - **§11 status:** `xut status record` records `L*/hw/vivado` from `build/vivado/hw/unisim-2025.2/`, with the tree hash from `xut run` (Task 12).
 - **§13 process:** three stacked infra PRs, then unit PRs; owned paths only; small commits; the review gate; the two-agent limit; orchestrator-only rebases.
