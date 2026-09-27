@@ -3948,7 +3948,9 @@ def test_a_cached_dut_check_failure_is_raised_without_a_rebuild(tmp_path, monkey
     key = vivado.build_key(_slots(), "v", maxwords=8192, margin=16)
     d = tmp_path / "bit" / key
     d.mkdir(parents=True)
-    (d / "flow_mismatch.json").write_text('{"key": "k", "dut_check": "fail", "detail": "slot 2: X"}')
+    (d / "flow_mismatch.json").write_text(
+        '{"key": "k", "dut_check": "fail", "detail": "slot 2: X"}'
+    )
     with pytest.raises(vivado.FlowMismatch, match="slot 2: X .cached"):
         vivado.ensure_bitstream(_slots(), cache_root=tmp_path, vivado="v")
 
@@ -5185,7 +5187,10 @@ def test_a_reused_pid_that_is_not_a_lock_script_survives(tmp_path):
         _stale_own_record(tmp_path, victim.pid)
         r = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "me@client:9", "--", "true"],
-            env=env, capture_output=True, text=True, timeout=60,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert r.returncode == 75 and "(stale)" in r.stderr
         assert victim.poll() is None and holder.poll() is None
@@ -5209,7 +5214,10 @@ def test_a_lock_script_that_started_after_the_record_survives(tmp_path):
         _stale_own_record(tmp_path, waiter.pid, since=1)
         r = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "me@client:9", "--", "true"],
-            env=env, capture_output=True, text=True, timeout=60,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert r.returncode == 75 and waiter.poll() is None
     finally:
@@ -5224,8 +5232,19 @@ def test_a_lock_file_fault_is_93_not_busy(tmp_path):
     ro.chmod(0o500)
     try:
         r = subprocess.run(
-            ["sh", str(PI / "xut_lock.sh"), str(ro / "fpga.lock"), "30", "1", "me@t:1", "--", "true"],
-            capture_output=True, text=True, timeout=60,
+            [
+                "sh",
+                str(PI / "xut_lock.sh"),
+                str(ro / "fpga.lock"),
+                "30",
+                "1",
+                "me@t:1",
+                "--",
+                "true",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert r.returncode == 93 and "lock fault" in r.stderr
     finally:
