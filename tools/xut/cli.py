@@ -30,6 +30,19 @@ class _CleanErrorGroup(click.Group):
             raise click.ClickException(str(e)) from e
 
 
+def _jobs_cap(ctx: click.Context, param: click.Parameter, value: int) -> int:
+    """Refuse a --jobs that would start more memory-capped containers than the host's
+    memory budget allows (Ruling S48)."""
+    from xut.container import MAX_JOBS
+
+    if value > MAX_JOBS:
+        raise click.BadParameter(
+            f"--jobs {value} is refused: at most {MAX_JOBS} containers run at once (the "
+            "memory budget is 100G ÷ 4G per container, Ruling S48)"
+        )
+    return value
+
+
 def _schema_error(path: Path, root: Path, e: Exception) -> ConfigError:
     """A `ConfigError` naming the offending file and the first schema/YAML problem."""
     rel = path.relative_to(root) if path.is_relative_to(root) else path
@@ -494,7 +507,9 @@ def _select_cases(root: Path, cases: list, selectors: tuple[str, ...]) -> list:
     help="stimulus/cocotb/sv seed (default: crc32 of the test id, the SAME on every run: "
     "pass --seed to explore others; every cocotb fail/error reason names its seed)",
 )
-@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option(
+    "--jobs", type=click.IntRange(min=1), default=1, show_default=True, callback=_jobs_cap
+)
 @click.option("--timeout", type=click.IntRange(min=1), help="per-runner seconds (default 600)")
 def run_cmd(
     selectors: tuple[str, ...],
@@ -650,7 +665,9 @@ def crosscheck_cmd(
     multiple=True,
     help="repeatable (default: auto)",
 )
-@click.option("--jobs", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option(
+    "--jobs", type=click.IntRange(min=1), default=1, show_default=True, callback=_jobs_cap
+)
 @click.option("--models", "models_glob", help="only the models matching this glob (a partial run)")
 @click.option("--write", is_flag=True, help="write status/PORTABILITY.md (main only)")
 @click.option("--force", is_flag=True, help="--write even when not on main")

@@ -511,7 +511,8 @@ def test_docker_memory_refuses_a_malformed_cap(tmp_path, monkeypatch, bad):
 
 
 def _fake_docker(calls, run_rc=0, oom="false", run_exc=None, rm_exc=None):
-    """A fake `subprocess.run`: `docker run` exits `run_rc` (or raises `run_exc`),
+    """A fake `subprocess.run`: `docker run` exits `run_rc` (or raises
+    `run_exc(argv, timeout)`),
     `docker inspect` answers `oom`, `docker rm -f` raises `rm_exc` if given."""
 
     def fake_run(argv, **kw):
@@ -571,9 +572,7 @@ def test_docker_no_oom_no_line_and_container_removed(tmp_path, monkeypatch):
 
 def test_docker_timeout_still_removes_the_container(tmp_path, monkeypatch):
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        subprocess, "run", _fake_docker(calls, run_exc=subprocess.TimeoutExpired)
-    )
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_exc=subprocess.TimeoutExpired))
     with pytest.raises(RunTimeout):
         DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
     name = _name(calls)
@@ -583,11 +582,8 @@ def test_docker_timeout_still_removes_the_container(tmp_path, monkeypatch):
 
 def test_docker_exception_still_removes_the_container(tmp_path, monkeypatch):
     calls: list[list[str]] = []
-
-    def boom(argv, timeout):
-        return KeyboardInterrupt()
-
-    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_exc=boom))
+    interrupt = lambda argv, timeout: KeyboardInterrupt()  # noqa: E731
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_exc=interrupt))
     with pytest.raises(KeyboardInterrupt):
         DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
     assert calls[-1] == ["docker", "rm", "-f", _name(calls)]

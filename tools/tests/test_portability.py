@@ -70,6 +70,11 @@ def test_smoke_top_passes_overrides_as_parameters():
         ("%Error-UNSUPPORTED: /m/S.v:5: Unsupported: Strength specifier", "strength"),
         ("%Error-UNSUPPORTED: /m/D.v:5: Unsupported: Verilog 1995 deassign", "deassign"),
         ("xut-smoke: build exit 0\nxut-smoke: timeout (124)", "timeout"),
+        (
+            "xut-smoke: build exit 0\nxut-smoke: timeout (137)\n"
+            "xut-container: oom-killed at memory cap 4g",
+            "oom",
+        ),
         ("%Error: /m/X.v:3:5: syntax error, unexpected IDENTIFIER", "other"),
         ("Error: [Unisim MMCME2_ADV-1] CLKIN1_PERIOD is not set", "other"),
     ],
@@ -82,6 +87,15 @@ def test_classify_ignores_warnings_and_non_error_lines():
     log = "%Warning-REALCVT: /m/X.v:1: real converted\nINFO: using a real clock\n%Error: boom"
     assert classify(log) == "other"
     assert failure(log, 1) == "other: %Error: boom"
+
+
+def test_oom_is_a_category_and_its_reason_names_the_cap():
+    assert "oom" in portability.CATEGORIES
+    log = (
+        "%Error: /m/X.v:1: some error\nxut-smoke: timeout (137)\n"
+        "xut-container: oom-killed at memory cap 4g\n"
+    )
+    assert failure(log, 137) == "oom: xut-container: oom-killed at memory cap 4g"
 
 
 def test_failure_without_an_error_line_names_the_exit():
@@ -384,4 +398,157 @@ def test_run_smoke_on_the_fixture_model_source(tmp_path, fixture_source):
     assert (work / "VZTRIG/default/verilator.rc").read_text().strip() == "0"
     assert not (work / "VZTRIG/default/obj").exists()  # removed after the run
     assert not (work / "VZBADSEL/default/verilator.sh").exists()  # refused: never built
+    assert not (work / "driver.sh").exists()  # one container per script (Ruling S48)
+    assert (work / "jobs.txt").read_text().count("\n") == total
     assert parse(render({"test-src": rows}, _meta()))["test-src"] == got
+
+
+# --- Ruling S48: one container per smoke script -----------------------------------------------
+
+OOM_LINE = "xut-container: oom-killed at memory cap 4g"
+
+
+class _PoolEx:
+    """A fake executor: runs each smoke script by hand. ``behaviour[script]`` is ``ok`` (the
+    script writes rc 0 and SMOKE_OK), ``oom-early`` (killed before it writes its rc),
+    ``oom-child`` (a child killed: the script still writes rc 137) or ``timeout``."""
+
+    image = "fake:1"
+
+    def __init__(self, behaviour, delay=0.05):
+        import threading
+
+        self.behaviour, self.delay = behaviour, delay
+        self.lock = threading.Lock()
+        self.active = self.peak = 0
+        self.started: list[str] = []
+        self.calls: list[tuple] = []
+
+    def guest(self, path):
+        return str(path)
+
+    def run(self, argv, cwd, log, timeout_s, env=None):
+        import time
+
+        from xut.container import RunTimeout
+
+        script = argv[1]
+        with self.lock:
+            self.calls.append((argv, cwd, log))
+            self.started.append(script)
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(self.delay)
+            d, tool = cwd / Path(script).parent, Path(script).stem
+            how = self.behaviour[script]
+            with log.open("a") as f:
+                f.write(f"$ {' '.join(argv)}   [container fake]\n")
+            if how == "timeout":
+                raise RunTimeout("timeout after 1s: bash")
+            if how == "oom-early":
+                (d / f"{tool}.log").write_text("xut-smoke: build exit 0\n")
+                with log.open("a") as f:
+                    f.write(OOM_LINE + "\n")
+                return 137
+            if how == "oom-child":
+                (d / f"{tool}.log").write_text("xut-smoke: timeout (137)\n")
+                (d / f"{tool}.rc").write_text("137\n")
+            else:
+                (d / f"{tool}.log").write_text(f"{portability.SMOKE_OK}\n")
+                (d / f"{tool}.rc").write_text("0\n")
+            with (cwd / "done.txt").open("a") as f:
+                f.write(f"{Path(script).with_suffix('')}\n")
+            if how == "oom-child":
+                with log.open("a") as f:
+                    f.write(OOM_LINE + "\n")
+            return 0
+        finally:
+            with self.lock:
+                self.active -= 1
+
+
+def _pool_work(tmp_path, n):
+    work = tmp_path / "w"
+    scripts = []
+    for i in range(n):
+        d = work / f"M{i}" / "default"
+        d.mkdir(parents=True)
+        for tool in portability.TOOLS:
+            scripts.append(f"M{i}/default/{tool}.sh")
+    (work / "done.txt").write_text("")
+    return work, scripts
+
+
+def test_run_scripts_one_container_per_script_at_most_jobs_at_once(tmp_path):
+    work, scripts = _pool_work(tmp_path, 6)
+    ex = _PoolEx(dict.fromkeys(scripts, "ok"))
+    lines: list[str] = []
+    portability._run_scripts(ex, work, scripts, jobs=3, progress=lines.append)
+    assert sorted(ex.started) == sorted(scripts)
+    assert 1 < ex.peak <= 3
+    for argv, cwd, log in ex.calls:
+        assert argv == ["bash", argv[1]] and cwd == work
+        assert log == work / Path(argv[1]).with_suffix(".container.log")
+    assert len((work / "done.txt").read_text().splitlines()) == len(scripts)
+    assert lines[-1].startswith(f"progress: done={len(scripts)} total={len(scripts)} ")
+
+
+def test_run_scripts_start_in_jobs_txt_order(tmp_path):
+    work, scripts = _pool_work(tmp_path, 3)
+    order = list(reversed(scripts))
+    ex = _PoolEx(dict.fromkeys(scripts, "ok"), delay=0)
+    portability._run_scripts(ex, work, order, jobs=1, progress=lambda _: None)
+    assert ex.started == order
+
+
+def test_run_scripts_record_an_oom_kill(tmp_path):
+    work, scripts = _pool_work(tmp_path, 2)
+    early, child = scripts[0], scripts[2]
+    beh = dict.fromkeys(scripts, "ok") | {early: "oom-early", child: "oom-child"}
+    ex = _PoolEx(beh, delay=0)
+    portability._run_scripts(ex, work, scripts, jobs=2, progress=lambda _: None)
+    for s in (early, child):
+        d, tool = work / Path(s).parent, Path(s).stem
+        assert (d / f"{tool}.rc").read_text().strip() == "137"
+        log = (d / f"{tool}.log").read_text()
+        assert log.count(OOM_LINE) == 1
+        ok, why = portability._outcome(d, tool)
+        assert not ok and why == f"oom: {OOM_LINE}"
+    done = (work / "done.txt").read_text().splitlines()
+    assert sorted(done) == sorted(str(Path(s).with_suffix("")) for s in scripts)
+
+
+def test_run_scripts_record_a_host_timeout(tmp_path):
+    work, scripts = _pool_work(tmp_path, 1)
+    ex = _PoolEx(dict.fromkeys(scripts, "ok") | {scripts[1]: "timeout"}, delay=0)
+    portability._run_scripts(ex, work, scripts, jobs=2, progress=lambda _: None)
+    d, tool = work / Path(scripts[1]).parent, Path(scripts[1]).stem
+    ok, why = portability._outcome(d, tool)
+    assert not ok and why.startswith("timeout: ")
+    assert len((work / "done.txt").read_text().splitlines()) == 2
+
+
+# --- Ruling S48: --jobs is capped -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cmd", ["portability", "run"])
+def test_cli_refuses_more_than_64_jobs(cmd, monkeypatch):
+    from xut import run as run_mod
+
+    def never(*a, **kw):  # a missing check must never start a real run from a unit test
+        raise AssertionError("--jobs 65 reached the run")
+
+    monkeypatch.setattr(portability, "run_smoke", never)
+    monkeypatch.setattr(run_mod, "run_tests", never)
+    r = CliRunner().invoke(main, [cmd, "--jobs", "65"])
+    assert r.exit_code != 0
+    assert "--jobs 65" in r.output and "64" in r.output and "100G" in r.output, r.output
+
+
+def test_cli_jobs_default_is_at_most_24():
+    import os
+
+    for name in ("portability", "run"):
+        opt = next(p for p in main.commands[name].params if p.name == "jobs")
+        assert opt.default <= min(os.cpu_count() or 1, 24)
