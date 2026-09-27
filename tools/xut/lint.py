@@ -518,10 +518,12 @@ def check_portability(root: Path) -> list[LintIssue]:
       reason is an `infra-error` (the smoke run itself failed, PR #10 CQ1), the error asks
       for the table to be regenerated instead: the model never ran, so nothing is known
       about it;
-    * `portability-agreement` (warning): a test declares `unsupported` for a runner every
+    * `portability-agreement` (warning): a test declares `"yes"` where the row is `no:
+      config: ...` (the smoke configuration was illegal for the model, ruling S51: the
+      table does not tell whether the simulator supports it); a test declares `unsupported` for a runner every
       row of its model says runs (and, for `verilator`, whose equivalence does not block
-      it): the declaration matches no row, so it may hide a divergence (AGENTS.md §9); or
-      a test's model has no row in any section (the table predates it);
+      it): the declaration matches no row, so it may hide a divergence (AGENTS.md §9); a
+      test's model has no row in any section (the table predates it);
     * `verilatorize-equiv` (error): a gated row (verilatorize `transformed`, or `(gated:
       ...)`: a transformed model in its hierarchy, ruling S45/S47) has no equivalence
       verdict (`—`), whatever the tests say (spec §6.2: "`xut lint` fails if a transformed
@@ -597,6 +599,18 @@ def _test_portability(
             if runners.get(runner) != "yes" or row.ok(runner):
                 continue
             why = row.why(runner)
+            if row.config(runner):  # ruling S51: not blocking
+                out.append(
+                    LintIssue(
+                        rel,
+                        "portability-agreement",
+                        f"{tid}: smoke configuration illegal for {model}: "
+                        f"{why.removeprefix('config: ')}; the table ({section}) does not tell "
+                        f"whether {runner} supports it",
+                        "warning",
+                    )
+                )
+                continue
             if why.startswith("infra-error"):
                 msg = (
                     f'{tid}: declares {runner}: "yes", but {PORTABILITY} ({section}) has an '

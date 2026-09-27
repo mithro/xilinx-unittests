@@ -11,6 +11,10 @@ on Verilator (after ``xut verilatorize``), in the simulator container:
   ``IS_*_INVERTED`` parameter flipped on its own. A model is ``yes`` on a simulator only if
   every configuration compiles and runs to ``XUT_SMOKE_OK``; otherwise the reason names the
   first configuration that does not, its category (``classify``) and its first error line.
+  When every failing configuration is ``config`` (the model's own attribute check refused
+  it, ruling S51) the cell is ``no: config: <why> [<key>]``: ``xut lint`` then warns, as the
+  run says nothing about the simulator. (Legal smoke configurations from the units'
+  overrides are a follow-up.)
 * **Smoke top** (``smoke_top``): every input tied low, every output and inout left as a
   wire, the overrides passed as ``#(.NAME(value))``, and a ``#200000`` run so a runtime
   ``$finish`` (a model's own attribute check) is caught.
@@ -58,6 +62,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -72,8 +77,8 @@ if TYPE_CHECKING:
     from xut.verilatorize.driver import ModelEntry
 
 CATEGORIES = (
-    "infra-error", "udp", "tri0-tri1", "real", "secureip", "strength", "deassign", "oom",
-    "timeout", "other",
+    "infra-error", "config", "udp", "tri0-tri1", "real", "secureip", "strength", "deassign",
+    "oom", "timeout", "other",
 )  # fmt: skip
 SMOKE_OK = "XUT_SMOKE_OK"
 #: 124 (``timeout``'s own exit) is a timeout; 137 (SIGKILL) is ``timeout -k``'s kill or an
@@ -110,8 +115,10 @@ class PortabilityError(XutError):
 @dataclass
 class Row:
     """One model's row. ``iverilog``/``verilator`` are ``yes``, ``no`` (the reason is in
-    ``reason``) or ``no: <why>`` (not built: ruling S47); ``verilatorize`` is the manifest
-    status, with ``(gated: <deps>)`` when its hierarchy holds transformed models."""
+    ``reason``), ``no: <why>`` (not built: ruling S47) or ``no: config: <why> [<key>]`` (the
+    smoke configuration is illegal for the model: ruling S51); ``verilatorize`` is the
+    manifest status, with ``(gated: <deps>)`` when its hierarchy holds transformed
+    models."""
 
     model: str
     iverilog: str
@@ -121,6 +128,11 @@ class Row:
     triggers: list[str] = field(default_factory=list)
     enablers: list[str] = field(default_factory=list)
     reason: str = ""
+
+    def config(self, tool: str) -> bool:
+        """``tool``'s cell is ``no: config: ...``: every failing smoke configuration was
+        illegal for the model (ruling S51), which says nothing about the simulator."""
+        return getattr(self, tool).startswith("no: config: ")
 
     @property
     def gated(self) -> bool:
@@ -189,6 +201,35 @@ _CATEGORY_RULES = (
 )
 
 
+#: A UNISIM model's own attribute/legality check stopping the smoke run (ruling S51): the
+#: smoke configuration is illegal for the model, which says nothing about the simulator.
+#: Taken from the 2025.2 smoke logs (DSP48E1, MMCME2_ADV, PLLE2_ADV, RAMB18E1, ...).
+_CONFIG_RULES = (
+    # "Attribute Syntax Error : The attribute ACASCREG  on DSP48E1 instance ... is set to 1.
+    #  ACASCREG has to be set to 0 when attribute AREG = 0." (also RAMB18E1/36E1 READ_WIDTH,
+    #  PLLE2_ADV CLKIN1_PERIOD)
+    re.compile(r"^\s*Attribute Syntax Error\b"),
+    # "Error: [Unisim MMCME2_ADV-6] The attribute CLKIN2_PERIOD is set to 0.000000 ns and
+    #  out of the allowed range 0.938000 ns to 100.000000 ns" (also PLLE3/4_ADV)
+    re.compile(r"\[Unisim \w+-\d+\] The attribute \w+ is set to .*\ballowed (?:range|values?)\b"),
+    # "Error: [Unisim ...-n] DEVICE_ID attribute is not set."
+    re.compile(r"\[Unisim \w+-\d+\] \w+ attribute is not set\b"),
+    # "Error: [Unisim SYSMONE1-4] The analog data file design.txt was not found. Use the
+    #  SIM_MONITOR_FILE parameter to specify the analog data file name ..."
+    re.compile(r"\[Unisim \w+-\d+\] The analog data file .* Use the SIM_MONITOR_FILE parameter"),
+)
+#: A module the model instantiates that the simulator cannot find (Icarus; Verilator)
+_MISSING_MODULE = (
+    re.compile(r"Unknown module type: (\w+)"),
+    re.compile(r"Cannot find file containing module: '(\w+)'"),
+)
+
+
+def missing_modules(log_text: str) -> list[str]:
+    """The modules a smoke log's error lines say are missing."""
+    return [m.group(1) for ln in error_lines(log_text) for rx in _MISSING_MODULE if (m := rx.search(ln))]
+
+
 def error_lines(log_text: str) -> list[str]:
     """The lines of a log that report an error (Verilator warnings excluded)."""
     return [
@@ -200,10 +241,13 @@ def error_lines(log_text: str) -> list[str]:
     ]
 
 
-def classify(log_text: str) -> str:
+def classify(log_text: str, known: AbstractSet[str] | None = None) -> str:
     """The category of a failed smoke log (``CATEGORIES``): an infrastructure failure
     first (``INFRA_MARK``), then an OOM kill at the container's memory cap, then a timeout
-    (an OOM-killed tool exits 137, which the script marks as ``timeout-or-kill``), then the
+    (an OOM-killed tool exits 137, which the script marks as ``timeout-or-kill``), then
+    ``config`` when the first error line is the model's own attribute/legality check
+    (``_CONFIG_RULES``, ruling S51), then ``secureip`` when every module the log says is
+    missing is absent from the model source (``known``: its models; ruling S51), then the
     first category any error line matches, else ``other``."""
     from xut.container import OOM_MARK
 
@@ -214,6 +258,11 @@ def classify(log_text: str) -> str:
     if TIMEOUT_MARK in log_text:
         return "timeout"
     errors = error_lines(log_text)
+    if errors and any(rx.search(errors[0]) for rx in _CONFIG_RULES):
+        return "config"
+    missing = missing_modules(log_text)
+    if known is not None and missing and not set(missing) & set(known):
+        return "secureip"
     for name, rx in _CATEGORY_RULES:
         if any(rx.search(ln) for ln in errors):
             return name
@@ -225,7 +274,7 @@ def _short(text: str) -> str:
     return text if len(text) <= _MAX else text[: _MAX - 1] + "…"
 
 
-def failure(log_text: str, rc: int | None) -> str:
+def failure(log_text: str, rc: int | None, known: AbstractSet[str] | None = None) -> str:
     """``<category>: <first error line>`` of a failed smoke log (an infrastructure failure:
     the host's note; an OOM kill: the line naming the memory cap; a script that wrote no
     rc: the host's container-exit note)."""
@@ -238,7 +287,7 @@ def failure(log_text: str, rc: int | None) -> str:
     first = (infra or oom or (exits if rc is None else []) or error_lines(log_text) or [""])[0]
     if not first:
         first = f"exit {rc}, no {SMOKE_OK}" if rc is not None else "the script did not finish"
-    return f"{classify(log_text)}: {_short(first)}"
+    return f"{classify(log_text, known)}: {_short(first)}"
 
 
 # ---- configurations ------------------------------------------------------------------------
@@ -442,11 +491,12 @@ def _equiv(
     return "pass", ""
 
 
-def _outcome(d: Path, tool: str) -> tuple[bool, str]:
+def _outcome(d: Path, tool: str, known: AbstractSet[str] | None = None) -> tuple[bool, str]:
+    """Whether ``tool``'s smoke script in ``d`` passed, else ``failure``'s reason."""
     rc_file, log = d / f"{tool}.rc", d / f"{tool}.log"
     text = log.read_text(errors="replace") if log.is_file() else ""
     if not rc_file.is_file():
-        return False, failure(text, None)
+        return False, failure(text, None, known)
     raw = rc_file.read_text().strip()
     try:
         rc = int(raw)
@@ -454,7 +504,27 @@ def _outcome(d: Path, tool: str) -> tuple[bool, str]:
         return False, f"{classify(text)}: unreadable {tool}.rc {_short(repr(raw))}"
     if rc == 0 and SMOKE_OK in text:
         return True, ""
-    return False, failure(text, rc)
+    return False, failure(text, rc, known)
+
+
+def tool_cell(
+    dirs: list[tuple[str, Path]], tool: str, known: AbstractSet[str] | None = None
+) -> tuple[str, str]:
+    """``(cell, reason part)`` of ``tool`` over a model's configuration directories:
+    ``yes``; ``no`` with the first failing configuration's reason; or, when every failing
+    configuration is ``config`` (the model's own legality check refused the smoke
+    configuration, ruling S51), ``no: config: <why> [<key>]``: a real failure in any
+    configuration is never hidden behind an illegal one."""
+    config = ""
+    for key, d in dirs:
+        ok, why = _outcome(d, tool, known)
+        if ok:
+            continue
+        if why.startswith("config: "):
+            config = config or f"no: {why} [{key}]"
+            continue
+        return "no", f"{tool}: {why} [{key}]"
+    return (config, "") if config else ("yes", "")
 
 
 def _done(done: Path) -> int:
@@ -562,7 +632,7 @@ def run_smoke(
     (``xut verilatorize --check``); without it the manifest's verdicts are used as they are."""
     from xut.container import SIM_IMAGE, executor_for, image_digest, sim_tool_versions
     from xut.paths import repo_root
-    from xut.verilatorize.driver import verilatorize, vz_dir
+    from xut.verilatorize.driver import model_files, verilatorize, vz_dir
 
     root = Path(root) if root is not None else repo_root()
     todo = smoke_models(ms, root)
@@ -626,8 +696,9 @@ def run_smoke(
     )
     _run_scripts(exe, work, [j for _, j in jobs_list], jobs, progress)
     need = {m: _needed(ms, m, e) for m, e in man.models.items() if e.gated and m in todo}
+    known = set(model_files(ms))
     rows = [
-        _row(p, dirs[p.model], man.models.get(p.model), man.models, need.get(p.model, ()))
+        _row(p, dirs[p.model], man.models.get(p.model), man.models, need.get(p.model, ()), known)
         for p in plans
     ]
     doc = {
@@ -666,6 +737,7 @@ def _row(
     e: ModelEntry | None,
     models: Mapping[str, ModelEntry] | None = None,
     need: Iterable[str] = ("default",),
+    known: AbstractSet[str] | None = None,
 ) -> Row:
     equiv, equiv_why = _equiv(e, models or {}, need)
     vz = _vz_cell(e)
@@ -681,13 +753,8 @@ def _row(
         if tool == "verilator" and gate is not None:
             cells[tool] = gate
             continue
-        cells[tool] = "yes"
-        for key, d in dirs:
-            ok, why = _outcome(d, tool)
-            if not ok:
-                cells[tool] = "no"
-                reasons.append(f"{tool}: {why} [{key}]")
-                break
+        cells[tool], why = tool_cell(dirs, tool, known)
+        reasons += [why] if why else []
     reasons += [w for w in (equiv_why, *(f"note: {n}" for n in p.notes)) if w]
     return Row(
         p.model, cells["iverilog"], cells["verilator"], vz, equiv, trig, en, "; ".join(reasons)
@@ -748,10 +815,16 @@ def render(rows_by_source: dict[str, list[Row]], meta: dict) -> str:
                 f"{info['configurations']} configurations{glob}._",
                 "",
             ]
-        out += ["| simulator | yes | no |", "|---|---|---|"]
+        out += ["| simulator | yes | no | config |", "|---|---|---|---|"]
         for tool in TOOLS:
             yes = sum(r.ok(tool) for r in rows)
-            out.append(f"| {tool} | {yes} | {len(rows) - yes} |")
+            config = sum(r.config(tool) for r in rows)
+            out.append(f"| {tool} | {yes} | {len(rows) - yes - config} | {config} |")
+        out += [
+            "",
+            "_config: every failing smoke configuration was refused by the model's own "
+            "attribute check (ruling S51); the smoke run says nothing about the simulator._",
+        ]
         out += ["", _HEADER, "|---|---|---|---|---|---|---|---|"]
         for r in sorted(rows, key=lambda r: r.model):
             cells = [
