@@ -160,8 +160,6 @@ def test_pack_refuses_a_non_dut():
     [
         "FDRE",
         "FDCE",
-        "LDCE",
-        "LDPE",
         "LUT1",
         "LUT6_2",
         "CFGLUT5",
@@ -205,6 +203,16 @@ def test_pack_fails_closed_on_primitives_needing_resource_budgets(prim):
     want = (
         f"hw packing: {prim} needs resource budgeting (BUFG/MMCM/BRAM/DSP/IO/region) "
         "— not yet supported"
+    )
+    with pytest.raises(SlotError, match=re.escape(want)):
+        pack([_dut(0, 1, prim)])
+
+
+@pytest.mark.parametrize("prim", ["LDCE", "LDPE"])
+def test_pack_fails_closed_on_latches_until_their_gate_path_is_constrained(prim):
+    want = (
+        f"hw packing: {prim} is a latch; its gate path out of the DUT is not yet "
+        "timing-constrained — not yet supported"
     )
     with pytest.raises(SlotError, match=re.escape(want)):
         pack([_dut(0, 1, prim)])
