@@ -1,6 +1,6 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3.4 (2026-09-26). Rev 2 incorporated the technical and
+- Status: revision 3.5 (2026-09-28). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
@@ -36,6 +36,14 @@
   - §11: a tree hash per model source, stamped by `xut run` and checked by
     `xut status record`; the PROGRESS.md marks and precedence;
     `xut status init --refresh-bins`.
+  Rev 3.5 records the step-2 verilatorize and Verilator-runner rulings S26,
+  S28, S29, S31, S35, S38, S43, S45, S46 and S48 in §6.2:
+  - read-after-write inside a block, and refusal of `@*` blocks and of
+    trigger cones that cross a non-blocking-written reg;
+  - the input-port z-compare rewrite, and `XIL_TIMING` never defined;
+  - how the equivalence oracle is chosen, hierarchy gating, and how the
+    runner maps the equivalence status;
+  - memory-capped smoke containers, and `oom` as a portability category.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -430,6 +438,33 @@ procedurally-forced reg `X`:
 4. Any construct the transform cannot prove it handles makes it fail loudly,
    naming the model. The model is then `verilator: unsupported` in
    `status/PORTABILITY.md`. Nothing degrades silently.
+   In particular (rulings S26, S28, S29):
+   - A read of `X` after an ordinary blocking write to `X` in the same block
+     reads the fresh value, `X__base`. A model that would need this inside an
+     `@*` block is refused. MMCME2 is refused this way until it is supported.
+   - A model is refused when the trigger cone of a `deassign`ed reg crosses a
+     reg written with a non-blocking assignment. The blocking capture of
+     `X__base` at a release triggered from the NBA region would race.
+     Assign-only regs are not affected.
+5. **Input z-compares** (ruling S38). A second rewrite, applied
+   unconditionally in the transformed copy (never under `ifdef VERILATOR`,
+   so Icarus runs exactly the text Verilator compiles), replaces, on
+   **input ports only**:
+   - `P === 1'bz` with `1'b0`;
+   - `P !== 1'bz` with `1'b1`.
+
+   It also covers swapped operands and bit selects of input ports. This is
+   valid only when every input is driven, because the original uses
+   z-compares to default unconnected pins. The runners therefore refuse
+   (error) a wrapper that leaves an input unconnected, a testbench net that
+   can float z, and any stimulus that drives z.
+
+   A z-compare on anything else is refused: an internal net, including one
+   driven only from an input port (ruling S43), or an inout port. A model
+   that needs only this rewrite is `transformed`, and the manifest records
+   which rewrites applied to each model.
+6. **`XIL_TIMING` is never defined** (ruling S43). Some z-compares and timing
+   checks exist only under it.
 
 Transformed copies go to `build/verilatorized/<model-source>/` and are
 **never committed**. The transform has fixture unit tests for each case:
@@ -463,6 +498,32 @@ Transformed copies go to `build/verilatorized/<model-source>/` and are
 - Icarus is 4-state, so this check also covers X-propagation differences that
   2-state Verilator could never reveal.
 - `xut lint` fails if a transformed model has no equivalence stimulus.
+- **Oracle** (rulings S28, S31):
+  - The original model runs on Icarus only when every override expression is
+    constant and Icarus compiles and runs it without a `sorry`.
+  - Otherwise the original runs on xsim.
+  - The transformed model always runs on Icarus.
+  - `result.json` records the oracle. When xsim is needed but unavailable,
+    the check is an error, never a pass.
+- **Hierarchy gating** (rulings S45, S46):
+  - A primitive is eligible for Verilator only if every model in its
+    elaborated hierarchy that resolves from the transformed directory is
+    current, and the check runs the original hierarchy against the
+    transformed one for this primitive and configuration.
+  - A primitive with any transformed descendant is gated like a transformed
+    one (`depends_on_transformed`).
+  - A parent gated this way uses the generic stimulus. Each transformed child
+    is proved separately under its own trigger stimulus.
+  - The sv guard resolves `include`s and gates every parameterisation the
+    testbench instantiates. Where it cannot determine them, it fails closed.
+- **Runner mapping** (ruling S35):
+  - An equivalence `fail` gives an `error` whose reason starts
+    `transform-bug:`.
+  - An equivalence `error` gives an `error` that blocks the Verilator results.
+  - A missing check is run on demand.
+  - A non-pass equivalence status is never reported as pass or skip.
+  - A vector configuration that drives x or z on an input is an `error` on a
+    2-state simulator, unless the test declares that runner unsupported.
 
 Community rewrites (`uwsampl/verilator-unisims`,
 `oliverbunting/verilator-unisims`) are used as references, not as
@@ -476,10 +537,20 @@ versions are a separate, explicit report.
 **Portability table.** A smoke run of every UNISIM model in each simulator
 container generates `status/PORTABILITY.md`. It lists which models compile and
 elaborate, with the reasons for any that don't: STARTUPE2's strength-resolved
-GSR driver under Verilator, UDPs, `tri0/tri1`, `real`, secureip. Test
-declarations of `unsupported` must match this table.
+GSR driver under Verilator, UDPs, `tri0/tri1`, `real`, secureip, and `oom`.
+Test declarations of `unsupported` must match this table.
 
-The simulation defines `XIL_TIMING`, `XIL_XECLIB`, `XIL_DR` and
+Every smoke script runs in its **own memory-capped container** (ruling S48).
+Every container xut starts has docker `--memory` and `--memory-swap` set to
+the same cap, which is 64m to 32g, 4g by default (`XUT_CONTAINER_MEMORY`).
+Parallelism is limited to the memory budget divided by the cap
+(`XUT_MEMORY_BUDGET`, 100g by default).
+
+A script that is OOM-killed at the cap is classified `oom`. It is a result,
+not a host-wide event: some UNISIM models, for example DPLL and IDELAYE3,
+grow memory without bound in a Verilator `--timing` smoke simulation.
+
+`XIL_TIMING` is never defined (above). `XIL_XECLIB`, `XIL_DR` and
 `XIL_ATTR_TEST` are pinned per run (default: all undefined) and recorded.
 
 `result.json` records:
