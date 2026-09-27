@@ -60,9 +60,7 @@ MARGIN_RANGE = (3, 255)
 #: memory's 8), DSP48E1 (90), the per-region BUFR/BUFIO/BUFH, IO sites, the singletons
 #: (STARTUPE2, ICAPE2, DNA_PORT, XADC, ...) and the 12-global-clocks-per-region limit
 #: behind DUT_BUFG_BUDGET. Then widen PACKABLE.
-PACKABLE = re.compile(
-    r"(FD\w*|LUT\w*|CFGLUT5|CARRY4|MUXF[78]|SRL\w*|RAM(32|64|128|256)\w*|ROM\w*)"
-)
+PACKABLE = re.compile(r"(FD\w*|LUT\w*|CFGLUT5|CARRY4|MUXF[78]|SRL\w*|RAM(32|64|128|256)\w*|ROM\w*)")
 #: Latches fit in SLICE sites, but the wrapper drives their gate from in_vec, so they
 #: have no clock and timing_tcl's out-of-DUT max-delay (which starts at the dclk_s*
 #: clocks) never reaches the G -> cur_out path: spec 7.1's (N-2)-period bound would be
