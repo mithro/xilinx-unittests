@@ -54,7 +54,8 @@ scope with `MemorySwapMax=0`:
     - the model infers that the control wins (S30). UNISIM gives INIT (GSR wins)
       in both orders, on every simulator and both model sources;
     - the model is unchanged, and the bits stay defined.
-  - `findings/FDPE-doc-gap-init-default.md`:
+  - `findings/FDPE-doc-gap-init-default.md` (renamed in fix round 1 to
+    `findings/FDPE-doc-gap-doc-init_default.md`):
     - the p373 table gives an INIT default of `1'b1`, but the p374 VHDL and
       Verilog templates show INIT=0;
     - the model follows the table. UNISIM agrees: the `L1.capture` `default`
@@ -75,16 +76,17 @@ Run durations:
 - unisim-gh-2020.1: 290 results in 5 min 59 s (19:53:16-19:59:15 UTC; no xsim).
 
 Results per primitive and model source, rtl flow (vector, sv and cocotb tests
-together):
+together; FDRE and FDSE have 13 tests, FDCE and FDPE 16; FDRE/FDSE rows corrected in
+fix round 1, M2):
 
 | prim | source | python | xsim | iverilog | verilator | iverilog-vz |
 |---|---|---|---|---|---|---|
-| FDRE | 2025.2 | 11 pass, 3 skip | 13 pass, 1 skip | 14 pass | 13 pass, 1 skip | 13 pass, 1 skip |
-| FDSE | 2025.2 | 11 pass, 3 skip | 13 pass, 1 skip | 14 pass | 13 pass, 1 skip | 13 pass, 1 skip |
+| FDRE | 2025.2 | 10 pass, 3 skip | 12 pass, 1 skip | 13 pass | 12 pass, 1 skip | 12 pass, 1 skip |
+| FDSE | 2025.2 | 10 pass, 3 skip | 12 pass, 1 skip | 13 pass | 12 pass, 1 skip | 12 pass, 1 skip |
 | FDCE | 2025.2 | 13 pass, 3 skip | 14 pass, 1 fail, 1 skip | 15 pass, 1 fail | 14 pass, 1 fail, 1 skip | 14 pass, 1 fail, 1 skip |
 | FDPE | 2025.2 | 13 pass, 3 skip | 14 pass, 1 fail, 1 skip | 15 pass, 1 fail | 14 pass, 1 fail, 1 skip | 14 pass, 1 fail, 1 skip |
-| FDRE | gh-2020.1 | 11 pass, 3 skip | 14 skip (unavailable) | 14 pass | 13 pass, 1 skip | 13 pass, 1 skip |
-| FDSE | gh-2020.1 | 11 pass, 3 skip | 14 skip (unavailable) | 14 pass | 13 pass, 1 skip | 13 pass, 1 skip |
+| FDRE | gh-2020.1 | 10 pass, 3 skip | 13 skip (unavailable) | 13 pass | 12 pass, 1 skip | 12 pass, 1 skip |
+| FDSE | gh-2020.1 | 10 pass, 3 skip | 13 skip (unavailable) | 13 pass | 12 pass, 1 skip | 12 pass, 1 skip |
 | FDCE | gh-2020.1 | 13 pass, 3 skip | 16 skip (unavailable) | 15 pass, 1 fail | 14 pass, 1 fail, 1 skip | 14 pass, 1 fail, 1 skip |
 | FDPE | gh-2020.1 | 13 pass, 3 skip | 16 skip (unavailable) | 15 pass, 1 fail | 14 pass, 1 fail, 1 skip | 14 pass, 1 fail, 1 skip |
 
@@ -163,3 +165,76 @@ Other checks:
 - Task 27: the unit PR.
   - The per-task review of these commits is still to be done: this session was
     told not to start subagents.
+
+## Fix round 1 (Task 24 review I1, M1, M2, M3)
+
+Progress:
+
+- 20:16:06 UTC fix1 re-run: FDSE and FDPE on unisim-2025.2 then unisim-gh-2020.1 (--jobs 16, 32G scope; estimate 6-8 min, then about 3 min)
+- 20:17:06 UTC fix1-unisim-2025.2: 59/145 results, 58 s elapsed, about 1 min 25 s left, finish about 20:18 UTC
+- 20:18:06 UTC fix1-unisim-2025.2: 85/145 results, 116 s elapsed, about 1 min 22 s left, finish about 20:19 UTC
+- 20:19:06 UTC fix1-unisim-2025.2: 110/145 results, 176 s elapsed, about 0 min 56 s left, finish about 20:20 UTC
+- 20:20:06 UTC fix1-unisim-2025.2: 134/145 results, 238 s elapsed, about 0 min 19 s left, finish about 20:20 UTC
+- 20:21:07 UTC fix1-unisim-2025.2: 140/145 results, 293 s elapsed, about 0 min 10 s left, finish about 20:21 UTC
+- 20:22:07 UTC fix1-unisim-2025.2: 141/145 results, 303 s elapsed, about 0 min 8 s left, finish about 20:22 UTC
+- 20:23:07 UTC fix1-unisim-2025.2: 144/145 results, 398 s elapsed, about 0 min 2 s left, finish about 20:23 UTC
+- 20:23:35 UTC fix1-unisim-2025.2: done in 449 s
+- 20:24:07 UTC fix1-unisim-2025.2: 145/145 results, 448 s elapsed, about 0 min 0 s left, finish about 20:24 UTC
+- 20:24:07 UTC fix1-unisim-2025.2: finished
+- 20:24:35 UTC fix1-unisim-gh-2020.1: 29/145 results, 8 s elapsed, about 0 min 34 s left, finish about 20:25 UTC
+- 20:25:35 UTC fix1-unisim-gh-2020.1: 119/145 results, 69 s elapsed, about 0 min 15 s left, finish about 20:25 UTC
+- 20:26:35 UTC fix1-unisim-gh-2020.1: 140/145 results, 128 s elapsed, about 0 min 4 s left, finish about 20:26 UTC
+- 20:27:17 UTC fix1-unisim-gh-2020.1: done in 222 s
+- 20:27:36 UTC fix1-unisim-gh-2020.1: 145/145 results, 171 s elapsed, about 0 min 0 s left, finish about 20:27 UTC
+- 20:27:36 UTC fix1-unisim-gh-2020.1: finished
+
+Changes:
+
+- **I1.** I checked the FDSE text against UG953 v2026.1. The p379 table gives INIT
+  a default of `1'b1`, while the p380 templates show `INIT => '0'` and
+  `.INIT(1'b0)`. So FDSE has the same contradiction as FDPE. FDRE (p376 `1'b0`,
+  p377 0) and FDCE (p370 `1'b0`, p371 0) are consistent.
+  - New finding: `findings/FDSE-doc-gap-doc-init_default.md`.
+  - I corrected the FDPE finding's false statement that FDSE agrees.
+- **M3 (ruling S56a).** Both INIT-default findings now use the level token `doc`:
+  `FDPE-doc-gap-doc-init_default.md` and `FDSE-doc-gap-doc-init_default.md`. The
+  FDPE file was renamed with `git mv`. The FDSE and FDPE READMEs are regenerated,
+  and every link is updated.
+- **M1.** Finding headers:
+  - `First seen: <UTC date> at <head>`;
+  - an `Also seen: rtl / unisim-gh-2020.1` line;
+  - the GSR doc-gap Evidence now pastes the 8 crosscheck points per model source
+    verbatim, plus a map of the samples.
+- **M2.** The FDRE and FDSE rows of the result table above are corrected: each has
+  13 tests.
+- The READMEs changed, so the FDSE and FDPE tree hashes changed. FDRE and FDCE
+  inputs are unchanged, and their recorded hashes stay current.
+
+Re-run of FDSE and FDPE:
+
+- unisim-2025.2: 145 results in 449 s, 129 pass, 12 skip, 4 fail;
+- unisim-gh-2020.1: 145 results in 222 s, 103 pass, 39 skip, 3 fail.
+
+The fails are exactly `FDPE.L1.gsr_vs_preset`, as before. FDSE passes every
+declared cell.
+
+Crosscheck:
+
+- Exit 4: "56 agree, 2 incomplete". This is unchanged. The only 4 issues are the
+  iverilog-vz explanation gap: `rtl/iverilog-vz: fail not explained`, for 2 tests ×
+  2 model sources.
+- That fix belongs to infra PR #13, not to this branch.
+- Both GSR doc-gaps are `known-divergence`, with 8 points per model source.
+
+`xut status record FDRE FDSE FDCE FDPE`, for both sources:
+
+- FDSE and FDPE get new tree hashes, and their `findings` lists now name the
+  renamed and new files.
+- FDRE and FDCE are unchanged.
+
+Checks:
+
+- `pytest tests/7series/register tools/tests/test_status_schema.py`: 176 passed,
+  2 skipped.
+- `xut lint --branch`: 0 errors and 4 warnings, the same `sv_x_inputs` warnings as
+  before.
