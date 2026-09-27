@@ -782,12 +782,14 @@ VALUE_CLASSES = (
 )
 
 
+def _applies(f: Finding, v: View) -> bool:
+    """``f`` is about ``v``'s flow and model source (a source-less finding applies to all)."""
+    return f.flow == v.flow and f.model_source in (v.model_source, None)
+
+
 def _explained(v: View, findings: list[Finding]) -> bool:
     return any(
-        (f.known_of or f.cls) in VALUE_CLASSES
-        and v.runner in f.runners
-        and f.flow == v.flow
-        and f.model_source in (v.model_source, None)
+        (f.known_of or f.cls) in VALUE_CLASSES and v.runner in f.runners and _applies(f, v)
         for f in findings
     )
 
@@ -804,12 +806,7 @@ def _companion_explained(
     iv = views.get((v.flow, "iverilog"))
     if iv is None or iv.status != "fail" or not _explained(iv, findings):
         return False
-    return not any(
-        (f.known_of or f.cls) == "transform-bug"
-        and f.flow == v.flow
-        and f.model_source in (v.model_source, None)
-        for f in findings
-    )
+    return not any((f.known_of or f.cls) == "transform-bug" and _applies(f, v) for f in findings)
 
 
 def _result_issues(
@@ -820,8 +817,8 @@ def _result_issues(
     views: dict[tuple[str, str], View] | None = None,
 ) -> list[str]:
     """Errors (per configuration, else the result's), and a fail that no value finding
-    explains (for iverilog-vz, nor its iverilog companion: ``_companion_explained``); the
-    latter only when the views were ``classified``."""
+    explains. An iverilog-vz fail also counts as explained through its iverilog companion
+    (``_companion_explained``). Fails are checked only when the views were ``classified``."""
     where = f"{ms} {v.flow}/{v.runner}"
     cfg_errors = [
         f"{where}: cfg {c.get('cfg')}: error: {c.get('reason') or 'no reason recorded'}"
