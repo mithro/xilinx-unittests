@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 import zlib
 
+import pytest
+
 from xut.hw import image, proto
 from xut.hw.image import ImageBuilder
-from xut.hw.interp import EmuSlot, Harness, margin_violations, run_program
+from xut.hw.interp import EmuError, EmuSlot, Harness, margin_violations, run_program
 from xut.hw.selftest import PassthroughSim
 
 
@@ -112,3 +114,47 @@ def test_load_reply_crc_is_the_computed_one():
     h = _harness()
     frame = proto.load_frame(0, [image.W_END])
     assert proto.parse_load(h.feed(frame)).crc == zlib.crc32(frame[1:-4])
+
+
+def _passthrough(nin, words, t0=None):
+    r = PassthroughSim()
+    t0 = t0 or "0" * nin
+    r.reset(t0)
+    return run_program(words, nin, 0, r, t0)
+
+
+def test_multi_chunk_in_vec_round_trips():
+    """nin=40 is three chunks (the top one partial): every random vector comes back."""
+    import random
+
+    rng = random.Random(7)
+    vecs = [format(rng.getrandbits(40), "040b") for _ in range(50)]
+    b = ImageBuilder(40, 0, 40, "0" * 40)
+    for v in vecs:
+        b.set_bits(v)
+        b.sample("s")
+    p = b.end()
+    out = _passthrough(40, p.words)
+    assert out.status == 0 and out.samples == vecs
+
+
+def test_set_to_chunk_1_and_partial_top_chunk_truncation():
+    """nin=20: chunk 1 holds in_vec[19:16]; COMMIT keeps only its low 4 bits."""
+    words = [image.w_set(1, 0xFFFF), image.w_commit(), image.W_SAMPLE, image.W_END]
+    assert _passthrough(20, words).samples == ["1111" + "0" * 16]
+
+
+def test_set_beyond_the_slots_chunks_has_no_effect():
+    """The RTL's in_nxt is wider than the slot, which takes only its own width: a SET to a
+    chunk the slot does not have is dropped, never wrapped into a chunk it does have."""
+    t0 = "1010" + "0" * 16
+    words = [image.w_set(2, 0xFFFF), image.w_set(5, 0x1234), image.w_commit()]
+    out = _passthrough(20, [*words, image.W_SAMPLE, image.W_END], t0)
+    assert out.status == 0 and out.samples == [t0]
+
+
+def test_a_sample_wider_or_narrower_than_nout_is_refused():
+    h = Harness(1, [EmuSlot(16, 8, 0, "0" * 16, PassthroughSim())], maxwords=64)
+    h.feed(proto.load_frame(0, [image.W_SAMPLE, image.W_END]))
+    with pytest.raises(EmuError, match=r"width\(nout\)=8"):
+        h.feed(b"R")

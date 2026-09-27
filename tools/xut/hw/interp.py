@@ -12,6 +12,15 @@ protocol and the host code are all testable without hardware.
 Cycle model (xut_hw_ctrl): FETCH and DECODE take one cycle each per word; COMMIT and
 EDGE then hold MARGIN + 1 cycles (S_WAITM counts MARGIN down to 0); WAIT n holds n + 1;
 SAMPLE captures in DECODE. Printing time is not modelled: the DUT is static meanwhile.
+
+Two approximations, neither of which changes a sample or a reply byte:
+
+- a ``CycleEvent`` is stamped at DECODE. The RTL registers ``commit``/``edge_we``, so
+  its pins change one cycle later: change-to-change gaps are exact, while
+  change-to-capture gaps are overstated by one cycle (the margin still holds, since
+  every hold is MARGIN + 1 cycles);
+- ``RunOutcome.cycles`` leaves out the one-cycle ``S_SAMPLED`` state per SAMPLE and
+  the print time, so it is not an RTL cycle count.
 """
 
 from __future__ import annotations
@@ -139,8 +148,15 @@ def margin_violations(events: list[CycleEvent], margin: int = MARGIN) -> list[st
     return out
 
 
+class EmuError(ValueError):
+    """A mis-wired emulator slot: its DUT's samples do not have the slot's out_vec width."""
+
+
 @dataclass
 class EmuSlot:
+    """One slot of the emulated bitstream. ``nout`` is checked: every sample its ``dut``
+    returns must be ``width(nout)`` bits, as the RTL prints (else ``EmuError``)."""
+
     nin: int
     nout: int
     nclk: int
@@ -228,6 +244,12 @@ class Harness:
                     self._mem[: self._lwords], s.nin, s.nclk, s.dut, s.t0, margin=self.margin
                 )
                 samples, status = r.samples, r.status
+                bad = [b for b in samples if len(b) != width(s.nout)]
+                if bad:  # the RTL prints exactly width(nout) bits: never emit anything else
+                    raise EmuError(
+                        f"slot {self._lslot}: sample {bad[0]!r} is not width(nout)="
+                        f"{width(s.nout)} bits"
+                    )
             body += b"".join(proto.render("sample", sidx=i, bits=b) for i, b in enumerate(samples))
             out += body + proto.render(
                 "end", slot=self._lslot, samples=len(samples), status=status, crc=zlib.crc32(body)

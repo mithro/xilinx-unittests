@@ -22,3 +22,17 @@ def test_check_names_the_first_difference():
     bad = proto.RunReply(0, 0, 1, ("0" * 16, *good.samples[1:]), 0, 0)
     assert "p0" in selftest.check(0, bad)
     assert "status" in selftest.check(0, proto.RunReply(0, 0, 1, (), 3, 0))
+
+
+def test_selftest_programs_keep_every_margin():
+    """The real self-test programs, not just a toy: no change or capture closer than
+    MARGIN cycles to the previous in_vec or clock change."""
+    from xut.hw.interp import margin_violations, run_program
+
+    sims = selftest.selftest_sims()
+    for slot, prog in selftest.selftest_programs().items():
+        sims[slot].reset(prog.t0)
+        out = run_program(prog.words, prog.nin, prog.nclk, sims[slot], prog.t0)
+        assert out.status == 0
+        assert [e for e in out.events if e.kind != "sample"], slot  # it does change pins
+        assert margin_violations(out.events) == [], slot
