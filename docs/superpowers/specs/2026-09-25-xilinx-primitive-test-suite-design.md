@@ -55,7 +55,8 @@
     `result.json`;
   - §7.5: SRAM-only programming; a rig lock that is never deleted or broken,
     only waited for, with recovery limited to killing our own verified holder;
-    a busy rig is a retryable harness error; DNA readback deferred;
+    a busy rig is a retryable `error` (not a result, not `harness-error`);
+    DNA readback deferred;
   - §5.6: N = 3 hardware repeats by default;
   - §8: a failed post-flow DUT check is a `flow-mismatch`.
 - Owner: Tim 'mithro' Ansell
@@ -613,7 +614,8 @@ grow memory without bound in a Verilator `--timing` smoke simulation.
   requires.
 - **Multi-DUT packing.** One bitstream holds many configurations (slots),
   selected by a harness register, up to the device's global-clock budget
-  (28 DUT clocks on a 7-series part) and 64 slots. Identical slot sets share a
+  (28 DUT clocks on a 7-series part, confirmed by a full-budget build; lowered
+  here if that build cannot place) and 64 slots. Identical slot sets share a
   cached bitstream.
 - **Self-test.** Every bitstream contains a known-good passthrough and a
   counter channel. The harness runs them first after every programming, so a
@@ -678,10 +680,14 @@ Each configuration primitive declares its oracle:
     unlinking or re-creating it.
   - A held lock, including one whose owner record looks stale, is waited for
     up to a configured bound. Then the rig is reported `busy`: the job is a
-    retryable harness error, not a result, and moves to the next rig.
-  - The only recovery allowed is killing a holder verified as our own: same
-    host and boot id, a live pid, our session label and owner, and past its
-    TTL.
+    retryable `error` (not a result, and not the `harness-error` class) and
+    moves to the next rig. `busy` means only that the lock is held; a lock file
+    that cannot be created or opened is a rig fault, reported as such.
+  - The only recovery allowed is killing a holder verified as our own: the same
+    client (`user@host`; the pid differs) and session label, the same host and
+    boot id, past its TTL, and a live recorded pid that runs the lock script
+    for this lock and started no later than the owner record. A reused pid is
+    never killed.
 - **Transport errors** (SSH, UART CRC) are retried once. A board that fails
   the self-test is marked bad for the session.
 - **Adapter.** A minimal `BoardSession` adapter allows a later switch to the
