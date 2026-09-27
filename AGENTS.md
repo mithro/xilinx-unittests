@@ -273,14 +273,24 @@ smoke simulation whose memory grows without bound. Its container peaked at
   only xut's hard limit (one below the enforced 25), never the number to use;
   the budget formula gives the usable number. **Before PR C, the limit is 8**,
   because containers are uncapped. Use `pytest -n` at most 8.
-  Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
-  time. The 4 slots (`XUT_VIVADO_SLOTS`) are host-wide and are only a
-  semaphore, not a budget. Every Vivado/xsim run is counted in the budget of
-  the heavy command that starts it, in one of two ways:
+  Never use `-n auto` locally: it means 88 workers. There are two host-wide
+  slot pools (`xut.slots`, ruling S60). Each is only a semaphore, never a
+  second budget:
+  - **Vivado synthesis and implementation** (`xut hw build`): at most 4 at a
+    time (`XUT_VIVADO_SLOTS`), each sized at 16G. That size is a conservative
+    starting value, not yet measured for our Vivado runs.
+  - **xsim** (one configuration's xvlog, xelab and simulation, in the xsim
+    runner and the verilatorize oracle): at most 12 at a time
+    (`XUT_XSIM_SLOTS`). Measured: one configuration's whole `xsim.sh` peaked
+    at 340M on its own. A unit run with four at once peaked at 1.3G for its
+    whole scope, and one with twelve at once at 3.4G, including the Python
+    process and the result checking.
+
+  Every Vivado/xsim run is counted in the budget of the heavy command that
+  starts it, in one of two ways:
   - **In the caller's own scope** (today's xsim runner and verilatorize
-    oracle): covered by the caller's `--mem`. xsim simulations are small: a
-    unit run with four xsim at once peaked at 1.4G for the whole scope (see
-    the table below).
+    oracle): covered by the caller's `--mem`. A `--mem` of 8G covers twelve
+    xsim with room to spare.
   - **In a 16G scope of its own** (step 3's `scoped_run`: Vivado builds and
     `xut hw sim` xsim): counted through `xut heavy --vivado N`, which reserves
     N × 16G inside the 96G. A command that can start them declares `--vivado`
