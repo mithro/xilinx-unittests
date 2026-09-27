@@ -80,7 +80,7 @@ Expected: `step-2 interfaces OK FDRE`, both paths listed, and the spec's `Status
 - **SRAM-only programming.** The only programming command anywhere is `openFPGALoader -b arty <bitstream>`, which writes the FPGA's SRAM. Never pass `-f`, `--write-flash`, `--external-flash`, `--bulk-erase` or any other flash option, and never use openocd's `program`. The flash keeps whatever the lab put there. `xut.hw.session.PROGRAM_ARGV` is the one definition; a test pins it, and the Pi-side script `hw/pi/xut_work.sh` has no other `openFPGALoader` line (a test greps for it).
 - **The flock rule** (spec §7.5, ruling S49). Programming the FPGA, and any reboot of a rig, happen only while holding that rig's lock: `flock` on `/run/lock/<lock>` (per rig, from `hw/rigs.yaml`), taken by `hw/pi/xut_lock.sh`.
   - The holder writes an owner record (label `xut.session`, owner, host, boot id, pid, process groups, since, TTL) and runs under `timeout -k 10 <ttl>`, so a holder of ours never outlives its TTL.
-  - **The lock file is never deleted, re-created or unlinked, and a lock is never broken.** A held lock, even one whose owner record looks stale, is waited for up to the rig's `lock_wait_s`. Then the rig is reported `busy`: the job is a retryable harness error, not a result, and moves to the next rig.
+  - **The lock file is never deleted, re-created or unlinked, and a lock is never broken.** A held lock, even one whose owner record looks stale, is waited for up to the rig's `lock_wait_s`. Then the rig is reported `busy`: the job is a retryable `error` (not a result, not a `harness-error`) and moves to the next rig.
   - The only recovery allowed is killing a holder verified as our own: our label and client owner, the same host and boot id, a live pid in the recorded process group, and past its TTL.
   - xut never reboots a Raspberry Pi unless the rig's config names a `reboot_command`, and even then only through the same lock.
 - **Transport errors are retried once** (spec §7.5, §14). An error is never retried into a pass: a retry re-runs the whole job, and a second failure is an `error` result.
@@ -3820,7 +3820,7 @@ Rules:
   - the **post-flow DUT check** (spec §6, ruling S49 I3) fails: after `route_design`, `post_route.tcl` writes `dut_cells.txt` with every DUT instance's `REF_NAME` and the value of every attribute its configuration sets. `check_dut_cells` compares them with the slot's map; any difference (a retargeted cell, an absorbed inversion, a changed INIT, a missing cell) raises `FlowMismatch`, which the hw runner reports as a `flow-mismatch` (never a DUT result);
   - the **DUT clock latency** is over budget: `post_route.tcl` also measures, per DUT clock, the routed delay from its flip-flop to the BUFG plus the BUFG's global net (`XUT_LATENCY <clock> <ns>`). `(MARGIN − 2)` periods cover the datapath (`set_max_delay -datapath_only`), and the remaining 2 periods (20 ns) must cover clock-to-Q, the BUFG and that latency: `check_latency` fails the build when latency + 2 ns exceeds `LATENCY_BUDGET_NS`, or when a latency could not be measured (never a pass by default).
 - **Smaller bitstreams.** `BITSTREAM.GENERAL.COMPRESS TRUE` (less to `scp` through the jump host and to shift over JTAG).
-- **Cache.** `.cache/hw/bit/<key>/`. A build writes to `<key>.tmp-<pid>-<rand>/` under a per-key `flock` and renames it into place when it is complete, so a concurrent or interrupted build never leaves a half-written entry. A failed build's temporary directory is kept for diagnosis and never used.
+- **Cache.** `.cache/hw/bit/<key>/`. A post-flow DUT check failure is cached too (`flow_mismatch.json`, no bitstream) and re-raised from the cache: the same slots on the same Vivado fail the same way, so nothing is rebuilt. A build writes to `<key>.tmp-<pid>-<rand>/` under a per-key `flock` and renames it into place when it is complete, so a concurrent or interrupted build never leaves a half-written entry. A failed build's temporary directory is kept for diagnosis and never used.
 
 - [ ] **Step 1: Create the stacked worktree**
 
@@ -3940,6 +3940,19 @@ def test_every_vivado_run_takes_a_host_wide_slot(tmp_path, monkeypatch):
         vivado.VivadoBuilder(tmp_path).ensure(_slots())
 
 
+def test_a_cached_dut_check_failure_is_raised_without_a_rebuild(tmp_path, monkeypatch):
+    def no_vivado(*a, **k):
+        raise AssertionError("Vivado must not run for a cached failure")
+
+    monkeypatch.setattr(vivado, "scoped_run", no_vivado)
+    key = vivado.build_key(_slots(), "v", maxwords=8192, margin=16)
+    d = tmp_path / "bit" / key
+    d.mkdir(parents=True)
+    (d / "flow_mismatch.json").write_text('{"key": "k", "dut_check": "fail", "detail": "slot 2: X"}')
+    with pytest.raises(vivado.FlowMismatch, match="slot 2: X .cached"):
+        vivado.ensure_bitstream(_slots(), cache_root=tmp_path, vivado="v")
+
+
 def test_post_route_tcl_queries_every_dut_and_clock():
     tcl = vivado.post_route_tcl(_slots())
     assert "get_cells -quiet u_slots/u_dut_s2/dut" in tcl and "foreach a {INIT}" in tcl
@@ -3954,6 +3967,8 @@ def _cells(**over):
 def test_dut_check_passes_a_faithful_implementation():
     assert vivado.check_dut_cells(_cells(), _slots()) == []
     assert vivado.check_dut_cells(_cells(INIT="1'h0"), _slots()) == []  # same value, other radix
+    assert vivado._same("10.000", "10.0") and vivado._same('"TRUE"', "true")
+    assert not vivado._same("10.5", "10.0")
 
 
 @pytest.mark.parametrize(
@@ -4112,11 +4127,19 @@ def post_route_tcl(slots: Sequence[SlotBuild]) -> str:
 
 
 def _same(got: str | None, want: str) -> bool:
+    """One attribute value as configured and as Vivado reports it: equal Verilog literals
+    (any radix), equal reals (``10.0`` against ``10.000``), or equal strings ignoring
+    quotes and case."""
+
     def norm(x: str) -> object:
         x = str(x).strip().strip('"')
         try:
             return literal_value(x)
         except (ValueError, WrapError):
+            pass
+        try:
+            return float(x)
+        except ValueError:
             return x.upper()
 
     return got is not None and norm(got) == norm(want)
@@ -4311,6 +4334,9 @@ def ensure_bitstream(
     with _flock(cache_root / "locks" / f"build-{key[:16]}.lock"):
         if (final / "manifest.json").is_file():
             return _load(final)
+        if (final / "flow_mismatch.json").is_file():  # a cached failure: never rebuilt
+            failed = json.loads((final / "flow_mismatch.json").read_text())
+            raise FlowMismatch(f"{failed['detail']} (cached; see {final})")
         tmp = cache_root / "bit" / f"{key}.tmp-{os.getpid()}-{uuid.uuid4().hex[:6]}"
         src = tmp / "sources"
         src.mkdir(parents=True)
@@ -4337,7 +4363,13 @@ def ensure_bitstream(
         cells = (tmp / "dut_cells.txt").read_text() if (tmp / "dut_cells.txt").is_file() else ""
         dut_problems = check_dut_cells(cells, slots)
         if dut_problems:
-            raise FlowMismatch(f"post-flow DUT check: {'; '.join(dut_problems)}; see {tmp}")
+            # The same slots on the same Vivado fail the same way: cache the failure, so
+            # every test with this slot set reports it without a 5-15 minute rebuild.
+            detail = f"post-flow DUT check: {'; '.join(dut_problems)}"
+            record = {"key": key, "dut_check": "fail", "detail": detail}
+            (tmp / "flow_mismatch.json").write_text(json.dumps(record, indent=1) + "\n")
+            os.rename(tmp, final)
+            raise FlowMismatch(f"{detail}; see {final}")
         latency, lat_problems = check_latency(text)
         n_clocks = sum(s.nclk for s in slots)
         if lat_problems or len(latency) != n_clocks:
@@ -5874,9 +5906,9 @@ class TransportError(XutError, RuntimeError):
 
 
 class BoardBusy(XutError, RuntimeError):
-    """The rig lock stayed held for lock_wait_s (spec §7.5, ruling S49): a retryable harness
-    error, not a result. The job moves to the next rig; it does not use the transport
-    retry, and the rig is not marked bad."""
+    """The rig lock stayed held for lock_wait_s (spec §7.5, ruling S49): a retryable
+    ``error``, not a result and not the ``harness-error`` class. The job moves to the next
+    rig; it does not use the transport retry, and the rig is not marked bad."""
 
 
 class BoardError(XutError, RuntimeError):
@@ -6492,7 +6524,7 @@ it); the rig's own flock (``xut_lock.sh``) protects it from every other user.
 
 - a ``BoardBusy`` (the rig lock stayed held) moves the job to the next rig without using
   the transport retry; when every usable rig was busy, ``BoardBusy`` is raised (a
-  retryable harness error, never a result; ruling S49);
+  retryable `error`, never a result and not a `harness-error`; ruling S49);
 - a ``TransportError`` is retried once (spec §7.5, §14); a second one is raised;
 - a ``BoardError`` marks the board bad for the session and moves the job to another
   board, once;
@@ -6587,7 +6619,7 @@ def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
                 )
             if busy:
                 raise BoardBusy(
-                    f"every usable rig is busy (retryable harness error): {'; '.join(busy)}"
+                    f"every usable rig is busy (a retryable error, not a result): {'; '.join(busy)}"
                 ) from None
             raise
         try:
@@ -6643,7 +6675,7 @@ def _hw_checks(p: Probe) -> list[Check]:
     hw:<rig> enables the hw runner only when every hw-key check passed and Vivado is
     installed (no bitstream can be built without it)."""
     from xut.hw.rigs import config_path, load_rigs, write_ssh_config
-    from xut.paths import repo_root
+    from xut.paths import VIVADO_SETTINGS, repo_root
 
     try:
         root = repo_root()
@@ -7922,7 +7954,7 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 4. **Host-driven protocol.** The harness waits for commands (`I`, `L`, `R`) instead of dumping once after configuration, so the host can never miss the start of a dump, and one programming can run many slots in turn. A lost host byte leaves the loader waiting for data that never comes; the session times out, and the retry reprograms the FPGA (there is deliberately no inter-byte timeout in the RTL, which the emulator would have to mirror).
 5. **The hw runner's flow and model source.** `hw` runs flow `vivado` (spec §6 lists "bitstream on hw" under the Vivado flow). Its results are recorded only against the reference model source `unisim-2025.2`, so crosscheck groups them with the golden model's; any other source is a skip with the reason.
 6. **Board DNA.** Spec rev 3.4 §6 wanted "board DNA, serial number and site" in `result.json`. Two separate facts: the *harness* must not use the device's single DNA_PORT site, which is a primitive under test (§7.4); and reading the DNA over *JTAG* needs no DNA_PORT at all, only a JTAG tool that can do it without programming. Whether the rigs' `openFPGALoader` can (for example a `--read-dna` option) is unverified, because no board is reachable yet. Task 12, Step 2 checks `openFPGALoader --help` on a rig: if it offers a DNA read, a follow-up infra change adds it to `xut_work.sh` as a separate, non-programming invocation under the lock, extends the SRAM test's allow-list for exactly that line, and records `hw.dna`. Until then step 3 records the Arty's USB serial (FT2232), the rig and the site; `hw.dna` stays optional (spec rev 3.6 §6, §7.5).
-7. **The lock's mechanics** (ruling S49; spec rev 3.6 §7.5). `flock` on the rig's `lock` path under `/run/lock`, an owner record beside it (label, owner, host, boot id, pid, process groups, since, TTL), and our holder run under `timeout -k 10 <ttl>`, so it cannot outlive its TTL. flock is released by the kernel when its holder dies, so a lock that cannot be taken has a *live* holder: deleting or re-creating the file would put two holders on one board. So the lock file is never touched. A held lock is waited for up to `lock_wait_s`; then the rig is `busy` (a retryable harness error) and the job moves to the next rig. The only recovery is killing a holder verified as our own: the same client (`user@host`; the pid differs) and label, the same host and boot id, past its TTL, and a live recorded pid that is in the recorded process group, runs `xut_lock.sh` for this lock, and started no later than the record's `since` (so a reused pid is never killed). That path is a last resort and nearly unreachable (`timeout -k 10` kills our holder by TTL + 10 s). Exit 75 means busy and nothing else; a lock file that cannot be created or opened exits 93, a rig fault (`BoardError`). The same wrapper guards any reboot. xut reboots a rig only through a configured `reboot_command`, and never by default. The lock path must match whatever the other fpgas.online users take; Task 12 checks this before any programming.
+7. **The lock's mechanics** (ruling S49; spec rev 3.6 §7.5). `flock` on the rig's `lock` path under `/run/lock`, an owner record beside it (label, owner, host, boot id, pid, process groups, since, TTL), and our holder run under `timeout -k 10 <ttl>`, so it cannot outlive its TTL. flock is released by the kernel when its holder dies, so a lock that cannot be taken has a *live* holder: deleting or re-creating the file would put two holders on one board. So the lock file is never touched. A held lock is waited for up to `lock_wait_s`; then the rig is `busy` (a retryable `error`, not a result and not a `harness-error`) and the job moves to the next rig. The only recovery is killing a holder verified as our own: the same client (`user@host`; the pid differs) and label, the same host and boot id, past its TTL, and a live recorded pid that is in the recorded process group, runs `xut_lock.sh` for this lock, and started no later than the record's `since` (so a reused pid is never killed). That path is a last resort and nearly unreachable (`timeout -k 10` kills our holder by TTL + 10 s). Exit 75 means busy and nothing else; a lock file that cannot be created or opened exits 93, a rig fault (`BoardError`). The same wrapper guards any reboot. xut reboots a rig only through a configured `reboot_command`, and never by default. The lock path must match whatever the other fpgas.online users take; Task 12 checks this before any programming.
 8. **N and the system clock.** `MARGIN = 16` cycles at 100 MHz (160 ns, far above BUFG insertion and SLICE clock-to-out skews), with `set_max_delay -datapath_only` of (MARGIN − 2) periods. The system clock is the board oscillator through one BUFG, with no MMCM: the harness should not depend on a clock-management primitive, since those are primitives under test themselves.
 9. **What "run N times" means.** N = 3 programmings per bitstream (`--hw-repeats`). Any difference is `nondeterminism`, and the configuration fails.
 10. **Packing scope.** Configurations are packed per test, in content order, into bitstreams of at most 28 DUT clocks (32 BUFGCTRL, minus the harness's 2, minus 2 spare) and 64 slots. The content-addressed cache shares identical sets across tests. Packing across tests is left for later, if build time demands it.
