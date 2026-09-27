@@ -4954,24 +4954,32 @@ Run Task A8 with `<unit>` = `luts` once step-3 PRs A–C and the luts PR have me
 order and Part A's per-unit scope for the first pass.
 
 **Tier 1 deliverable, per primitive.** This is Part A with the scope cut, not the rules:
-- **Claims (A1):**
-  - Only the claims about the primitive's core documented behaviour go into `claims`: the
-    default mode, the main data path, the main control pins and reset/enable semantics.
-  - Every other documented claim, attribute mode and port behaviour is listed in the test's or
-    primitive's `gaps` as `tier-2: <what>`. Nothing is silently left out.
+- **Claims (A1):** A1 is unchanged. EVERY documented claim goes into `claims`, so its bin
+  exists and the Tier 2 debt shows as uncovered bins in status and PROGRESS.md. Tier 1
+  *exercises* only the core claims: the default mode, the main data path, the main control
+  pins and reset/enable semantics.
+- **Deferrals are accounted bins.** Every bin that Tier 1 leaves unexercised (a claim, an
+  attribute value, a cross, a port bin) is listed in a test's `gaps` starting with the bin
+  itself, e.g. `claim:X.C7 — tier-2: <why>` or `attr:MODE=FAST — tier-2: <why>`. That way
+  lint `bins-accounted` (`gap_bin` reads the leading bin) accounts for it. Nothing is
+  silently left out.
 - **Golden model (A2):**
   - It models the core behaviour.
-  - A mode or attribute value it does not model raises the model's refusal, so no test can
-    expect it. A test never asserts behaviour the model does not implement.
+  - A legal mode or attribute value it does not model yet raises the model's
+    *not-modelled* refusal. That is not an illegal value: no test expects it, and it stays a
+    `tier-2:` gap for its bin.
+  - Reject tests for values UG953 declares illegal are Tier 1 (L0), as in A3.
   - The clean-room rules, provenance, S44/S52/S55 crediting and mutant guards apply in full to
     what IS modelled.
 - **Tests (A3–A5):**
   - L0 `smoke`: the default configuration, plus one configuration per enumerated attribute
-    value that the model supports.
+    value that the model supports, plus the reject tests.
   - One L1 vector test per Tier 1 claim, each with its S55 mutant.
-  - The GSR sv test, only when the unit's shared testbench makes it cheap.
+  - The GSR sv test, only when the unit's shared testbench makes it cheap. When it is
+    skipped, its bins get `tier-2:` gaps.
   - **Deferred to Tier 2:** L2 exhaustive and random tests, cocotb sessions, attribute crosses
-    beyond the defaults, and rare modes. Each is listed in `gaps` as `tier-2:`.
+    beyond the defaults, and rare modes. Each deferred bin is a leading-bin `tier-2:` gap, as
+    above.
 - **Runners (A6):**
   - Every simulator the portability table allows: xsim, iverilog, and verilator with
     iverilog-vz.
@@ -4981,8 +4989,9 @@ order and Part A's per-unit scope for the first pass.
     Tier 1 never weakens a check.
 - **Status and PR (A6–A7):**
   - `xut status record` as usual.
-  - Each unit's README and status `notes` say "Tier 1", and the uncovered bins show what
-    Tier 2 owes.
+  - Each unit's README says "Tier 1", in its generated header. The status file is written
+    only by `xut status record` (AGENTS.md §7): its uncovered bins, which are the `tier-2:`
+    gaps, show what Tier 2 owes.
   - One PR per unit, with the two-reviewer gate.
 - **Completion:** a unit is complete only after Tier 2. Tier 1 is never reported as complete
   coverage.
@@ -5010,7 +5019,7 @@ order and Part A's per-unit scope for the first pass.
 | 16+ | the rest | regional_clk, serdes (xsim only), phy_fifo, weak_drivers, dci, config_*, xadc, gt_buf: Tier 1 in Appendix W order | as Appendix W |
 
 **Infra pulled forward for Tier 1.**
-- **P2 (`smoke_attrs`)** must land before bram.
+- **P2 (`smoke_attrs`)** is scheduled to land before bram, so that bram's and dsp's `no: config:` portability rows become real verdicts. If it is late, the unit proceeds under D11: it declares `"yes"`, accepts the lint warning, and its own L0 proves elaboration.
 - **P3 (clock observers, spec §5.4)** must land before bufg.
 
 Both are scheduled on infra branches while carry, muxf, srl and lutram proceed. P4 (DRP),
@@ -5027,7 +5036,7 @@ P5 (pad harness) and P6 (real-time clocks) are not needed for Tier 1 simulation.
 
 ## Appendix W: the fan-out worksheet
 
-The approved order starts luts, latches, muxf, carry, srl, lutram, rom, ddr_regs, bufg; the rest follows spec §16 step 5's group order and is **provisional** (the orchestrator sets it). Portability cells are from the 2026-09-27 smoke run of PR #10 (both model sources), before ruling S51 re-labelled model attribute checks as `no: config:`; **re-read `status/PORTABILITY.md` on `main` at intake** (Task A1, Step 2.3), because it is regenerated after every infra merge.
+**The order is set by Appendix T (ruling S58), which supersedes the order below.** This worksheet keeps its per-unit notes. The original order was luts, latches, muxf, carry, srl, lutram, rom, ddr_regs, bufg, then spec §16 step 5's group order. Portability cells are from the 2026-09-27 smoke run of PR #10 (both model sources), before ruling S51 re-labelled model attribute checks as `no: config:`; **re-read `status/PORTABILITY.md` on `main` at intake** (Task A1, Step 2.3), because it is regenerated after every infra merge.
 
 Infra that later units need, beyond Task P1 (each is an `infra/*` branch the unit stacks on or waits for, AGENTS.md §13):
 
