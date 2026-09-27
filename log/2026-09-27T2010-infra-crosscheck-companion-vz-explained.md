@@ -18,3 +18,8 @@
 - Real data: this branch's `xut crosscheck '7series.FD*'` on unit/7series/flops@84b2c74
   exits 0, with 56 agree and 2 known-divergence (previously exit 4).
 - ruff check and format are clean.
+
+## Next steps
+- Merge PR #13, then rebase unit/7series/flops so Task 27's crosscheck exits 0.
+- The code-quality nit about the long commit subject is left as is: rewriting a reviewed
+  branch's history is not allowed (AGENTS.md §12).
