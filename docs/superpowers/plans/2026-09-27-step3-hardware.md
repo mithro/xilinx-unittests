@@ -4470,6 +4470,97 @@ def _load(d: Path) -> Bitstream:
     )
 
 
+def _run_vivado(
+    tmp: Path, slots: Sequence[SlotBuild], key: str, bid: int, *, maxwords: int, margin: int,
+    timeout_s: int,
+) -> str:
+    """Stage the build inputs in ``tmp``, run Vivado in a slot and a scope, and return the
+    log text; ``BuildError`` when the log or the missing bitstream says it failed."""
+    src = tmp / "sources"
+    src.mkdir(parents=True)
+    inputs = build_inputs(slots, maxwords=maxwords, margin=margin, build_id=bid)
+    for name, text in inputs.items():
+        (tmp if name == "build.sh" else src).joinpath(name).write_text(text)
+    log = tmp / "build.log"
+    with vivado_slot():
+        rc = scoped_run(
+            ["bash", str(tmp / "build.sh"), PART, f"{bid:08x}"],
+            what=f"vivado-{key[:12]}",
+            memory_max=VIVADO_MEMORY_MAX,
+            cwd=tmp,
+            log=log,
+            timeout_s=timeout_s,
+        )
+    text = log.read_text(errors="replace")
+    why = classify_log(text, rc)
+    if why is None and not (tmp / "top.bit").is_file():
+        why = "Vivado reported success but wrote no top.bit"
+    if why is not None:
+        raise BuildError(f"{why}; see {log}")
+    return text
+
+
+def _post_route_checks(
+    tmp: Path, final: Path, slots: Sequence[SlotBuild], key: str, text: str
+) -> dict[str, float]:
+    """The post-flow DUT check (a failure is cached in ``final`` and raised as
+    ``FlowMismatch``) and the DUT clock latency (``BuildError``); the latencies."""
+    cells_file = tmp / "dut_cells.txt"
+    cells = cells_file.read_text() if cells_file.is_file() else ""
+    dut_problems = check_dut_cells(cells, slots)
+    if dut_problems:
+        # The same slots on the same Vivado fail the same way: cache the failure, so
+        # every test with this slot set reports it without a 5-15 minute rebuild.
+        detail = f"post-flow DUT check: {'; '.join(dut_problems)}"
+        record = {"key": key, "dut_check": "fail", "detail": detail}
+        (tmp / "flow_mismatch.json").write_text(json.dumps(record, indent=1) + "\n")
+        os.rename(tmp, final)
+        raise FlowMismatch(f"{detail}; see {final}")
+    latency, lat_problems = check_latency(text)
+    n_clocks = sum(s.nclk for s in slots)
+    if lat_problems or len(latency) != n_clocks:
+        measured = "; ".join(lat_problems) or f"{len(latency)} of {n_clocks} measured"
+        raise BuildError(f"DUT clock latency: {measured}; see {tmp / 'build.log'}")
+    return latency
+
+
+def _manifest(
+    tmp: Path, slots: Sequence[SlotBuild], key: str, bid: int, vivado: str, text: str,
+    latency: dict[str, float], *, maxwords: int, margin: int,
+) -> dict:
+    wns, whs = _TIMING.findall(text)[-1]
+    return {
+        "format": "xut-hw-bitstream 1",
+        "key": key,
+        "build_id": f"{bid:08x}",
+        "part": PART,
+        "board": BOARD,
+        "vivado": vivado,
+        "maxwords": maxwords,
+        "margin": margin,
+        "wns_ns": float(wns),
+        "whs_ns": float(whs),
+        "dut_check": "pass",
+        "dclk_latency_ns": latency,
+        "bitstream_sha256": hashlib.sha256((tmp / "top.bit").read_bytes()).hexdigest(),
+        "built": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+        "slots": [
+            {
+                "index": k,
+                "kind": s.kind,
+                "label": s.label,
+                "nin": s.nin,
+                "nout": s.nout,
+                "nclk": s.nclk,
+                "t0": s.t0,
+                "digest": s.digest(),
+                "map": json.loads(s.map_json) if s.map_json else None,
+            }
+            for k, s in enumerate(slots)
+        ],
+    }
+
+
 def ensure_bitstream(
     slots: Sequence[SlotBuild],
     *,
@@ -4479,7 +4570,8 @@ def ensure_bitstream(
     margin: int = MARGIN,
     timeout_s: int = BUILD_TIMEOUT_S,
 ) -> Bitstream:
-    """The cached bitstream for ``slots``, building it first if needed."""
+    """The cached bitstream for ``slots`` (or its cached DUT-check failure), building it
+    first if needed: ``_run_vivado``, ``_post_route_checks``, then ``_manifest``."""
     key = build_key(slots, vivado, maxwords=maxwords, margin=margin)
     bid = build_id_of(key)
     final = cache_root / "bit" / key
@@ -4490,78 +4582,13 @@ def ensure_bitstream(
             failed = json.loads((final / "flow_mismatch.json").read_text())
             raise FlowMismatch(f"{failed['detail']} (cached; see {final})")
         tmp = cache_root / "bit" / f"{key}.tmp-{os.getpid()}-{uuid.uuid4().hex[:6]}"
-        src = tmp / "sources"
-        src.mkdir(parents=True)
-        for name, text in build_inputs(
-            slots, maxwords=maxwords, margin=margin, build_id=bid
-        ).items():
-            (tmp if name == "build.sh" else src).joinpath(name).write_text(text)
-        log = tmp / "build.log"
-        with vivado_slot():
-            rc = scoped_run(
-                ["bash", str(tmp / "build.sh"), PART, f"{bid:08x}"],
-                what=f"vivado-{key[:12]}",
-                memory_max=VIVADO_MEMORY_MAX,
-                cwd=tmp,
-                log=log,
-                timeout_s=timeout_s,
-            )
-        text = log.read_text(errors="replace")
-        why = classify_log(text, rc)
-        if why is None and not (tmp / "top.bit").is_file():
-            why = "Vivado reported success but wrote no top.bit"
-        if why is not None:
-            raise BuildError(f"{why}; see {log}")
-        cells = (tmp / "dut_cells.txt").read_text() if (tmp / "dut_cells.txt").is_file() else ""
-        dut_problems = check_dut_cells(cells, slots)
-        if dut_problems:
-            # The same slots on the same Vivado fail the same way: cache the failure, so
-            # every test with this slot set reports it without a 5-15 minute rebuild.
-            detail = f"post-flow DUT check: {'; '.join(dut_problems)}"
-            record = {"key": key, "dut_check": "fail", "detail": detail}
-            (tmp / "flow_mismatch.json").write_text(json.dumps(record, indent=1) + "\n")
-            os.rename(tmp, final)
-            raise FlowMismatch(f"{detail}; see {final}")
-        latency, lat_problems = check_latency(text)
-        n_clocks = sum(s.nclk for s in slots)
-        if lat_problems or len(latency) != n_clocks:
-            raise BuildError(
-                "DUT clock latency: "
-                + ("; ".join(lat_problems) or f"{len(latency)} of {n_clocks} measured")
-                + f"; see {log}"
-            )
-        wns, whs = _TIMING.findall(text)[-1]
-        sha = hashlib.sha256((tmp / "top.bit").read_bytes()).hexdigest()
-        manifest = {
-            "format": "xut-hw-bitstream 1",
-            "key": key,
-            "build_id": f"{bid:08x}",
-            "part": PART,
-            "board": BOARD,
-            "vivado": vivado,
-            "maxwords": maxwords,
-            "margin": margin,
-            "wns_ns": float(wns),
-            "whs_ns": float(whs),
-            "dut_check": "pass",
-            "dclk_latency_ns": latency,
-            "bitstream_sha256": sha,
-            "built": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
-            "slots": [
-                {
-                    "index": k,
-                    "kind": s.kind,
-                    "label": s.label,
-                    "nin": s.nin,
-                    "nout": s.nout,
-                    "nclk": s.nclk,
-                    "t0": s.t0,
-                    "digest": s.digest(),
-                    "map": json.loads(s.map_json) if s.map_json else None,
-                }
-                for k, s in enumerate(slots)
-            ],
-        }
+        text = _run_vivado(
+            tmp, slots, key, bid, maxwords=maxwords, margin=margin, timeout_s=timeout_s
+        )
+        latency = _post_route_checks(tmp, final, slots, key, text)
+        manifest = _manifest(
+            tmp, slots, key, bid, vivado, text, latency, maxwords=maxwords, margin=margin
+        )
         (tmp / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
         os.rename(tmp, final)
         return _load(final)
@@ -6867,6 +6894,30 @@ class JobOutcome:
     attempts: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _Attempt:
+    """One leased attempt: ``ok`` with its result, or the error class that ended it."""
+
+    kind: str  # ok | busy | transport | board
+    rig: str
+    result: JobResult | None = None
+    error: Exception | None = None
+
+
+def _attempt(pool: BoardPool, avoid: Collection[str], job: HwJob, workdir: Path) -> _Attempt:
+    """Lease a board (``NoBoard`` propagates), run the job on it, release the board."""
+    with pool.lease(avoid) as s:
+        rig = s.rig.name
+        try:
+            return _Attempt("ok", rig, s.run_job(job, workdir))
+        except BoardBusy as e:
+            return _Attempt("busy", rig, error=e)
+        except TransportError as e:
+            return _Attempt("transport", rig, error=e)
+        except BoardError as e:
+            return _Attempt("board", rig, error=e)
+
+
 def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
     attempts: list[str] = []
     avoid: set[str] = set()
@@ -6877,60 +6928,51 @@ def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
     while True:
         n += 1
         try:
-            lease = pool.lease(avoid)
-            s = lease.__enter__()
+            a = _attempt(pool, avoid, job, workdir / f"attempt-{n}")
         except NoBoard:
             if failed is not None:
-                return JobOutcome(
-                    failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts
-                )
+                why = f"{failed[1]} (no other board to retry on)"
+                return JobOutcome(failed[0], "fail", why, attempts)
             if busy:
-                raise BoardBusy(
-                    f"every usable rig is busy (a retryable error, not a result): {'; '.join(busy)}"
-                ) from None
+                why = "every usable rig is busy (a retryable error, not a result): "
+                raise BoardBusy(why + "; ".join(busy)) from None
             raise
-        try:
-            rig = s.rig.name
-            try:
-                res = s.run_job(job, workdir / f"attempt-{n}")
-            except BoardBusy as e:  # ruling S49: move to the next rig; not a transport retry
-                attempts.append(f"attempt {n} on {rig}: busy: {e}")
-                busy.append(str(e))
-                avoid.add(rig)
-                continue
-            except TransportError as e:
-                attempts.append(f"attempt {n} on {rig}: transport error: {e}")
-                if retried:
-                    raise
-                retried = True
-                continue
-            except BoardError as e:
-                attempts.append(f"attempt {n} on {rig}: board error: {e}")
-                pool.mark_bad(rig, str(e))
-                if moved:
-                    raise
-                moved = True
-                avoid.add(rig)
-                continue
-        finally:
-            lease.__exit__(None, None, None)
+        where = f"attempt {n} on {a.rig}"
+        if a.kind == "busy":  # ruling S49: move to the next rig; not a transport retry
+            attempts.append(f"{where}: busy: {a.error}")
+            busy.append(str(a.error))
+            avoid.add(a.rig)
+            continue
+        if a.kind == "transport":
+            attempts.append(f"{where}: transport error: {a.error}")
+            if retried:
+                raise a.error
+            retried = True
+            continue
+        if a.kind == "board":
+            attempts.append(f"{where}: board error: {a.error}")
+            pool.mark_bad(a.rig, str(a.error))
+            if moved:
+                raise a.error
+            moved = True
+            avoid.add(a.rig)
+            continue
+        res = a.result
         bad = [
             selftest.check(slot, res.runs[slot])
             for slot in (selftest.PASS_SLOT, selftest.COUNT_SLOT)
         ]
         detail = "; ".join(b for b in bad if b) or None
         if detail is None:
-            attempts.append(f"attempt {n} on {rig}: ok")
+            attempts.append(f"{where}: ok")
             return JobOutcome(res, "pass", None, attempts)
-        attempts.append(f"attempt {n} on {rig}: self-test failed: {detail}")
-        pool.mark_bad(rig, f"self-test failed: {detail}")
+        attempts.append(f"{where}: self-test failed: {detail}")
+        pool.mark_bad(a.rig, f"self-test failed: {detail}")
         if moved:
             return JobOutcome(res, "fail", detail, attempts)
         moved, failed = True, (res, detail)
-        avoid.add(rig)
+        avoid.add(a.rig)
 ```
-
-(Write the lease handling with a `with` block and a small inner function if that reads better; the rules are the docstring's.)
 
 - [ ] **Step 3: Doctor.** In `tools/xut/doctor.py`, replace the hard-coded `FPGAS_ONLINE_*` constants and `_check_fpgas_online` (the step-1 TODO: "read these from hw/boards/…") with checks driven by the rigs config. Nothing here may raise out of `run_checks` (a file write included), and a passing rig enables `hw` only when the key check passed and Vivado is installed:
 
