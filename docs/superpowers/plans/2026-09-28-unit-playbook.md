@@ -4,7 +4,7 @@
 
 **Goal:** One reusable procedure that takes any remaining work unit of `docs/work-units.yaml` from nothing to a merged unit PR, at the standard the `flops` pilot set in step 2, so that the fan-out of spec §16 step 5 does not need a new plan per unit. The plan has three parts:
 
-- **Part 0** — small infra prerequisites that every later unit needs (Task P1, one infra PR): two gaps found while writing this plan, and the AGENTS.md §7 amendment confirmed on PR #12.
+- **Part 0** — the infra prerequisites every later unit needs (Task P1, one infra PR): the coverage-bin fix, `xut.unitkit` (the shared metadata helpers and guard set, ruling S53), the ANN exemption, and the AGENTS.md §7 (own-stub refresh) and §10.1 (heavy-command lock) rules.
 - **Part A** — the generic unit procedure, Tasks A1–A8, parameterised by `<unit>`, `<group>` and `<PRIMS>`: overrides and claims, clean-room golden models, vector recipes and the metadata generator with its reach guard, sv tests, a cocotb session, the full run with crosscheck, findings and status, the unit PR, and the hardware follow-up once the step-3 `hw` runner exists.
 - **Part B** — the `luts` unit (LUT1–LUT6, LUT6_2, CFGLUT5) as the first concrete instance, Tasks B1–B8, with complete code for everything load-bearing: the golden models, the recipes (exhaustive truth tables, spec §4.2 INIT sampling, CFGLUT5 reconfiguration sequences), the test.yaml/README generator and its guards, the sv testbenches and the cocotb session.
 
@@ -13,13 +13,14 @@ Appendix W is the fan-out worksheet: the order of the remaining 26 units after l
 **How to use it.**
 
 - For **luts**, run Part 0 (if P1 is not merged yet), then Part B. Every Part B task names the Part A task whose rules it follows; read that task first.
-- For **any later unit**, the orchestrator gives the implementer a brief naming `<unit>` and pointing at its Appendix W row; the implementer follows Part A, using Part B and the flops pilot (`tests/7series/register/_shared/flops/`, `models/xut_models/7series/_common/flops.py`) as the worked examples.
+- For **any later unit**, the orchestrator gives the implementer a brief naming `<unit>` and pointing at its Appendix W row; the implementer follows Part A, using Part B as the worked example and `xut.unitkit` for everything generic. A unit never copies the flops unit's code (ruling S53): flops predates the kit and migrates to it in its own later PR.
 - Placeholders: `<unit>` is the work-unit name (`luts`), `<group>` its lower-case PRIMITIVE_GROUP directory (`clb`), `<PRIMS>` its primitives (`LUT1 ... CFGLUT5`), `<PRIM>` one of them and `<prim>` its lower-case form. `<U>` is the worktree `../xilinx-unittests-worktrees/unit-7series-<unit>`. `<ts>` in a log file name is the AGENTS.md `YYYY-MM-DDTHHMM` pattern.
 
-**Architecture** (unchanged from step 2; this plan adds no new mechanism):
+**Architecture** (step 2's, plus `xut.unitkit`):
 
 - A unit owns `catalog/7series/<PRIM>.overrides.yaml`, `models/xut_models/7series/_common/<unit>.py` and `<prim>.py`, `tests/7series/<group>/<PRIM>/**`, `tests/7series/<group>/_shared/<unit>/**`, `status/7series/<PRIM>.yaml`, `findings/<PRIM>-*.md` and its own log entries (`xut.workunits.owned_paths`).
-- The shared directory holds the unit's single sources: `<unit>_recipes.py` (stimulus), `<unit>_tests.py` (renders every `test.yaml` and `README.md`), `<unit>_cocotb.py` (the cocotb session), the sv bodies (`*.svh`) and the unit's pytest files. Each primitive's `vectors/gen.py`, `sv/*.sv` and `cocotb/*.py` are thin wrappers over them.
+- The shared directory holds the unit's single sources, every file named with the stem `<unit>` (unique across units: pytest's flat namespace): `<unit>_recipes.py` (stimulus), `<unit>_tests.py` (renders every generated file of every primitive: `test.yaml`, `README.md`, `vectors/gen.py`, the cocotb module and the sv wrappers), `<unit>_cocotb.py` (the cocotb session), the sv bodies (`<unit>_*_tb.svh`) and the unit's pytest files.
+- `xut.unitkit` (Task P1) supplies what is not unit-specific: the standard reasons, test entries, bin names, the YAML dumper, the README skeleton, the reach replay and the guard set `UnitGuards`. A unit imports it and never copies it.
 - Expected values come only from the clean-room golden model (python runner). Recipes never compute them. sv tests check only documented behaviour and record the rest as checkpoints; cocotb compares against the same model step by step.
 
 **Tech stack:** as step 2: Python ≥ 3.12, uv, pytest, ruff, the `xut-sim:1` container (Icarus 12, Verilator 5.048, cocotb 2.0.1), Vivado 2025.2 xsim; for Task A8 the step-3 `hw` runner.
@@ -51,36 +52,36 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 - **Generated status files** `status/PROGRESS.md`, `TODO.md`, `LOG.md` and `PORTABILITY.md` are never committed on a unit branch. Only the orchestrator regenerates them on `main` (`status: regenerate`).
 - **Commits** are small, one meaningful change each, subject prefixed `<unit>: ` (the commit-msg hook enforces it), each ending with the trailer `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`, passed as a second `-m` as every commit command below does.
 - **Shell.** Never redirect to `/dev/null` in any form. Never pipe a command into `grep`, `tail` or `head`: write the whole output to a log file under `.cache/` (`cmd > .cache/x.log 2>&1`) and then read or search the log file. Vivado is only ever sourced in a subshell: `bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && ...'` (the xsim runner does this itself).
-- **MEMORY SAFETY (AGENTS.md §10.1, mandatory).** Every memory-heavy command runs in its own capped scope, never in the agent's own cgroup:
+- **MEMORY SAFETY (AGENTS.md §10.1, mandatory).** Every heavy command (`xut run`, `xut portability`, `xut verilatorize --check`, `xut hw sim`, `xut hw build`, and `pytest` with `-n` above 1) takes the **one host-wide lock** and then runs in its own capped scope, never in the agent's own cgroup (ruling S53):
 
   ```bash
-  systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
-    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > .cache/<log> 2>&1
+  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice \
+    --unit=xut-<what>-$(date +%s) -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > .cache/<log> 2>&1
   ```
 
-  The caps below keep each command inside the project's 100G share of `vivado.slice`. Containers run outside the scope, capped at 4G each by xut (PR #10), and Vivado/xsim runs take one of the 4 host-wide slots (`XUT_VIVADO_SLOTS`), so both count:
+  The lock has one holder at a time, host-wide, so two agents (two units in parallel, say) never run heavy jobs at once, and each command's own budget below (at most 96G) is the whole project's use. `flock` waits for a holder; nothing ever deletes the lock file. Task P1 writes the rule into AGENTS.md §10.1. The caps keep each command inside the project's 100G share of `vivado.slice`. Containers run outside the scope, capped at 4G each by xut (PR #10), and Vivado/xsim runs take one of the 4 host-wide slots (`XUT_VIVADO_SLOTS`), so both count:
 
   | Command | Scope cap | Parallelism | Worst case |
   |---|---|---|---|
   | `xut run` (python, xsim, iverilog, verilator) | 32G | `--jobs 16` (AGENTS.md allows ≤ 24; 16 keeps 32G + 16 × 4G = 96G) | 96G |
-  | `pytest` over the unit's own tests (pure Python) | 8G | none, or `-n 8` | 8G |
-  | `pytest` over the whole repository (container tests included) | 32G | `-n 4 --dist loadfile` (never `-n auto`) | 32G + 4 × 4G |
+  | `pytest` over the unit's own tests, one process | unscoped: light (as `ruff`) | none | about 1G |
+  | `pytest` over the whole repository (container tests included) | 32G | `-n 4 --dist loadfile` (never `-n auto`) | 32G + 4 × 4G; after step 3, 32G + 4 × 16G (a worker may start a Vivado child) = 96G |
   | `xut hw sim` (Task A8) | 16G | `--jobs 8` (Icarus) | 48G |
   | `xut hw build` / `xut run --flow vivado --runner hw` (Task A8) | 8G / 32G | Vivado 4 × 16G | 72G / 96G |
 
-  Never run two of these at once. An OOM kill (`oom-kill` in the scope result, or docker `OOMKilled=true`) is a retryable failure: lower the parallelism and re-run; never raise a cap. A model OOM-killed on its own is a portability result to report, not a reason to raise the cap. `ruff`, `xut lint`, `xut crosscheck`, `xut status record`, `git` and the metadata generators are light and run unscoped.
+  An OOM kill (`oom-kill` in the scope result, or docker `OOMKilled=true`) is a retryable failure: lower the parallelism and re-run; never raise a cap. A model OOM-killed on its own is a portability result to report, not a reason to raise the cap. `ruff`, `xut lint`, `xut crosscheck`, `xut status record`, `git`, the metadata generators and single-process `pytest` over the unit's own tests are light and run unscoped, without the lock.
 - **Clean room (AGENTS.md §8).** Golden models are written from UG953 alone: `uv run xut fetch-docs`, then read `.cache/docs/ug953-2026.1.txt`. Nobody working on `models/xut_models/7series/**` opens a UNISIM `.v` file of either model source, for writing a model or for analysing a finding. A model is committed before any simulator runs its tests, and it is never changed to follow a simulator: only a contradiction with UG953 (a model bug, fixed with a test) changes it.
-- **Stdlib only.** `models/xut_models/**` and the unit's `_shared/<unit>/<unit>_recipes.py` and `<unit>_cocotb.py` import only the standard library, `xut_models` and (recipes: type-checking only) `xut`. cocotb modules run in the container, where xut's dependencies are not installed.
+- **What runs in the container.** `models/xut_models/**`, `<unit>_recipes.py` and `<unit>_cocotb.py` are imported by cocotb inside the simulator container, where only the standard library, `xut_models`, `xut.formats` and `xut.cocotb_dut` exist. So: models import only the standard library and `xut_models`; the recipes import `xut` only for type checking; the session imports `xut.cocotb_dut` (it must, to drive the DUT) and nothing else from `xut`. `<unit>_tests.py` and the guards run on the host and use `xut.unitkit` freely.
 - **Never weaken a test to hide a divergence** (AGENTS.md §9, spec §8). A disagreement is classified and recorded as a finding; an `expected_divergence` never masks it (it is reported as `known-divergence`); an expected bit is never turned into `-`; a check is never deleted.
 - **Long runs** follow the global progress rule: run in the background with the log in `.cache/`, watch it with a Monitor that reads the latest `progress: done=N total=M elapsed_s=E` line, compute the rate as N ÷ E and the remaining time as (M − N) ÷ rate, and report the remaining time and the finish clock-time at the cadence the estimate gives (under 10 minutes: every 60 s; under 4 hours: every 5 minutes; longer: every 15 minutes). Tighten the cadence if a later estimate drops below a threshold.
-- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (128 tests passing), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
+- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (145 tests passing, through `xut.unitkit`'s guards), P1's own tests and the non-container suite on a copy of `main` (1696 passed), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
 - **Worktrees** live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. **One PR per branch, always.**
 
 ### Branches and PRs
 
 | Branch | Branched from | Worktree | Tasks | PR (base) |
 |---|---|---|---|---|
-| `infra/unit-prereqs` | `origin/main` after PR #10 | `infra-unit-prereqs` | P1 | "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests; unit stub refresh" (base `main`) |
+| `infra/unit-prereqs` | `origin/main` after PR #10 | `infra-unit-prereqs` | P1 | "infra: unit prerequisites — coverage bins, xut.unitkit, AGENTS.md stub and heavy-lock rules" (base `main`) |
 | `unit/7series/luts` | `origin/main` once P1 has merged, else `origin/infra/unit-prereqs` | `unit-7series-luts` | B1–B7 | "luts: LUT1-LUT6, LUT6_2 and CFGLUT5" (base `main`, or `infra/unit-prereqs` while P1 is open) |
 | `unit/7series/<unit>` | `origin/main` | `unit-7series-<unit>` | A1–A7 | "`<unit>`: `<PRIMS>`" (base `main`) |
 | `unit/7series/<unit>` (fresh, after the unit's first PR merged) | `origin/main` after step-3 PRs A–C | `unit-7series-<unit>` | A8 (luts: B8) | "`<unit>`: hardware results" (base `main`) |
@@ -88,40 +89,41 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 - **One unit, one PR.** Each task is still reviewed on local commits before the next starts (the step-2 per-task review: a reviewer writes a report file; must-fix items are fixed in new commits). The spec §13.4 gate (two fresh reviewers with the `docs/review/` prompts, posting `gh pr review`) runs once, on the unit PR (Task A7).
 - **Stacking.** A unit branch stacked on an open infra branch has that branch as its PR base. After the infra PR merges, only the orchestrator rebases the unit onto `main`, re-runs its tests, pushes with `git push --force-with-lease` and retargets the PR (`gh pr edit <N> --base main`).
 - **Push after every task**, as a remote backup: `git push -u origin unit/7series/<unit>` (origin is HTTPS; if it asks for credentials, `git -c credential.helper= -c credential.helper='!gh auth git-credential' push https://github.com/mithro/xilinx-unittests.git unit/7series/<unit>`).
-- **Two-agent limit** (spec §13.5): at most two sub-agents at once, reviewers included; reviewers (a) and (b) run one after the other. Two units may proceed in parallel only as one implementer each with no reviewer running.
+- **Two-agent limit** (spec §13.5): at most two sub-agents at once, reviewers included; reviewers (a) and (b) run one after the other. Two units may proceed in parallel only as one implementer each with no reviewer running, and their heavy commands still take turns through the host-wide lock.
 - **Ownership.** A unit branch touches only its unit's owned paths plus its own `log/<ts>-unit-7series-<unit>-<slug>.md` entries. `uv run xut lint --branch` enforces it before every push. An infra need is a TODO in the log entry or a stacked infra branch (AGENTS.md §13), never an edit under `tools/`.
 
 ## Review Focus
 
-1. **Clean room and provenance.** Every modelled behaviour carries `doc:<page>` for a page that says it, or `inferred:<reason>` with a real reason. `-` appears only where UG953 declares a value undefined (ruling S30). A claim is hit only where a documented rule decides the output at that event (S32), never by an inferred rule alone (S44), and never by an output whose value depends on an inferred detail, even under a documented rule (S52: CFGLUT5 credits only order-independent reads). No UNISIM internal names or quirks leak into a model.
-2. **Reach, not declaration.** Every vector test's `exercises` is a subset of what its own generator reaches through the golden model, checked by the unit's guard test with `xut.golden.coverage_reach` (the function the python runner records `bins_reached` with). Every catalog bin is in some test's `exercises` or opens a `gaps` entry.
+1. **Clean room and provenance.** Every modelled behaviour carries `doc:<page>` for a page that says it, or `inferred:<reason>` with a real reason. `-` appears only where UG953 declares a value undefined (ruling S30). A claim is hit only where a documented rule decides the output at that event (S32), never by an inferred rule alone (S44), and never by an output whose value depends on an inferred detail, even under a documented rule (S52). Knowledge that does not depend on an inference is tracked explicitly, never read off inferred state (S53: CFGLUT5's known-uniform contents). No UNISIM internal names or quirks leak into a model.
+2. **Reach, not declaration.** Every vector test's `exercises` is a subset of what its own generator reaches through the golden model, checked by `xut.unitkit.UnitGuards` through `vector_reach` (the python runner's own generation and `replay_config`). Every catalog bin is in some test's `exercises` or opens a `gaps` entry (`xut.lint.gap_bin`). Every exercised bin has at least one **pure** configuration, all of whose samples are documented, so it is credited whatever an inferred detail turns out to be (S52, S53).
 3. **No weakened test, no masked finding.** Findings are handled by class (Task A6). A model changes only for a UG953 contradiction. `expected_divergence` entries name open findings and never turn a bit into `-`.
 4. **Portability declarations match the table.** A `no` row is declared `unsupported` with the table's reason; a `no: config:` row keeps `"yes"` (a lint warning until the smoke configuration is legal); a verilatorize refusal, `blocked`, or an equivalence `fail`/`error` makes `verilator` unsupported (and `iverilog-vz` with it).
 5. **Hardware honesty.** A vector test declares `hw: "yes"` only if its configurations are order-renderable (spec §5.1 S8′); GSR pulses, reject tests, sv and cocotb tests, free-running clocks and pad-class ports are `hw: "unsupported"` with their reason.
-6. **Memory safety.** Every heavy command in the plan and in the unit's README runs in a capped scope at the parallelism of the budget table.
+6. **Memory safety.** Every heavy command in the plan and in the unit's README takes the host-wide lock and runs in a capped scope at the parallelism of the budget table.
+7. **No copied infra.** Generic metadata, rendering and guard code comes from `xut.unitkit`; a unit neither copies it nor copies the flops unit.
 
 ---
 
 ## File Structure
 
-Generic (Part A), per unit:
+Generic (Part A), per unit. The file stem is the unit's name, `<unit>`, everywhere (ruling S53): pytest's default import mode puts every `_shared/<unit>` directory's modules into one flat namespace, so the stem must be unique across units, and the unit name is.
 
 ```
 catalog/7series/<PRIM>.overrides.yaml                 claims, active levels, allowed-value fixes, crosses
 models/xut_models/7series/_common/<unit>.py           the shared clean-room model
 models/xut_models/7series/<prim>.py                   one per primitive: constants + MODEL
 tests/7series/<group>/_shared/<unit>/<unit>_recipes.py   stimulus recipes, generators(prim)
-tests/7series/<group>/_shared/<unit>/<unit>_tests.py     single source of test.yaml + README.md
+tests/7series/<group>/_shared/<unit>/<unit>_tests.py     tests_for, render(prim), UNIT (xut.unitkit)
 tests/7series/<group>/_shared/<unit>/<unit>_cocotb.py    the cocotb random session
-tests/7series/<group>/_shared/<unit>/*.svh               shared sv testbench bodies
+tests/7series/<group>/_shared/<unit>/<unit>_*_tb.svh     shared sv testbench bodies
 tests/7series/<group>/_shared/<unit>/test_<unit>_models.py   claim-by-claim model tests
-tests/7series/<group>/_shared/<unit>/test_<unit>_tests.py    drift, schema, reach and bins guards
+tests/7series/<group>/_shared/<unit>/test_<unit>_tests.py    class TestUnit(UnitGuards) + unit invariants
 tests/7series/<group>/<PRIM>/test.yaml, README.md     GENERATED by <unit>_tests.py, committed
-tests/7series/<group>/<PRIM>/vectors/gen.py           globals().update(<unit>_recipes.generators("<PRIM>"))
-tests/7series/<group>/<PRIM>/sv/tb_<prim>_*.sv        defines + `include of a shared body
-tests/7series/<group>/<PRIM>/cocotb/cocotb_<prim>_*.py   one @cocotb.test calling the shared session
+tests/7series/<group>/<PRIM>/vectors/gen.py           GENERATED: globals().update(<unit>_recipes.generators(...))
+tests/7series/<group>/<PRIM>/sv/tb_<prim>_*.sv        GENERATED wrappers (defines + `include), or hand-written
+tests/7series/<group>/<PRIM>/cocotb/cocotb_<prim>_*.py   GENERATED: one @cocotb.test calling the session
 status/7series/<PRIM>.yaml                            via xut status record only (and the stub refresh)
-findings/<PRIM>-<cls>-<level>-<name>.md               stubs from xut crosscheck --write-findings, analysed by hand
+findings/<PRIM>-<cls>-<level>-<name>.md               stubs from xut crosscheck --write-findings, or by hand (S52)
 log/<ts>-unit-7series-<unit>-<slug>.md                one per session
 ```
 
@@ -131,14 +133,14 @@ luts (Part B):
 catalog/7series/{LUT1..LUT6,LUT6_2,CFGLUT5}.overrides.yaml
 models/xut_models/7series/_common/luts.py             Lut (LUT1-LUT6), DualLut (LUT6_2), CfgLut5
 models/xut_models/7series/{lut1..lut6,lut6_2,cfglut5}.py
-tests/7series/clb/_shared/luts/lut_recipes.py         KINDS, INIT sampling, drivers, 22 recipes
-tests/7series/clb/_shared/luts/lut_tests.py           87 tests over 8 primitives
+tests/7series/clb/_shared/luts/luts_recipes.py        KINDS, INIT sampling, drivers, 18 recipes
+tests/7series/clb/_shared/luts/luts_tests.py          88 tests over 8 primitives, and every generated file
 tests/7series/clb/_shared/luts/luts_cocotb.py
-tests/7series/clb/_shared/luts/lut_x_tb.svh, lut_gsr_tb.svh
-tests/7series/clb/_shared/luts/test_lut_models.py, test_lut_tests.py
-tests/7series/clb/{LUT1..LUT6,LUT6_2}/sv/tb_<prim>_{x,gsr}.sv
-tests/7series/clb/CFGLUT5/sv/tb_cfglut5_{x,gsr}.sv    (not shared: CFGLUT5 has its own ports)
-tests/7series/clb/<PRIM>/{test.yaml,README.md,vectors/gen.py,cocotb/cocotb_<prim>_random.py}
+tests/7series/clb/_shared/luts/luts_x_tb.svh, luts_gsr_tb.svh
+tests/7series/clb/_shared/luts/test_luts_models.py, test_luts_tests.py
+tests/7series/clb/CFGLUT5/sv/tb_cfglut5_{x,gsr}.sv    hand-written (CFGLUT5 has its own ports)
+tests/7series/clb/<PRIM>/...                          generated: test.yaml, README.md, vectors/gen.py,
+                                                      cocotb/cocotb_<prim>_random.py, sv/tb_<prim>_{x,gsr}.sv (LUTs)
 status/7series/{LUT1..LUT6,LUT6_2,CFGLUT5}.yaml
 findings/CFGLUT5-doc-gap-L1-{projections,partial_shift}.md   the missing O5/O6 tables and shift direction (S52)
 ```
@@ -147,35 +149,41 @@ Part 0 (infra):
 
 ```
 tools/xut/golden.py              attr_bins, coverage_reach
-tools/xut/runners/python.py      bins_reached = coverage_reach(...)
-tools/tests/test_golden_reach.py
+tools/xut/runners/python.py      replay_config (the runner's replay, shared with unitkit)
+tools/xut/unitkit.py             reasons, runners, entry, class_bins, dump_test_yaml, render_readme,
+                                 vector_reach, Unit, UnitGuards (ruling S53)
+tools/tests/test_golden_reach.py, tools/tests/test_unitkit.py, tools/tests/test_runner_base.py
+tools/tests/test_status_schema.py   the TEMPORARY pre_s19 / REGENERATED_ON_BRANCH allowances dropped
 pyproject.toml                   "tests/**/test_*.py" = ["ANN"]
-AGENTS.md                        §7: a unit refreshes its own never-recorded stubs (D16)
+AGENTS.md                        §7: a unit refreshes its own stubs (D16); §10.1: the heavy-command lock (S53)
 ```
 
 ---
 
 ## Part 0: infra prerequisites (branch `infra/unit-prereqs`)
 
-### Task P1: coverage bins for non-enumerated attributes, the unit-test ANN exemption, and the AGENTS.md §7 stub rule
+### Task P1: coverage bins, `xut.unitkit`, and the AGENTS.md rules every unit needs
 
-Two gaps found while writing this plan, and one confirmed ruling. All three affect every unit after flops, so they land once, before the fan-out.
+Everything here affects every unit after flops, so it lands once, before the fan-out.
 
-1. **`attr:<A>` is never reached.** Spec §9 and `xut.status.coverage_bins` give an attribute whose catalog `allowed` list is not enumerated (a range such as `2'h0 to 2'h3`, prose such as `Any 64-bit HEX value`, or nothing) the single bin `attr:<A>`. The golden replay's `Reach.bins()` names every explicitly-set attribute `attr:<A>=<value>`, so a vector test's `attr:<A>` can never be credited: `xut status record` warns "declares … but no configuration … reached it", and a unit's reach guard fails on a correct declaration. Every LUT INIT, every BRAM `INIT_xx`, every DSP/MMCM integer attribute hits this. Fix: `xut.golden.coverage_reach` names the bins exactly as `coverage_bins` does, and the python runner records it.
-2. **Unit test files fail `ruff check`.** `pyproject.toml` exempts only `tools/tests/**` from the `ANN` rules ("Type hints are enforced for the tool, not for pytest test functions"), so every unit's `test_*.py` trips dozens of `ANN001`/`ANN201`. The flops unit logged this as an infra TODO. Fix: extend the exemption to `tests/**/test_*.py`.
-3. **AGENTS.md §7 reserves `xut status init --refresh-bins` for the orchestrator on `main`**, but a unit that adds claims changes its own stubs' bins, and the infra stub-invariant test then fails on the unit branch. Confirmed on PR #12 (decision D16): a unit branch may refresh its **own** never-recorded stubs. AGENTS.md is infra-owned, so the amendment lands here; the flops unit's 115f0cc is covered retroactively.
+1. **`attr:<A>` is never reached.** Spec §9 and `xut.status.coverage_bins` give an attribute whose catalog `allowed` list is not enumerated (a range such as `2'h0 to 2'h3`, prose such as `Any 64-bit HEX value`, or nothing) the single bin `attr:<A>`. The golden replay's `Reach.bins()` names every explicitly-set attribute `attr:<A>=<value>`, so a vector test's `attr:<A>` can never be credited. Every LUT INIT, BRAM `INIT_xx` and DSP/MMCM integer attribute hits this. Fix: `xut.golden.coverage_reach` names the bins exactly as `coverage_bins` does, and the python runner records them through one function, `replay_config`.
+2. **`xut.unitkit`** (ruling S53, code-quality review M1). Without it every unit re-implements about 350 lines of generic metadata and guard code, and a fix to any of it becomes 27 edits. The kit holds the standard runner reasons, `runners`/`claims`/`class_bins`/`entry`/`cell`, the no-alias YAML dumper, the README skeleton (every template section, with the "How to run" block under the heavy lock), `vector_reach` (the python runner's own `generate` and `replay_config`, never a copy), and the parametrised guard set `UnitGuards`: drift of every rendered file, schema and reasons, generators, reach, bins accounted (through `xut.lint.gap_bin`) and pure crediting. Units import it; **no unit copies it or the flops unit's code** (Part A).
+3. **Unit test files fail `ruff check`**: extend the `ANN` exemption to `tests/**/test_*.py` (the flops unit's open TODO).
+4. **AGENTS.md §7** (decision D16, confirmed on PR #12): a unit branch may refresh its own never-recorded stubs.
+5. **AGENTS.md §10.1** (ruling S53, correctness review M4): one host-wide lock, `$XDG_RUNTIME_DIR/xut-heavy.lock`, around every heavy command, so two agents never run heavy jobs at once and each command's own budget (at most 96G) holds.
+6. **`tools/tests/test_status_schema.py`**: drop the TEMPORARY `pre_s19` and `REGENERATED_ON_BRANCH` allowances. The orchestrator ran the S19 `--refresh-bins` on `main` (a11e51e), so every never-recorded stub now has exactly its current bins.
 
-`coverage_reach` also replaces the private `xut.runners.python._polarity_context` that the flops reach guard borrows (its logged TODO). `_polarity_context` stays in place until the flops guard moves to `coverage_reach` in the flops unit's own follow-up; do not delete it here.
+**Follow-up (not in this PR):** the flops unit migrates to `xut.unitkit` in its own later PR (its `flop_tests.py` helpers, the reach guard's private `_polarity_context` import), and then `_polarity_context` is deleted. Record it as a TODO in P1's log entry.
 
 **Files:**
-- Modify: `tools/xut/golden.py`, `tools/xut/runners/python.py`, `pyproject.toml`, `AGENTS.md` (§7)
-- Create: `tools/tests/test_golden_reach.py`
+- Modify: `tools/xut/golden.py`, `tools/xut/runners/python.py`, `tools/tests/test_runner_base.py`, `tools/tests/test_status_schema.py`, `pyproject.toml`, `AGENTS.md` (§7, §10.1)
+- Create: `tools/xut/unitkit.py`, `tools/tests/test_golden_reach.py`, `tools/tests/test_unitkit.py`
 
 **Interfaces:**
 - Produces:
-  - `xut.golden.attr_bins(attributes: list[dict], attrs: Mapping[str, object]) -> set[str]`
-  - `xut.golden.coverage_reach(entry: CatalogEntry, vec: Vec, reach: Reach) -> set[str]`
-  - `PythonRunner` records `bins_reached` = the union of `coverage_reach` over the configurations (unchanged for enumerated attributes and every port bin; adds `attr:<A>` for non-enumerated ones)
+  - `xut.golden.attr_bins(attributes, attrs) -> set[str]`, `xut.golden.coverage_reach(entry, vec, reach) -> set[str]`
+  - `xut.runners.python.replay_config(entry, model_cls, vec, m) -> tuple[Trace, set[str]]`
+  - `xut.unitkit`: `Reason`, `Declared`, `ALL_FLOWS`, `SV_PY`, `SV_HW`, `X_VL`, `CO_PY`, `CO_XS`, `CO_HW`, `VL_REJ`, `HW_REJ`, `HW_GSR`, `HW_PAD`; `runners(**over)`, `claims(prim, *ns)`, `class_bins(entry, port, *events)`, `entry(family, prim, level, name, style, source, exercises, *, gaps, sampling, declared, flows, configs, related)`, `dump_test_yaml(doc, generator)`, `cell`, `run_block(prim)`, `render_readme(...)`; `ConfigReach(cfg, bins, pure)`, `vector_reach(case, root)`; `Unit(name, family, root, group_dir, prims, render, generators, pure=True)`, `UnitGuards`
 
 - [ ] **Step 1: Worktree**
 
@@ -187,7 +195,7 @@ uv venv > .cache/uv-venv.log 2>&1 && uv pip install -e '.[dev]' > .cache/uv-inst
 git config core.hooksPath tools/hooks
 ```
 
-- [ ] **Step 2: Write the failing test** `tools/tests/test_golden_reach.py`
+- [ ] **Step 2: Write the failing tests.** `tools/tests/test_golden_reach.py`:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -238,9 +246,151 @@ def test_coverage_reach_keeps_polarity_renaming():
     assert "port:CLR:assert" in coverage_reach(entry, vec, reach)
 ```
 
-Run it: `uv run pytest tools/tests/test_golden_reach.py -q > .cache/p1-red.log 2>&1; cat .cache/p1-red.log`. Expected: collection fails with `ImportError: cannot import name 'attr_bins' from 'xut.golden'`.
+`tools/tests/test_unitkit.py` (the TOYFF fixture and its `toy` monkeypatch, as the runner tests use them):
 
-- [ ] **Step 3: Implement.** In `tools/xut/golden.py`, add `from collections.abc import Mapping` and `from xut.catalog.model import CatalogEntry, is_enumerated` to the imports (`xut.wrap` already imports `xut.catalog.model`, so there is no new import cycle), and add after `polarity_bins`:
+```python
+# SPDX-License-Identifier: Apache-2.0
+"""xut.unitkit: the shared pieces of a work unit's metadata and guards (ruling S53)."""
+
+import pytest
+import yaml
+from test_runner_base import FIX, TOY_ENTRY
+
+from xut import unitkit
+from xut.testspec import DECLARED_RUNNERS, discover
+
+
+def test_runners_default_yes_and_reasons_for_the_rest():
+    runs, reasons = unitkit.runners(hw=unitkit.HW_GSR, python=unitkit.SV_PY)
+    assert list(runs) == list(DECLARED_RUNNERS)
+    assert runs["hw"] == "unsupported" and runs["python"] == "no" and runs["xsim"] == "yes"
+    assert reasons == {"hw": unitkit.HW_GSR[1], "python": unitkit.SV_PY[1]}
+
+
+def test_class_bins_come_from_the_catalog():
+    assert unitkit.class_bins(TOY_ENTRY, "D") == ["port:D", "port:D:0", "port:D:1"]
+    assert unitkit.class_bins(TOY_ENTRY, "D", "1") == ["port:D", "port:D:1"]
+    assert unitkit.class_bins(TOY_ENTRY, "C") == ["port:C", "port:C:edge"]
+
+
+def test_entry_requires_gaps_and_dedupes_exercises():
+    with pytest.raises(ValueError, match="misses"):
+        unitkit.entry("7series", "TOYFF", "L1", "x", "vector", "vectors/gen.py:x", [], gaps=[])
+    e = unitkit.entry(
+        "7series",
+        "TOYFF",
+        "L1",
+        "x",
+        "vector",
+        "vectors/gen.py:x",
+        ["port:D"] * 2,
+        gaps=["g"],
+        declared=unitkit.runners(hw=unitkit.HW_REJ),
+    )
+    assert e["id"] == "7series.TOYFF.L1.x" and e["exercises"] == ["port:D"]
+    assert e["unsupported_reasons"] == {"hw": unitkit.HW_REJ[1]}
+
+
+def test_dump_test_yaml_writes_no_aliases_and_quoted_yes():
+    shared = ["rtl"]
+    text = unitkit.dump_test_yaml({"a": shared, "b": shared, "c": "yes"}, "x/y.py")
+    assert text.startswith("# SPDX-License-Identifier: Apache-2.0\n# GENERATED by x/y.py")
+    assert "&id" not in text and "*id" not in text
+    assert yaml.safe_load(text)["c"] == "yes"
+
+
+def test_render_readme_has_every_template_section(tmp_path):
+    e = unitkit.entry("7series", "TOYFF", "L1", "x", "vector", "vectors/gen.py:x", [], gaps=["g"])
+    text = unitkit.render_readme(
+        prim="TOYFF",
+        title="toy",
+        reference="ref",
+        overview="ov",
+        tests=[(e, "why")],
+        oracle=["model"],
+        known_gaps=["timing"],
+        root=tmp_path,
+    )
+    for section in (
+        "## Overview",
+        "## Tests",
+        "## Why each test",
+        "## Oracle",
+        "## Known gaps",
+        "## Runner support",
+        "## Related tests",
+        "## How to run",
+    ):
+        assert section in text
+    assert 'flock "$XDG_RUNTIME_DIR/xut-heavy.lock"' in text
+
+
+def test_vector_reach_replays_like_the_python_runner(toy):
+    case = next(c for c in discover(FIX) if c.id == "7series.TOYFF.L1.capture")
+    reach = unitkit.vector_reach(case, FIX)
+    assert [c.cfg for c in reach] == ["init0", "init1"]
+    assert all(c.pure for c in reach)  # ToyDff tags every bit doc:1
+    assert "claim:TOYFF.C1" in set().union(*(c.bins for c in reach))
+    reject = next(c for c in discover(FIX) if c.id == "7series.TOYFF.L0.reject")
+    assert unitkit.vector_reach(reject, FIX) == []  # reject configurations are not replayed
+
+
+def test_documented_is_false_for_any_inferred_bit():
+    assert unitkit._documented({"S0": {"Q": "doc:1"}})
+    assert not unitkit._documented({"S0": {"Q": "doc:1,inferred:x"}})
+
+
+def test_unit_guards_parametrizes_over_the_units_primitives():
+    unit = unitkit.Unit(
+        "toy", "7series", FIX, FIX / "tests/7series/register", ("TOYFF",), dict, dict
+    )
+    guards = type("TestToy", (unitkit.UnitGuards,), {"unit": unit})()
+    seen = []
+
+    class Meta:
+        fixturenames = ("prim",)
+
+        def parametrize(self, name, values):
+            seen.append((name, tuple(values)))
+
+    guards.pytest_generate_tests(Meta())
+    assert seen == [("prim", ("TOYFF",))]
+    assert not unitkit.UnitGuards.__name__.startswith("Test")
+```
+
+Append to `tools/tests/test_runner_base.py` (the runner-level check: `bins_reached` gains `attr:INIT`):
+
+```diff
+diff --git a/tools/tests/test_runner_base.py b/tools/tests/test_runner_base.py
+index cadc1f5..47ca337 100644
+--- a/tools/tests/test_runner_base.py
++++ b/tools/tests/test_runner_base.py
+@@ -751,3 +751,16 @@ def test_missing_python_run_is_a_named_xut_error(ctx):
+     (d / "configs.json").write_text('{"not": "a list"}')
+     with pytest.raises(NoPythonRun, match="not a list of configuration names"):
+         load_generated(ctx, _case())
++
++
++def test_python_runner_records_a_non_enumerated_attribute_bin(ctx, toy, monkeypatch):
++    """bins_reached names attr:<A> for an explicitly set non-enumerated attribute, as
++    coverage_bins does (unit playbook Task P1)."""
++    open_init = {**TOY_ENTRY.attributes[0], "allowed": []}  # INIT: not enumerated
++    entry = dataclasses.replace(TOY_ENTRY, attributes=[open_init])
++    monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: entry)
++    res = PythonRunner().run(_case(), ctx)
++    assert res.status == "pass", res.reason
++    data = _result(workdir(ctx, "python", _case().id))
++    assert "attr:INIT" in data["bins_reached"]
++    assert all("attr:INIT" in c["bins_reached"] for c in data["configs"])
+```
+
+```bash
+uv run pytest tools/tests/test_golden_reach.py tools/tests/test_unitkit.py -q > .cache/p1-red.log 2>&1; cat .cache/p1-red.log
+```
+
+Expected: collection fails with `ImportError: cannot import name 'attr_bins' from 'xut.golden'` (and `xut.unitkit` missing).
+
+- [ ] **Step 3: Implement.** In `tools/xut/golden.py`, add `from collections.abc import Mapping` and `from xut.catalog.model import CatalogEntry, is_enumerated` to the imports (`xut.wrap` already imports `xut.catalog.model`, so there is no new cycle), and add after `polarity_bins`:
 
 ```python
 def attr_bins(attributes: list[dict], attrs: Mapping[str, object]) -> set[str]:
@@ -258,8 +408,7 @@ def coverage_reach(entry: CatalogEntry, vec: Vec, reach: Reach) -> set[str]:
     """The coverage bins one replayed configuration reached, named exactly as
     ``xut.status.coverage_bins`` names them: ``Reach.bins()``, the async/gate bins
     renamed by the catalog's declared ``active`` levels (``polarity_bins``), and the
-    non-enumerated attribute bins (``attr_bins``). The python runner records exactly
-    this as ``bins_reached``; a work unit's reach guard calls it too."""
+    non-enumerated attribute bins (``attr_bins``)."""
     active = {p["name"]: p["active"] for p in entry.ports if p.get("active")}
     bins = reach.bins()
     if active:
@@ -268,22 +417,19 @@ def coverage_reach(entry: CatalogEntry, vec: Vec, reach: Reach) -> set[str]:
     return bins | attr_bins(entry.attributes, vec.attrs)
 ```
 
-In `tools/xut/runners/python.py`:
-- import `from xut.catalog.model import CatalogEntry, load_entry` and `coverage_reach` (in place of `polarity_bins`) from `xut.golden`;
-- in `__init__`, replace the `_active`/`_defaults` fields with `self._entry: CatalogEntry | None = None` (comment: the catalog entry, overrides applied, that names the bins);
-- in `configs`, replace `self._active, self._defaults = _polarity_context(case, ctx)` with `self._entry = load_entry(case.family, case.prim, ctx.root)`;
-- in `run_config`, replace the three lines computing `bins` from `reach.bins()` and `polarity_bins` with `bins = coverage_reach(self._entry, vec, reach)`.
-
-The whole diff of `runners/python.py` (hunk positions as of PR #10's version):
+`tools/xut/runners/python.py` (the whole diff against `main`). `load_entry` is reached through the module (`catalog_model.load_entry`), so the `toy` fixture's monkeypatch still applies:
 
 ```diff
+diff --git a/tools/xut/runners/python.py b/tools/xut/runners/python.py
+index ec2dab1..c4fb788 100644
 --- a/tools/xut/runners/python.py
 +++ b/tools/xut/runners/python.py
-@@ -28,11 +28,12 @@
+@@ -28,11 +28,13 @@ from contextlib import contextmanager
  from pathlib import Path
  from typing import ClassVar
  
-+from xut.catalog.model import CatalogEntry, load_entry
++from xut.catalog import model as catalog_model
++from xut.catalog.model import CatalogEntry
  from xut.errors import XutError
  from xut.formats import xtr, xvec
  from xut.formats.common import is_cfg
@@ -293,86 +439,603 @@ The whole diff of `runners/python.py` (hunk positions as of PR #10's version):
  from xut.runners.base import (
      ConfigResult,
      RunContext,
-@@ -166,9 +167,8 @@
+@@ -46,9 +48,9 @@ from xut.runners.base import (
+ from xut.stimgen import GenContext
+ from xut.testspec import TestCase
+ from xut.validate import mark, validate
+-from xut.wrap import DutSpec, spec_from_catalog, write_dut
++from xut.wrap import DutMap, DutSpec, spec_from_catalog, write_dut
+ from xut_models import registry
+-from xut_models.base import ModelContractError, ModelUnsupported
++from xut_models.base import Model, ModelContractError, ModelUnsupported
+ 
+ 
+ class SourceError(XutError, ValueError):
+@@ -147,12 +149,22 @@ def generate(case: TestCase, ctx: RunContext) -> list[tuple[Vec, DutSpec]]:
+     return out
+ 
+ 
++def replay_config(
++    entry: CatalogEntry, model_cls: type[Model], vec: Vec, m: DutMap
++) -> tuple[xtr.Trace, set[str]]:
++    """The golden replay of one configuration and the coverage bins it reached, named as
++    ``xut.status.coverage_bins`` names them (``xut.golden.coverage_reach``). The one path
++    the python runner and ``xut.unitkit.vector_reach`` share."""
++    trace, reach = replay(model_cls, vec, m)
++    return trace, coverage_reach(entry, vec, reach)
++
++
+ def _polarity_context(case: TestCase, ctx: RunContext) -> tuple[dict[str, str], dict]:
+-    """The catalog's declared port ``active`` levels and attribute defaults, for naming
+-    async/gate bins ``assert``/``release`` (``xut.golden.polarity_bins``). Without a
+-    declared level the bins stay ``rise``/``fall``."""
+-    from xut.catalog import model as catalog_model
++    """The catalog's declared port ``active`` levels and attribute defaults.
+ 
++    Unused here since ``replay_config``: kept only because the flops unit's reach guard
++    imports it; the flops migration to ``xut.unitkit`` (a follow-up of the unit playbook,
++    Task P1) removes that import, and then this function."""
+     entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
+     active = {p["name"]: p["active"] for p in entry.ports if p.get("active")}
+     return active, {a["name"]: a["default"] for a in entry.attributes}
+@@ -166,9 +178,8 @@ class PythonRunner(Runner):
      def __init__(self) -> None:
          self._gen: dict[str, tuple[Vec, DutSpec]] = {}
          self._bins: set[str] = set()
 -        #: port -> declared active level, and attribute defaults (catalog; polarity_bins)
 -        self._active: dict[str, str] = {}
 -        self._defaults: dict[str, object] = {}
-+        #: the catalog entry (overrides applied) that names the bins (coverage_reach)
++        #: the catalog entry (overrides applied) that names the bins (replay_config)
 +        self._entry: CatalogEntry | None = None
          self._seed: int | None = None
          self._deadline = float("inf")
          self._limit_s = 0
-@@ -193,7 +193,7 @@
+@@ -193,7 +204,7 @@ class PythonRunner(Runner):
              raise SourceError(f"{case.id}: bad configuration names {bad} / duplicates {dups}")
          self._gen = {v.cfg: (v, s) for v, s in gen}
          self._bins = set()
 -        self._active, self._defaults = _polarity_context(case, ctx)
-+        self._entry = load_entry(case.family, case.prim, ctx.root)
++        self._entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
          d = workdir(ctx, self.name, case.id)
          (d / "configs.json").write_text(json.dumps(names, indent=1) + "\n")
          return names
-@@ -252,9 +252,7 @@
+@@ -236,9 +247,12 @@ class PythonRunner(Runner):
+                     model_cls = registry.get(case.family, case.prim)
+                 except LookupError as e:
+                     return ConfigResult(cfg, "skip", f"no golden model: {e}", stim_sha)
++                entry = self._entry
++                if entry is None:
++                    raise XutError(f"{case.id}: run_config before configs")
+                 try:
+-                    trace, reach = _watchdog(
+-                        lambda: replay(model_cls, vec, m),
++                    trace, bins = _watchdog(
++                        lambda: replay_config(entry, model_cls, vec, m),
+                         self._deadline,
+                         f"golden model ({cfg})",
+                         self._limit_s,
+@@ -252,9 +266,6 @@ class PythonRunner(Runner):
                  if not trace.samples:  # validate refuses this; zero evidence never passes
                      return ConfigResult(cfg, "error", "golden replay has no samples", stim_sha)
                  trace.header["flow"] = ctx.flow
 -                bins = reach.bins()
 -                if self._active:
 -                    bins = polarity_bins(bins, self._active, {**self._defaults, **vec.attrs})
-+                bins = coverage_reach(self._entry, vec, reach)
                  self._bins |= bins
              xtr.dump(trace, cfgdir / "expected.xtr")
              shutil.copyfile(cfgdir / "expected.xtr", cfgdir / "trace.xtr")
 ```
 
-In `pyproject.toml`, under `[tool.ruff.lint.per-file-ignores]`, add one line after `"tools/tests/**" = ["ANN"]`:
+`tools/xut/unitkit.py`:
 
-```toml
-"tests/**/test_*.py" = ["ANN"]
+````python
+# SPDX-License-Identifier: Apache-2.0
+"""What every work unit's metadata generator and guard tests share (ruling S53).
+
+A unit's ``<stem>_tests.py`` builds its test entries with ``entry``, renders its files
+with ``dump_test_yaml``/``render_readme``, and describes itself as a ``Unit``; its
+``test_<stem>_tests.py`` is one line, ``class TestUnit(UnitGuards): unit = UNIT``. A unit
+never copies this code, or the flops unit's.
+
+- The standard ``unsupported_reasons`` (``SV_PY`` ... ``HW_GSR``) and ``runners``.
+- Bin names from the catalog (``class_bins``), never hand-rolled.
+- ``vector_reach``: what each configuration of a vector test reaches, through the python
+  runner's own generation (``generate``, the ``xut run`` seed) and replay
+  (``replay_config``), and whether every sampled bit is documented (``pure``).
+- ``UnitGuards``: drift of every rendered file, presence, schema and reasons, generators,
+  reach, bins accounted (``xut.lint.gap_bin``), and pure crediting (rulings S44, S52).
+"""
+
+from __future__ import annotations
+
+import functools
+import json
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar
+
+import yaml
+
+from xut.catalog import model as catalog_model
+from xut.catalog.model import CatalogEntry
+from xut.testspec import DECLARED_RUNNERS, TestCase, discover
+
+if TYPE_CHECKING:
+    import pytest
+
+#: ``(value, reason)``: a runner declaration other than ``"yes"``.
+Reason = tuple[str, str]
+#: ``(runners, unsupported_reasons)`` of one test.
+Declared = tuple[dict[str, str], dict[str, str]]
+
+ALL_FLOWS = ("rtl", "vivado", "yosys", "openxc7", "vpr")
+SV_PY: Reason = ("no", "self-checking sv testbench; there is no golden-model replay")
+SV_HW: Reason = ("unsupported", "sv testbenches are simulation-only (spec §4.3)")
+X_VL: Reason = (
+    "unsupported",
+    "2-state simulator: x stimulus is randomised per X seed (spec §5.6), so the "
+    "undocumented x checkpoints cannot be compared",
+)
+CO_PY: Reason = ("no", "the cocotb test compares against the golden model itself")
+CO_XS: Reason = ("unsupported", "cocotb has no xsim backend (spec §4.3)")
+CO_HW: Reason = (
+    "unsupported",
+    "cocotb runs in simulation; failing seeds are frozen into vector tests",
+)
+VL_REJ: Reason = ("unsupported", "a 2-state simulator cannot represent an x attribute value")
+HW_REJ: Reason = ("unsupported", "rejection of an illegal attribute is a simulation-model check")
+HW_GSR: Reason = ("unsupported", "GSR pulses need the GSR-immune harness state of spec §7.2")
+HW_PAD: Reason = (
+    "unsupported",
+    "the primitive sits on IOB/ILOGIC/OLOGIC/IDELAY/BUFIO/BUFR sites: it needs the pad "
+    "harness of spec §7.3",
+)
+
+
+def runners(**over: Reason) -> Declared:
+    """Every declared runner ``"yes"`` except those in ``over``, with their reasons."""
+    declared = {r: over[r][0] if r in over else "yes" for r in DECLARED_RUNNERS}
+    return declared, {r: reason for r, (_, reason) in over.items()}
+
+
+def claims(prim: str, *ns: int) -> list[str]:
+    return [f"claim:{prim}.C{n}" for n in ns]
+
+
+def class_bins(entry: CatalogEntry, port: str, *events: str) -> list[str]:
+    """``port:<P>`` and the named class bins of one port (all of them when none is
+    named), from ``xut.status.port_class_bins``."""
+    from xut.status import port_class_bins
+
+    p = next(p for p in entry.ports if p["name"] == port)
+    by_event = {b.rsplit(":", 1)[1]: b for b in port_class_bins(p)}
+    return [f"port:{port}", *(by_event[e] for e in events or by_event)]
+
+
+def entry(
+    family: str,
+    prim: str,
+    level: str,
+    name: str,
+    style: str,
+    source: str,
+    exercises: Sequence[str],
+    *,
+    gaps: Sequence[str],
+    sampling: Mapping[str, list] | None = None,
+    declared: Declared | None = None,
+    flows: Sequence[str] = ALL_FLOWS,
+    configs: Sequence[dict] = (),
+    related: Sequence[str] = (),
+) -> dict[str, Any]:
+    """One ``test.yaml`` test, in the schema's key order. Every test says what it
+    misses (lint rule gaps-present); every non-``"yes"`` runner has its reason."""
+    if not gaps:
+        raise ValueError(f"{prim}.{level}.{name}: every test must say what it misses")
+    runs, reasons = declared or runners()
+    e: dict[str, Any] = {
+        "id": f"{family}.{prim}.{level}.{name}",
+        "level": level,
+        "style": style,
+        "source": source,
+        "exercises": list(dict.fromkeys(exercises)),
+        "attr_sampling": dict(sampling or {}),
+        "runners": runs,
+        "flows": list(flows),
+        "related": list(related),
+        "gaps": list(gaps),
+    }
+    if reasons:
+        e["unsupported_reasons"] = reasons
+    if configs:
+        e["configs"] = list(configs)
+    return e
+
+
+class _NoAliasDumper(yaml.SafeDumper):
+    """Every test written out in full: no YAML anchors or aliases (flops review M4)."""
+
+    def ignore_aliases(self, data: object) -> bool:
+        return True
+
+
+def dump_test_yaml(doc: dict, generator: str) -> str:
+    """``doc`` as a committed ``test.yaml``: the SPDX line, a GENERATED line naming
+    ``generator`` (a repository path), and the strings "yes"/"no" quoted."""
+    header = f"# SPDX-License-Identifier: Apache-2.0\n# GENERATED by {generator}; edit that file.\n"
+    return header + yaml.dump(
+        doc, Dumper=_NoAliasDumper, sort_keys=False, width=100, allow_unicode=True
+    )
+
+
+def cell(test: dict, runner: str) -> str:
+    """A runner-support table cell: ``yes``, or the value and its reason."""
+    v = test["runners"][runner]
+    return v if v == "yes" else f"{v}: {test['unsupported_reasons'][runner]}"
+
+
+def run_block(prim: str) -> list[str]:
+    """The README's "How to run": the heavy command under the host-wide lock and a
+    capped scope (AGENTS.md §10.1), then crosscheck and record."""
+    p = prim.lower()
+    return [
+        "```bash",
+        'flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \\',
+        "  --slice=vivado.slice --unit=xut-run-$(date +%s) \\",
+        "  -p MemoryMax=32G -p MemorySwapMax=0 -- \\",
+        f"  uv run xut run {prim} --jobs 16 > .cache/run-{p}.log 2>&1",
+        f"uv run xut crosscheck {prim} > .cache/xc-{p}.log 2>&1",
+        f"uv run xut status record {prim} > .cache/status-{p}.log 2>&1",
+        "```",
+    ]
+
+
+def render_readme(
+    *,
+    prim: str,
+    title: str,
+    reference: str,
+    overview: str,
+    tests: Sequence[tuple[dict, str]],
+    oracle: Sequence[str],
+    known_gaps: Sequence[str],
+    root: Path,
+) -> str:
+    """A primitive's README with every section of docs/templates/primitive-README.md.
+    ``tests`` pairs each test.yaml entry with why it is useful; findings are the open
+    and closed ``findings/<PRIM>-*.md`` files, linked."""
+    findings = sorted((root / "findings").glob(f"{prim}-*.md"))
+    lines = [f"# {prim} — {title}", "", reference, "", "## Overview", "", overview, ""]
+    lines += ["## Tests", "", "| ID | Level | Style | Exercises |", "|---|---|---|---|"]
+    lines += [
+        f"| `{e['id']}` | {e['level']} | {e['style']} | {', '.join(e['exercises'])} |"
+        for e, _ in tests
+    ]
+    lines += ["", "## Why each test is useful, and what it misses", ""]
+    for e, why in tests:
+        lines.append(f"- `{e['id']}`: {why}")
+        lines += [f"  - Misses: {g}" for g in e["gaps"]]
+    lines += ["", "## Oracle", "", *(f"- {o}" for o in oracle), ""]
+    lines += ["## Known gaps (all tests)", "", *(f"- {g}" for g in known_gaps)]
+    lines += [f"- {g}" for g in dict.fromkeys(g for e, _ in tests for g in e["gaps"])]
+    lines += ["", "## Runner support and expected divergences", ""]
+    lines += ["| Test | " + " | ".join(DECLARED_RUNNERS) + " |"]
+    lines += ["|---|" + "---|" * len(DECLARED_RUNNERS)]
+    lines += [
+        f"| `{e['id']}` | " + " | ".join(cell(e, r) for r in DECLARED_RUNNERS) + " |"
+        for e, _ in tests
+    ]
+    lines += ["", "Findings:" if findings else "Findings: none recorded.", ""]
+    lines += [f"- [{f.stem}](../../../../findings/{f.name})" for f in findings]
+    lines += ["", "## Related tests", ""]
+    lines += [
+        f"- `{e['id']}`: " + (", ".join(f"`{r}`" for r in e["related"]) or "none") for e, _ in tests
+    ]
+    lines += ["", "## How to run", "", *run_block(prim), ""]
+    return "\n".join(lines)
+
+
+# --- reach -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConfigReach:
+    """One configuration of a vector test, replayed through the golden model."""
+
+    cfg: str
+    bins: frozenset[str]
+    #: every sampled bit's provenance is ``doc:`` (none ``inferred:``): the configuration
+    #: can credit claims whatever the inferred details turn out to be (ruling S52)
+    pure: bool
+
+
+def _documented(prov: Mapping[str, Mapping[str, str]]) -> bool:
+    return all(
+        tag.startswith("doc:")
+        for ports in prov.values()
+        for token in ports.values()
+        for tag in token.split(",")
+    )
+
+
+def vector_reach(case: TestCase, root: Path) -> list[ConfigReach]:
+    """Every non-reject configuration of vector test ``case``, generated and replayed
+    exactly as ``xut run --runner python`` does (``generate`` with the default seed,
+    ``replay_config``)."""
+    from xut.modelsrc import ModelSource
+    from xut.runners.base import RunContext
+    from xut.runners.python import generate, replay_config
+    from xut.wrap import build_map
+    from xut_models import registry
+
+    ctx = RunContext(root, "rtl", ModelSource("golden", root))
+    ent = catalog_model.load_entry(case.family, case.prim, root)
+    model_cls = registry.get(case.family, case.prim)
+    out = []
+    for vec, spec in generate(case, ctx):
+        if vec.expect == "reject":
+            continue
+        trace, bins = replay_config(ent, model_cls, vec, build_map(spec))
+        out.append(ConfigReach(vec.cfg, frozenset(bins), _documented(trace.prov)))
+    return out
+
+
+# --- the guard set ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Unit:
+    """A work unit as its guards see it."""
+
+    name: str
+    family: str
+    root: Path
+    group_dir: Path  # tests/<family>/<group>
+    prims: tuple[str, ...]
+    #: prim -> {path relative to the primitive's directory: rendered text}; test.yaml,
+    #: README.md and every wrapper file the generator writes
+    render: Callable[[str], dict[str, str]]
+    #: prim -> test.yaml function name -> generator
+    generators: Callable[[str], Mapping[str, Callable]]
+    #: every exercised vector bin has a configuration whose samples are all doc:
+    pure: bool = True
+
+
+class UnitGuards:
+    """The guards every unit runs. Subclass as ``class TestUnit(UnitGuards): unit = U``;
+    each guard is parametrized over the unit's primitives."""
+
+    unit: ClassVar[Unit]  # not named Test*: pytest collects only the unit's subclass
+
+    def pytest_generate_tests(self, metafunc: pytest.Metafunc) -> None:
+        if "prim" in metafunc.fixturenames:
+            metafunc.parametrize("prim", self.unit.prims)
+
+    # helpers ------------------------------------------------------------------------
+    def _doc(self, prim: str) -> dict:
+        return yaml.safe_load((self.unit.group_dir / prim / "test.yaml").read_text())
+
+    def _cases(self, prim: str) -> list[TestCase]:
+        return [c for c in _discovered(self.unit.root) if c.prim == prim]
+
+    # guards -------------------------------------------------------------------------
+    def test_committed_files_are_current(self, prim: str) -> None:
+        """Every file the generator renders exists and is current (flops review M5: a
+        missing file fails; wrappers are rendered too, so none is hand-edited)."""
+        d = self.unit.group_dir / prim
+        for rel, text in self.unit.render(prim).items():
+            path = d / rel
+            assert path.is_file(), f"{path} missing: run the unit's generator"
+            assert path.read_text() == text, f"{path} is stale: run the unit's generator"
+
+    def test_validates_against_the_schema(self, prim: str) -> None:
+        import jsonschema
+
+        schema = json.loads((self.unit.root / "tools/xut/schemas/test.schema.json").read_text())
+        doc = self._doc(prim)
+        jsonschema.validate(doc, schema)
+        assert doc["work_unit"] == self.unit.name
+        for t in doc["tests"]:
+            assert t["gaps"], t["id"]
+            need = {r for r, v in t["runners"].items() if v != "yes"}
+            assert need == set(t.get("unsupported_reasons", {})), t["id"]
+
+    def test_every_generator_exists(self, prim: str) -> None:
+        names = self.unit.generators(prim)
+        for t in self._doc(prim)["tests"]:
+            if t["style"] == "vector" and ":" in t["source"]:  # not a frozen .xvec
+                assert t["source"].split(":", 1)[1] in names, t["id"]
+
+    def test_exercises_are_reached(self, prim: str) -> None:
+        """A vector test's exercises are reached by its own configurations (S23, S33)."""
+        for case in self._cases(prim):
+            if case.style != "vector":
+                continue
+            reached = set().union(*(c.bins for c in _reach(self.unit.root, case)))
+            missing = set(case.exercises) - reached
+            assert not missing, f"{case.id}: declared but never reached: {sorted(missing)}"
+
+    def test_every_bin_is_exercised_or_a_gap(self, prim: str) -> None:
+        from xut.lint import gap_bin
+        from xut.status import coverage_bins
+
+        cases = self._cases(prim)
+        named = {b for c in cases for b in c.exercises}
+        gaps = {gap_bin(g) for c in cases for g in c.gaps}
+        ent = catalog_model.load_entry(self.unit.family, prim, self.unit.root)
+        missing = [b for b in coverage_bins(ent) if b not in named | gaps]
+        assert not missing, missing
+
+    def test_every_exercised_bin_has_a_pure_configuration(self, prim: str) -> None:
+        """Every bin a vector test exercises is reached by at least one configuration
+        whose samples are all documented, so it is credited whatever an inferred detail
+        turns out to be (rulings S44, S52; a failing configuration credits nothing)."""
+        if not self.unit.pure:
+            return
+        vector = [c for c in self._cases(prim) if c.style == "vector"]
+        pure = set().union(*(c.bins for v in vector for c in _reach(self.unit.root, v) if c.pure))
+        missing = {b for v in vector for b in v.exercises} - pure
+        assert not missing, f"only order- or inference-dependent configurations reach {missing}"
+
+
+@functools.cache
+def _discovered(root: Path) -> tuple[TestCase, ...]:
+    return tuple(discover(root))
+
+
+@functools.cache
+def _reach_cached(root: Path, case_id: str) -> tuple[ConfigReach, ...]:
+    case = next(c for c in _discovered(root) if c.id == case_id)
+    return tuple(vector_reach(case, root))
+
+
+def _reach(root: Path, case: TestCase) -> tuple[ConfigReach, ...]:
+    return _reach_cached(root, case.id)
+````
+
+`tools/tests/test_status_schema.py` (drop the allowances):
+
+```diff
+diff --git a/tools/tests/test_status_schema.py b/tools/tests/test_status_schema.py
+index a5c4d98..1e41e95 100644
+--- a/tools/tests/test_status_schema.py
++++ b/tools/tests/test_status_schema.py
+@@ -143,11 +143,6 @@ def test_unquoted_yaml_boolean_runner_value_fails_validation():
+         jsonschema.validate(data, TEST_SCHEMA)
+ 
+ 
+-#: TEMPORARY: primitive -> the attribute whose catalog values were regenerated on this
+-#: branch; drop with ``pre_s19`` after the orchestrator's `status init --refresh-bins`.
+-REGENERATED_ON_BRANCH = {"ICAPE2": "DEVICE_ID"}
+-
+-
+ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
+     """Repo invariant (reads the live checkout on purpose): every committed status stub
+     matches its catalog entry's coverage bins and its docs/work-units.yaml unit."""
+@@ -166,30 +161,11 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
+             continue  # recorded: its coverage is `xut status record`'s
+         assert data["coverage"]["covered"] == []
+         # `entry` is `load_entry`'s merge of the generated catalog with that primitive's
+-        # overrides (crosses, claims, port/attribute corrections): a work unit owns its
+-        # own stub and is expected to refresh it (`xut status init --refresh-bins`) when
+-        # its overrides add claims or otherwise change `coverage_bins`, so a refreshed
+-        # stub's `uncovered` is exactly `new` below.
+-        new = coverage_bins(entry)
+-        # TEMPORARY (ruling S20): the committed stubs predate ruling S19's port-class
+-        # and cross bins, and an infra branch may not modify a status file. Once the
+-        # orchestrator runs `xut status init --refresh-bins` on main, drop `pre_s19`:
+-        # every never-recorded stub then has exactly `new`. `claim:` bins are excluded
+-        # too: a work unit's overrides may add claims (or a cross) before that unit gets
+-        # around to refreshing its own stub, and an unrefreshed stub never has those.
+-        pre_s19 = [b for b in new if not b.startswith(("cross:", "claim:")) and b.count(":") == 1]
+-        got = data["coverage"]["uncovered"]
+-        # TEMPORARY (PR D fix wave): the catalog of a primitive in REGENERATED_ON_BRANCH
+-        # was regenerated on this infra branch (ICAPE2: DEVICE_ID had been truncated);
+-        # its stub is refreshed on main with the same --refresh-bins run. Until then the
+-        # regenerated attribute's bins are left out of the comparison.
+-        attr = REGENERATED_ON_BRANCH.get(entry.name)
+-        if attr is not None:
+-            got, new, pre_s19 = (
+-                [b for b in bins if not b.startswith(f"attr:{attr}=")]
+-                for bins in (got, new, pre_s19)
+-            )
+-        assert got in (new, pre_s19), entry.name
++        # overrides: a work unit refreshes its own stub (`xut status init
++        # --refresh-bins`, AGENTS.md §7) whenever its overrides change `coverage_bins`,
++        # and the orchestrator refreshed every stub on main (a11e51e), so a never-recorded
++        # stub's `uncovered` is exactly its current bins.
++        assert data["coverage"]["uncovered"] == coverage_bins(entry), entry.name
+ 
+ 
+ def test_every_fresh_stub_has_exactly_the_current_bins():
 ```
 
-In `AGENTS.md` §7, replace the paragraph
+`pyproject.toml`:
 
-```
-`xut status init --refresh-bins` updates the bins of never-recorded stubs to
-the current catalog. The orchestrator runs it on `main` only.
-```
-
-with
-
-```
-`xut status init --refresh-bins` updates the bins of never-recorded stubs to
-the current catalog. The orchestrator runs it on `main`. A unit branch may
-also run it after its overrides change its own primitives' bins (new claims,
-`active` levels, crosses), but commits only its own never-recorded
-`status/<family>/<PRIM>.yaml` stubs: any other file it changes is restored
-with `git checkout -- <path>` and reported to the orchestrator (ruling on
-PR #12, D16).
+```diff
+diff --git a/pyproject.toml b/pyproject.toml
+index 83fb91e..ab49d05 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -48,6 +48,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN"]
+ [tool.ruff.lint.per-file-ignores]
+ # Type hints are enforced for the tool (tools/xut), not for pytest test functions.
+ "tools/tests/**" = ["ANN"]
++"tests/**/test_*.py" = ["ANN"]
+ 
+ [tool.ruff.lint.isort]
+ known-first-party = ["xut", "xut_models"]
 ```
 
-- [ ] **Step 4: Test and lint**
+`AGENTS.md` (§7 and §10.1):
+
+````diff
+diff --git a/AGENTS.md b/AGENTS.md
+index def4d92..375ae13 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -159,7 +159,12 @@ there is no override. Each model source keeps its own tree hash, tools and
+ results (`results_by_model_source`).
+ 
+ `xut status init --refresh-bins` updates the bins of never-recorded stubs to
+-the current catalog. The orchestrator runs it on `main` only.
++the current catalog. The orchestrator runs it on `main`. A unit branch may
++also run it after its overrides change its own primitives' bins (new claims,
++`active` levels, crosses), but commits only its own never-recorded
++`status/<family>/<PRIM>.yaml` stubs: any other file it changes is restored
++with `git checkout -- <path>` and reported to the orchestrator (ruling on
++PR #12, D16).
+ 
+ ## 8. Clean-room golden models
+ 
+@@ -261,6 +266,20 @@ smoke simulation whose memory grows without bound. Its container peaked at
+   value in a plan or task brief is capped by this section. For example, the
+   step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
+   until PR C is merged, and 24 after.
++- **One heavy command at a time, host-wide** (ruling S53). Every heavy command
++  (`xut run`, `xut portability`, `xut verilatorize --check`, `xut hw sim`,
++  `xut hw build`, and `pytest` with `-n` above 1) takes the one host-wide lock
++  before its scope, so two agents never run heavy jobs at once and each
++  command's own budget (at most 96G) holds:
++
++  ```bash
++  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
++    --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
++    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
++  ```
++
++  `flock` waits while another agent holds the lock; nothing ever deletes the
++  lock file.
+ - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
+ - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
+   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
+````
+
+- [ ] **Step 4: Test and lint.** The whole suite is a heavy command: it takes the host-wide lock.
 
 ```bash
-uv run pytest tools/tests/test_golden_reach.py -q > .cache/p1-green.log 2>&1; cat .cache/p1-green.log
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-p1-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
-  uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/p1-pytest.log 2>&1; echo "exit=$?"
+uv run pytest tools/tests/test_golden_reach.py tools/tests/test_unitkit.py tools/tests/test_runner_base.py -q > .cache/p1-green.log 2>&1; cat .cache/p1-green.log
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-p1-$(date +%s) \
+  -p MemoryMax=32G -p MemorySwapMax=0 -- \
+  uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/p1-pytest.log 2>&1; echo "exit=$?" >> .cache/p1-pytest.log
 uv run ruff format --check tools > .cache/p1-ruff.log 2>&1; uv run ruff check tools >> .cache/p1-ruff.log 2>&1; cat .cache/p1-ruff.log
 uv run xut lint --branch > .cache/p1-lint.log 2>&1; cat .cache/p1-lint.log
 ```
 
-Expected: `3 passed`; the fast suite passes (read the last lines of `.cache/p1-pytest.log`: `N passed`, no failures); ruff clean; lint 0 errors. A status-record test that pins an exact `bins_reached` set for a fixture with a non-enumerated attribute now sees one more bin: update that expectation, since the new bin is correct.
+Expected: the focused tests pass; the suite passes (the summary line at the end of `.cache/p1-pytest.log`); ruff clean; lint 0 errors. (Checked while writing this plan on a copy of `main`: the non-container suite gives `1696 passed, 5 skipped`, including `test_family_literal_lives_only_in_work_units_yaml`, which is why `unitkit` takes the family as a parameter and never spells it.)
 
 - [ ] **Step 5: Commit, log, PR**
 
 ```bash
-git add tools/xut/golden.py tools/xut/runners/python.py tools/tests/test_golden_reach.py && git commit -m "infra: bins_reached names a non-enumerated attribute's attr:<A> bin (coverage_reach)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/xut/golden.py tools/xut/runners/python.py tools/tests/test_golden_reach.py tools/tests/test_runner_base.py && git commit -m "infra: bins_reached names a non-enumerated attribute's attr:<A> bin (coverage_reach, replay_config)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/xut/unitkit.py tools/tests/test_unitkit.py && git commit -m "infra: add xut.unitkit, the shared metadata helpers and guard set of every work unit (S53)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/tests/test_status_schema.py && git commit -m "infra: stub invariant compares exact bins; drop the TEMPORARY pre_s19 and REGENERATED_ON_BRANCH allowances" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 git add pyproject.toml && git commit -m "infra: exempt unit test files (tests/**/test_*.py) from ruff ANN, as tools/tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
-git add AGENTS.md && git commit -m "infra: AGENTS.md §7 lets a unit branch refresh its own never-recorded status stubs (PR #12, D16)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add AGENTS.md && git commit -m "infra: AGENTS.md: a unit refreshes its own stubs (§7, D16); one host-wide lock for heavy commands (§10.1, S53)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-Write `log/<ts>-infra-unit-prereqs-reach-bins.md` (what changed, test results, next step: the luts unit), commit it with `infra: log the unit-prereqs session`, push (`git push -u origin infra/unit-prereqs`) and open the PR with `gh pr create -R mithro/xilinx-unittests --base main --head infra/unit-prereqs --title "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests; unit stub refresh"`, whose body ends with the Claude Code line. It gets the §13.4 two-reviewer gate like every PR.
+Write `log/<ts>-infra-unit-prereqs-unitkit.md` (what changed, test results, the flops-migration TODO, next step: the luts unit), commit it with `infra: log the unit-prereqs session`, push (`git push -u origin infra/unit-prereqs`) and open the PR with `gh pr create -R mithro/xilinx-unittests --base main --head infra/unit-prereqs --title "infra: unit prerequisites — coverage bins, xut.unitkit, AGENTS.md stub and heavy-lock rules"`, whose body ends with the Claude Code line. It gets the §13.4 two-reviewer gate like every PR.
 
 ---
 
