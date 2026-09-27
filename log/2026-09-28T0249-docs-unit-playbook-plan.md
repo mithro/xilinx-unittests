@@ -97,3 +97,46 @@ These ran in the scratch layout, in 4G scopes:
 - The cocotb stand-in run passed.
 - ruff: clean on the Python blocks extracted from the plan.
 - `xut lint --branch` (4G scope): 0 issues.
+
+## Follow-up: PR #12 review round (ruling S53)
+
+Both reviews asked for changes: code quality raised M1–M4 and 12 nits; correctness raised M1–M5 and 7 nits. Every item is addressed.
+
+- **Q-M1: shared code moves into infra.** P1 now adds `xut.unitkit`, holding:
+  - the standard reasons, `runners`, `entry`, `class_bins` and the YAML dumper;
+  - the README skeleton;
+  - `vector_reach`, which uses the python runner's own `generate` and the new `replay_config`;
+  - the parametrised `UnitGuards`.
+
+  Units import it and never copy it or the flops code. The flops migration is a TODO in P1.
+- **Q-M2:** every shared file uses the stem `luts`. The plan explains why a stem must be unique: pytest's flat namespace.
+- **Q-M3:** B2 has its own `git add`, which includes `luts_recipes.py`.
+- **Q-M4:** the bins guard uses `xut.lint.gap_bin`, through `unitkit`.
+- **C-M1:** the CFGLUT5 model tracks `known`, the order-free uniform value, and never reads it off the contents computed under the inferred order. Both counterexamples are now tests.
+- **C-M2:** `L1.edge_polarity` is a pure configuration for C1–C7 and both `IS_CLK_INVERTED` bins. The guard `test_every_exercised_bin_has_a_pure_configuration` pins it. `ones_to_zero` replaces `rand_to_zero`. The plan's coverage statements are corrected.
+- **C-M3:** a probe applies the inactive edge alone with CE High. Tests show the both-edges mutant and the ignores-IS_CLK_INVERTED mutant fail documented bits.
+- **C-M4:** there is one host-wide lock, `flock "$XDG_RUNTIME_DIR/xut-heavy.lock"`, on every heavy command. It is in Global Constraints and in P1's AGENTS.md §10.1 amendment.
+- **C-M5:** A8 has a row for site-constrained primitives (`unitkit.HW_PAD`), and Appendix W rows 8, 13 and 15–17 and 20–21 reference it.
+- **Nits.** All are fixed:
+  - generated wrappers are rendered and covered by the drift guard;
+  - magic numbers are named;
+  - `_cfglut`, a shared `lit`, and the dead `ATTR_PAGE` and `page` parameter removed;
+  - CFGLUT5 `clock_edge` guards, and the GSR test renamed;
+  - the LUT grouping statements are not claims;
+  - an S52 note on `init_sweep`, a final sweep in `cdo_cascade`, and the C5 lower bound as a gap;
+  - pytest budgets after step 3, and a missing model source is `n/a`.
+- **P1 also** drops the TEMPORARY `pre_s19` and `REGENERATED_ON_BRANCH` allowances in `test_status_schema.py`.
+
+### Scratch setup redo
+
+While setting up the scratch copy of `main`, I once ran `git add -A` with its output sent to `/dev/null`. That broke the rule. I re-ran the add and the commit with their output logged; both logs are empty, with no errors. I then compared `git ls-tree -r` of the scratch base commit with `origin/main`. They are identical blob for blob, apart from the submodule gitlink, which `git archive` never includes and no check uses. So no verification depended on a failed add.
+
+### Test results
+
+The code was run on a scratch copy of `main` with P1 applied, in 4G or 16G scopes. The heavy runs waited on the new lock while another agent's job held it.
+- luts shared tests: 145 passed.
+- The full non-container suite, including the luts tests: 1840 passed, 1 failed. The failure was `test_every_status_stub_matches_its_catalog_entry_and_work_unit`, because the luts stubs were stale. After `xut status init --refresh-bins`, which refreshed exactly the 8 luts stubs as Task A1 Step 5 expects, that test passes.
+- P1 tests: `test_unitkit`, `test_golden_reach` and the new runner test all pass.
+- sv testbenches: every documented check passes on Icarus against UNISIM 2025.2, in a 1G-capped container.
+- The cocotb stand-in run passed.
+- ruff is clean on tools, models and tests.
