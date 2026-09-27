@@ -4,7 +4,7 @@
 
 **Goal:** One reusable procedure that takes any remaining work unit of `docs/work-units.yaml` from nothing to a merged unit PR, at the standard the `flops` pilot set in step 2, so that the fan-out of spec §16 step 5 does not need a new plan per unit. The plan has three parts:
 
-- **Part 0** — two small infra prerequisites that every later unit needs, found while writing this plan (Task P1, one infra PR).
+- **Part 0** — small infra prerequisites that every later unit needs (Task P1, one infra PR): two gaps found while writing this plan, and the AGENTS.md §7 amendment confirmed on PR #12.
 - **Part A** — the generic unit procedure, Tasks A1–A8, parameterised by `<unit>`, `<group>` and `<PRIMS>`: overrides and claims, clean-room golden models, vector recipes and the metadata generator with its reach guard, sv tests, a cocotb session, the full run with crosscheck, findings and status, the unit PR, and the hardware follow-up once the step-3 `hw` runner exists.
 - **Part B** — the `luts` unit (LUT1–LUT6, LUT6_2, CFGLUT5) as the first concrete instance, Tasks B1–B8, with complete code for everything load-bearing: the golden models, the recipes (exhaustive truth tables, spec §4.2 INIT sampling, CFGLUT5 reconfiguration sequences), the test.yaml/README generator and its guards, the sv testbenches and the cocotb session.
 
@@ -80,7 +80,7 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 
 | Branch | Branched from | Worktree | Tasks | PR (base) |
 |---|---|---|---|---|
-| `infra/unit-prereqs` | `origin/main` after PR #10 | `infra-unit-prereqs` | P1 | "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests" (base `main`) |
+| `infra/unit-prereqs` | `origin/main` after PR #10 | `infra-unit-prereqs` | P1 | "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests; unit stub refresh" (base `main`) |
 | `unit/7series/luts` | `origin/main` once P1 has merged, else `origin/infra/unit-prereqs` | `unit-7series-luts` | B1–B7 | "luts: LUT1-LUT6, LUT6_2 and CFGLUT5" (base `main`, or `infra/unit-prereqs` while P1 is open) |
 | `unit/7series/<unit>` | `origin/main` | `unit-7series-<unit>` | A1–A7 | "`<unit>`: `<PRIMS>`" (base `main`) |
 | `unit/7series/<unit>` (fresh, after the unit's first PR merged) | `origin/main` after step-3 PRs A–C | `unit-7series-<unit>` | A8 (luts: B8) | "`<unit>`: hardware results" (base `main`) |
@@ -150,23 +150,25 @@ tools/xut/golden.py              attr_bins, coverage_reach
 tools/xut/runners/python.py      bins_reached = coverage_reach(...)
 tools/tests/test_golden_reach.py
 pyproject.toml                   "tests/**/test_*.py" = ["ANN"]
+AGENTS.md                        §7: a unit refreshes its own never-recorded stubs (D16)
 ```
 
 ---
 
 ## Part 0: infra prerequisites (branch `infra/unit-prereqs`)
 
-### Task P1: coverage bins for non-enumerated attributes, and the unit-test ANN exemption
+### Task P1: coverage bins for non-enumerated attributes, the unit-test ANN exemption, and the AGENTS.md §7 stub rule
 
-Two gaps found while writing this plan. Both block every unit after flops, so they land once, before the fan-out.
+Two gaps found while writing this plan, and one confirmed ruling. All three affect every unit after flops, so they land once, before the fan-out.
 
 1. **`attr:<A>` is never reached.** Spec §9 and `xut.status.coverage_bins` give an attribute whose catalog `allowed` list is not enumerated (a range such as `2'h0 to 2'h3`, prose such as `Any 64-bit HEX value`, or nothing) the single bin `attr:<A>`. The golden replay's `Reach.bins()` names every explicitly-set attribute `attr:<A>=<value>`, so a vector test's `attr:<A>` can never be credited: `xut status record` warns "declares … but no configuration … reached it", and a unit's reach guard fails on a correct declaration. Every LUT INIT, every BRAM `INIT_xx`, every DSP/MMCM integer attribute hits this. Fix: `xut.golden.coverage_reach` names the bins exactly as `coverage_bins` does, and the python runner records it.
 2. **Unit test files fail `ruff check`.** `pyproject.toml` exempts only `tools/tests/**` from the `ANN` rules ("Type hints are enforced for the tool, not for pytest test functions"), so every unit's `test_*.py` trips dozens of `ANN001`/`ANN201`. The flops unit logged this as an infra TODO. Fix: extend the exemption to `tests/**/test_*.py`.
+3. **AGENTS.md §7 reserves `xut status init --refresh-bins` for the orchestrator on `main`**, but a unit that adds claims changes its own stubs' bins, and the infra stub-invariant test then fails on the unit branch. Confirmed on PR #12 (decision D16): a unit branch may refresh its **own** never-recorded stubs. AGENTS.md is infra-owned, so the amendment lands here; the flops unit's 115f0cc is covered retroactively.
 
 `coverage_reach` also replaces the private `xut.runners.python._polarity_context` that the flops reach guard borrows (its logged TODO). `_polarity_context` stays in place until the flops guard moves to `coverage_reach` in the flops unit's own follow-up; do not delete it here.
 
 **Files:**
-- Modify: `tools/xut/golden.py`, `tools/xut/runners/python.py`, `pyproject.toml`
+- Modify: `tools/xut/golden.py`, `tools/xut/runners/python.py`, `pyproject.toml`, `AGENTS.md` (§7)
 - Create: `tools/tests/test_golden_reach.py`
 
 **Interfaces:**
@@ -331,6 +333,25 @@ In `pyproject.toml`, under `[tool.ruff.lint.per-file-ignores]`, add one line aft
 "tests/**/test_*.py" = ["ANN"]
 ```
 
+In `AGENTS.md` §7, replace the paragraph
+
+```
+`xut status init --refresh-bins` updates the bins of never-recorded stubs to
+the current catalog. The orchestrator runs it on `main` only.
+```
+
+with
+
+```
+`xut status init --refresh-bins` updates the bins of never-recorded stubs to
+the current catalog. The orchestrator runs it on `main`. A unit branch may
+also run it after its overrides change its own primitives' bins (new claims,
+`active` levels, crosses), but commits only its own never-recorded
+`status/<family>/<PRIM>.yaml` stubs: any other file it changes is restored
+with `git checkout -- <path>` and reported to the orchestrator (ruling on
+PR #12, D16).
+```
+
 - [ ] **Step 4: Test and lint**
 
 ```bash
@@ -348,9 +369,10 @@ Expected: `3 passed`; the fast suite passes (read the last lines of `.cache/p1-p
 ```bash
 git add tools/xut/golden.py tools/xut/runners/python.py tools/tests/test_golden_reach.py && git commit -m "infra: bins_reached names a non-enumerated attribute's attr:<A> bin (coverage_reach)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 git add pyproject.toml && git commit -m "infra: exempt unit test files (tests/**/test_*.py) from ruff ANN, as tools/tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add AGENTS.md && git commit -m "infra: AGENTS.md §7 lets a unit branch refresh its own never-recorded status stubs (PR #12, D16)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-Write `log/<ts>-infra-unit-prereqs-reach-bins.md` (what changed, test results, next step: the luts unit), commit it with `infra: log the unit-prereqs session`, push (`git push -u origin infra/unit-prereqs`) and open the PR with `gh pr create -R mithro/xilinx-unittests --base main --head infra/unit-prereqs --title "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests"`, whose body ends with the Claude Code line. It gets the §13.4 two-reviewer gate like every PR.
+Write `log/<ts>-infra-unit-prereqs-reach-bins.md` (what changed, test results, next step: the luts unit), commit it with `infra: log the unit-prereqs session`, push (`git push -u origin infra/unit-prereqs`) and open the PR with `gh pr create -R mithro/xilinx-unittests --base main --head infra/unit-prereqs --title "infra: coverage bins for non-enumerated attributes; ANN exemption for unit tests; unit stub refresh"`, whose body ends with the Claude Code line. It gets the §13.4 two-reviewer gate like every PR.
 
 ---
 
@@ -442,7 +464,7 @@ for p in '<PRIMS>'.split():
 
 Expected: every primitive loads (an `OverrideError` names a bad key or an unknown port/attribute), with the claim and bin counts the intake predicted.
 
-- [ ] **Step 5: Refresh the unit's own status stubs.** Adding claims or `active` levels changes the primitive's bins, and the infra invariant test `test_every_status_stub_matches_its_catalog_entry_and_work_unit` compares every never-recorded stub with its catalog. The flops unit did this in its own commit (115f0cc); decision D16 records it.
+- [ ] **Step 5: Refresh the unit's own status stubs.** Adding claims or `active` levels changes the primitive's bins, and the infra invariant test `test_every_status_stub_matches_its_catalog_entry_and_work_unit` compares every never-recorded stub with its catalog. Confirmed on PR #12 (decision D16): a unit branch may refresh its **own** never-recorded stubs; Task P1 amends AGENTS.md §7 to say so, and the flops unit's 115f0cc is covered retroactively.
 
 ```bash
 uv run xut status init --refresh-bins > .cache/refresh-bins.log 2>&1; cat .cache/refresh-bins.log
@@ -3813,7 +3835,7 @@ Infra that later units need, beyond Task P1 (each is an `infra/*` branch the uni
 
 ## Decisions on spec gaps (made while writing this plan)
 
-The orchestrator ruled on PR #12: D4 is overruled by ruling S52, and D1–D3 and D5–D15 are accepted; D16 awaits its amendment.
+The orchestrator ruled on PR #12: D4 is overruled by ruling S52, D16 is confirmed, and D1–D3 and D5–D15 are accepted.
 
 - **D1. `attr:<A>` for non-enumerated attributes was unreachable** (spec §9 names the bin; the python runner never produced it). Task P1 adds `xut.golden.coverage_reach`, which names bins exactly as `coverage_bins` does, and the python runner records it. Units with such attributes stack on P1.
 - **D2. Parallelism.** `xut run --jobs 16` in a 32G scope, not the 24 AGENTS.md §10.1 permits: 32G + 16 × 4G containers = 96G stays inside the project's 100G share, as the step-3 plan's budget (ruling S49 I5) requires; `--jobs 24` would reach 128G with the scope. Whole-suite pytest is `-n 4` in a 32G scope; the unit's own pure-Python tests may use `-n 8` in 8G.
@@ -3830,7 +3852,7 @@ The orchestrator ruled on PR #12: D4 is overruled by ruling S52, and D1–D3 and
 - **D13. A simulator refusing a UG953-legal configuration** has no crosscheck class. The unit keeps the configuration, writes a `doc-vs-model` finding by hand and reports it; crosscheck exits 4 for that test until infra adds a rule.
 - **D14. CFGLUT5's Verilator reason** cites the table (`status/PORTABILITY.md`), the refusal (ruling S28) and the recovery TODO (ruling S29(2)), without UNISIM's internal signal names.
 - **D15. The portability table is read on `main` at intake**, never from a build directory: it is regenerated after every infra merge, and S51 changed its labels after the run Appendix W quotes.
-- **D16. A unit refreshes its own never-recorded status stubs** with `xut status init --refresh-bins` after adding claims, and commits only its own files. AGENTS.md §7 reserves the command for the orchestrator on `main`, but adding claims makes the infra stub-invariant test fail on the unit branch, and the flops unit refreshed its own stubs the same way (commit 115f0cc). **Needs orchestrator confirmation**, or an AGENTS.md amendment through a docs/infra PR.
+- **D16. A unit refreshes its own never-recorded status stubs** with `xut status init --refresh-bins` after adding claims, and commits only its own files. AGENTS.md §7 reserves the command for the orchestrator on `main`, but adding claims makes the infra stub-invariant test fail on the unit branch, and the flops unit refreshed its own stubs the same way (commit 115f0cc). **Confirmed on PR #12.** Task P1 amends AGENTS.md §7 (infra-owned) to say so; the flops unit's 115f0cc is covered retroactively.
 
 ---
 
