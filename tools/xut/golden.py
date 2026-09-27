@@ -10,9 +10,11 @@ are expanded with the one shared definition (``xvec.free_clock_edges``).
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import groupby
 
+from xut.catalog.model import CatalogEntry, is_enumerated
 from xut.errors import XutError
 from xut.formats.common import int_literal
 from xut.formats.xtr import Trace, prov_token
@@ -68,6 +70,30 @@ def polarity_bins(bins: set[str], active: dict[str, str], attrs: dict[str, objec
         event = "assert" if (m.group(3) == "rise") == high else "release"
         out.add(f"port:{m.group(1)}:{event}")
     return out
+
+
+def attr_bins(attributes: list[dict], attrs: Mapping[str, object]) -> set[str]:
+    """``attr:<A>`` for every explicitly-set attribute whose catalog ``allowed`` list is
+    not enumerated (a range, prose, or nothing): spec §9 gives such an attribute the one
+    bin ``attr:<A>``, which ``Reach.bins()``'s ``attr:<A>=<v>`` never names."""
+    return {
+        f"attr:{a['name']}"
+        for a in attributes
+        if a["name"] in attrs and not is_enumerated(a.get("allowed") or [])
+    }
+
+
+def coverage_reach(entry: CatalogEntry, vec: Vec, reach: Reach) -> set[str]:
+    """The coverage bins one replayed configuration reached, named exactly as
+    ``xut.status.coverage_bins`` names them: ``Reach.bins()``, the async/gate bins
+    renamed by the catalog's declared ``active`` levels (``polarity_bins``), and the
+    non-enumerated attribute bins (``attr_bins``)."""
+    active = {p["name"]: p["active"] for p in entry.ports if p.get("active")}
+    bins = reach.bins()
+    if active:
+        defaults = {a["name"]: a["default"] for a in entry.attributes}
+        bins = polarity_bins(bins, active, {**defaults, **vec.attrs})
+    return bins | attr_bins(entry.attributes, vec.attrs)
 
 
 def _bit_name(m: DutMap, port: str, index: int) -> str:
