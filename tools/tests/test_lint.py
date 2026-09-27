@@ -1257,3 +1257,22 @@ def test_portability_rows_are_found_by_the_model_file(tmp_path, monkeypatch):
     _table(tmp_path, ("FDRE_RT", "yes", "no", "unchanged", "—", [], [], "verilator: real: x"))
     (issue,) = check_portability(tmp_path)
     assert issue.severity == "error" and "FDRE (model FDRE_RT) does not run" in issue.message
+
+
+def test_portability_a_config_row_is_a_warning_not_an_error(tmp_path):
+    """Ruling S51: the smoke configuration was illegal for the model; the table does not
+    tell whether the simulator supports it, so a test is never forced to unsupported."""
+    from xut.lint import check_portability
+
+    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    _table(
+        tmp_path,
+        ("FDRE", "no: config: Attribute Syntax Error : INIT x [default]", "yes", "unchanged",
+         "—"),
+    )  # fmt: skip
+    (issue,) = check_portability(tmp_path)
+    assert (issue.rule, issue.severity) == ("portability-agreement", "warning")
+    assert issue.message == (
+        "7series.FDRE.L1.reset: smoke configuration illegal for FDRE: Attribute Syntax Error : "
+        "INIT x [default]; the table (unisim-2025.2) does not tell whether iverilog supports it"
+    )
