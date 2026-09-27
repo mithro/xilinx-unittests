@@ -612,8 +612,21 @@ def run_cmd(
     "--model-source",
     help="restrict the report to this model source's results (default: every source)",
 )
+@click.option("--style", "styles", multiple=True, type=click.Choice(["vector", "sv", "cocotb"]))
+@click.option("--level", "levels", multiple=True, type=click.Choice(["L0", "L1", "L2", "L3"]))
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="every selected test must have been cross-checked: a not-run or uncompared "
+    "test exits 4 (CI: select exactly what was run, e.g. with --level/--style)",
+)
 def crosscheck_cmd(
-    selectors: tuple[str, ...], write_findings: bool, model_source: str | None
+    selectors: tuple[str, ...],
+    write_findings: bool,
+    model_source: str | None,
+    styles: tuple[str, ...],
+    levels: tuple[str, ...],
+    strict: bool,
 ) -> None:
     """Cross-check every runner's traces of each selected test (spec §8).
 
@@ -629,6 +642,8 @@ def crosscheck_cmd(
          mixed or dirty trees, traces sharing no configuration, or no two traces
          to compare
       1  a user error (e.g. a selector matching no test); 2  a usage error
+    With --strict, any selected test that is not-run or uncompared is also 4, so a
+    partial or crashed `xut run` can never look clean.
     """
     from xut import crosscheck as xc
     from xut.paths import repo_root
@@ -644,7 +659,12 @@ def crosscheck_cmd(
                 f"unknown model source {model_source!r} (known: {', '.join(sorted(known))})"
             )
     cases = _select_cases(root, discover(root), selectors)
+    cases = [
+        c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
+    ]
     if not cases:
+        if strict:
+            raise SystemExit(xc.EXIT_INCOMPLETE)  # strict: nothing checked is never clean
         click.echo(f"no tests selected ({' '.join(selectors) or 'no tests under tests/'})")
         return
     reports = []
@@ -666,8 +686,12 @@ def crosscheck_cmd(
     click.echo("crosscheck: " + ", ".join(f"{n} {v}" for v, n in sorted(verdicts.items())))
     codes = {r.exit_code for r in reports}
     code = next((c for c in (xc.EXIT_FINDING, xc.EXIT_INCOMPLETE) if c in codes), 0)
-    if code == 0 and all(r.verdict in ("not-run", "uncompared") for r in reports):
-        code = xc.EXIT_INCOMPLETE  # no cross-checked evidence at all is never clean
+    unchecked = [r for r in reports if r.verdict in ("not-run", "uncompared")]
+    if code == 0 and (strict and unchecked or len(unchecked) == len(reports)):
+        code = xc.EXIT_INCOMPLETE  # no cross-checked evidence (for strict: anywhere) is never clean
+        if strict:
+            for r in unchecked:
+                click.echo(f"strict: {r.case.id} was {r.verdict}")
     if code:
         raise SystemExit(code)
 

@@ -52,6 +52,12 @@ jobs:
       # here and prints its matrix; `xut crosscheck` is the gate. It exits 0 only when
       # every disagreement is a listed known-divergence, 3 on an unlisted finding and
       # 4 on any error, unexplained fail or missing comparison, so nothing is masked.
+      # `xut run` exit 1 means some result is fail or error: crosscheck classifies those.
+      # Anything above 1 (interrupt 130, a crash) fails the job here.
       - run: |
-          uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || echo "xut run exit $?: crosscheck decides"
-      - run: uv run xut crosscheck 'unit:flops' --model-source unisim-gh-2020.1
+          rc=0
+          uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || rc=$?
+          echo "xut run exit $rc"
+          [ "$rc" -le 1 ]
+      # --strict with the same selection: a test the run did not complete is exit 4.
+      - run: uv run xut crosscheck 'unit:flops' --level L0 --level L1 --style vector --model-source unisim-gh-2020.1 --strict

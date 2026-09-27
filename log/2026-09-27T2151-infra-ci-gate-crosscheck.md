@@ -18,3 +18,13 @@
 
 ## Next steps
 - Merge this, then re-run PR #16's CI.
+
+## Correctness review fix
+- Must-fix: a partial or crashed `xut run` could look clean. Crosscheck exited 4 only when EVERY
+  test was not-run or uncompared, and `|| echo` swallowed exit 130.
+- `xut crosscheck` gains `--level`, `--style` and `--strict`:
+  - with `--strict`, any selected test that is not-run or uncompared exits 4;
+  - an empty strict selection exits 4.
+- CI selects exactly what it ran, and fails when `xut run` exits above 1 (interrupt or crash).
+- Tests: 3 new CLI tests; test_crosscheck and test_cli give 111 passed. The exact CI command
+  on the real flops results (unisim-gh-2020.1) exits 0: 36 agree, 2 known-divergence.
