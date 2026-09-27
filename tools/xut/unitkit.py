@@ -159,14 +159,12 @@ def cell(test: dict, runner: str) -> str:
 
 
 def run_block(prim: str) -> list[str]:
-    """The README's "How to run": the heavy command under the per-user heavy lock and a
-    capped scope (AGENTS.md §10.1), then crosscheck and record."""
+    """The README's "How to run": the heavy command admitted by the memory budget and run
+    in a capped scope (``xut heavy``, AGENTS.md §10.1), then crosscheck and record."""
     p = prim.lower()
     return [
         "```bash",
-        'flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \\',
-        "  --slice=vivado.slice --unit=xut-run-$(date +%s) \\",
-        "  -p MemoryMax=32G -p MemorySwapMax=0 -- \\",
+        f"uv run xut heavy --mem 8G --containers 16 --name run-{p} -- \\",
         f"  uv run xut run {prim} --jobs 16 > .cache/run-{p}.log 2>&1",
         f"uv run xut crosscheck {prim} > .cache/xc-{p}.log 2>&1",
         f"uv run xut status record {prim} > .cache/status-{p}.log 2>&1",
