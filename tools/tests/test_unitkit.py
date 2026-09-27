@@ -205,3 +205,25 @@ def test_doc_mismatch_counts_a_defined_difference():
     want.add("S0", {"Q": "01"}, {"Q": "doc:9"})
     got.add("S0", {"Q": "11"}, {"Q": "doc:9"})
     assert unitkit._doc_mismatch(want, got)
+
+
+def test_pure_guard_needs_a_pure_configuration_in_a_declaring_test(monkeypatch):
+    """Ruling S57.2 (PR #14 correctness review, finding 2): a pure configuration of a
+    test that does not declare the bin credits nothing, so it does not satisfy the guard;
+    one in the declaring test does."""
+    from types import SimpleNamespace
+
+    a = SimpleNamespace(id="A", style="vector", exercises=["claim:P.C1"])
+    b = SimpleNamespace(id="B", style="vector", exercises=[])
+    impure = SimpleNamespace(reach=unitkit.ConfigReach("c0", frozenset({"claim:P.C1"}), False))
+    pure = SimpleNamespace(reach=unitkit.ConfigReach("c1", frozenset({"claim:P.C1"}), True))
+    unit = unitkit.Unit("u", "7series", FIX, FIX, ("P",), dict, dict)
+    guards = type("G", (unitkit.UnitGuards,), {"unit": unit})()
+    monkeypatch.setattr(guards, "_cases", lambda prim: [a, b])
+
+    monkeypatch.setattr(unitkit, "_replayed", lambda root, c: (impure,) if c.id == "A" else (pure,))
+    with pytest.raises(AssertionError, match=r"claim:P\.C1"):
+        guards.test_every_exercised_bin_has_a_pure_configuration("P")
+
+    monkeypatch.setattr(unitkit, "_replayed", lambda root, c: (impure, pure) if c.id == "A" else ())
+    guards.test_every_exercised_bin_has_a_pure_configuration("P")
