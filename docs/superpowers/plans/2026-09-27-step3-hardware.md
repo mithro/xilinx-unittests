@@ -6315,9 +6315,14 @@ class FakeTransport:
 
 
 class FakeBuilder:
-    """``flow_mismatch``: raise the post-flow DUT check's ``FlowMismatch`` instead."""
+    """``flow_mismatch``: raise the post-flow DUT check's ``FlowMismatch`` instead, for
+    every build (``True``) or for the slot sets a predicate picks."""
 
-    def __init__(self, cache_root: Path, flow_mismatch: bool = False) -> None:
+    def __init__(
+        self,
+        cache_root: Path,
+        flow_mismatch: bool | Callable[[Sequence[SlotBuild]], bool] = False,
+    ) -> None:
         self.cache_root = Path(cache_root)
         self.flow_mismatch = flow_mismatch
 
@@ -6325,7 +6330,8 @@ class FakeBuilder:
         return "fake-vivado"
 
     def ensure(self, slots: Sequence[SlotBuild]) -> Bitstream:
-        if self.flow_mismatch:
+        fm = self.flow_mismatch
+        if fm(slots) if callable(fm) else fm:
             raise FlowMismatch(
                 "post-flow DUT check: slot 2: REF_NAME LUT1, configured TOYFF (retargeted)"
             )
@@ -6780,7 +6786,7 @@ MS = "unisim-2025.2"
 
 @pytest.fixture
 def fake_hw(tmp_path, monkeypatch, toy):
-    def make(rigs: dict[str, FakeRig], flow_mismatch: bool = False):
+    def make(rigs: dict[str, FakeRig], flow_mismatch=False):
         t = FakeTransport(rigs)
         pool = BoardPool([SshBoardSession(rig(n), t) for n in rigs])
         builder = FakeBuilder(tmp_path / "cache", flow_mismatch=flow_mismatch)
@@ -6855,6 +6861,26 @@ def test_a_failed_post_flow_dut_check_is_a_flow_mismatch(tmp_path, fake_hw):
     assert res.status == "error" and "flow-mismatch" in res.reason
     assert res.hw["dut_check"] == "fail" and t.programmings["a"] == 0  # nothing ran
     assert _classes(tmp_path, case) == ["flow-mismatch"]
+
+
+def test_a_dut_check_failure_does_not_hide_a_silicon_mismatch(tmp_path, fake_hw, monkeypatch):
+    """Two bitstream groups (one configuration each): group A fails its post-flow DUT
+    check, group B runs and its DUT output differs on silicon. Both findings are reported:
+    neither class masks the other (spec §8)."""
+    monkeypatch.setattr("xut.hw.slots.DUT_BUFG_BUDGET", 1)  # one DUT per bitstream
+    failing: list[str] = []
+
+    def fails_first_group(slots):
+        if not failing:
+            failing.append(slots[2].digest())
+        return slots[2].digest() == failing[0]
+
+    fake_hw({"a": FakeRig(flip_dut={2: 0})}, flow_mismatch=fails_first_group)
+    case, res = _run(tmp_path)
+    assert res.hw["dut_check"] == "fail"
+    assert [c.status for c in res.configs].count("error") == 1
+    assert [c.status for c in res.configs].count("fail") == 1
+    assert _classes(tmp_path, case) == ["flow-mismatch", "silicon-mismatch"]
 
 
 def test_a_golden_dont_care_bit_reaches_the_fake_board_as_0(monkeypatch):
@@ -6980,16 +7006,23 @@ In `tools/xut/cli.py` `run_cmd`: `--flow` becomes `click.Choice(["rtl", "vivado"
 
 and pass them into the `RunContext` (`hw_repeats=hw_repeats, hw_rigs=tuple(hw_rigs)`).
 
-In `tools/xut/crosscheck.py` `classify`, in the `runner == "hw"` branch before the self-test check:
+In `tools/xut/crosscheck.py` `classify`, in the `runner == "hw"` branch, add the `flow-mismatch` finding and **delete the existing `continue` after the `harness-error` finding**. Neither class may mask another (spec §8, AGENTS.md §9): one hw result spans several bitstream groups, and a group whose DUT check or self-test failed has only `error` configurations, which `View.ran` already leaves out of every comparison, so the other groups' `nondeterminism` and `silicon-mismatch` findings still follow. The branch becomes:
 
 ```python
+        if runner == "hw":
+            hw = v.result.get("hw") or {}
             if hw.get("dut_check") == "fail":
                 detail = hw.get("dut_check_detail") or "post-flow DUT check failed"
                 out.append(_f("flow-mismatch", test_id, flow, None, ["hw"], [detail]))
-                continue
+            if hw.get("selftest") == "fail":
+                out.append(_f("harness-error", test_id, flow, None, ["hw"], ["self-test failed"]))
+            if hw.get("repeats_differ"):
+                ...  # unchanged: the nondeterminism finding
+            if exp is not None and _has_trace(exp) and _has_trace(v):
+                ...  # unchanged: the silicon-mismatch comparison over the configurations that ran
 ```
 
-and pin it in `tools/tests/test_crosscheck.py` with a synthetic `hw` view, as the existing `harness-error` test does.
+Pin it in `tools/tests/test_crosscheck.py` with synthetic views, as the existing `harness-error` test does: a hw view with `dut_check = "fail"` **and** one configuration that ran with a mismatching trace gives both `flow-mismatch` and `silicon-mismatch`; the same with `selftest = "fail"` gives both `harness-error` and `silicon-mismatch`.
 
 In `tools/xut/schemas/result.schema.json`, replace the `hw` property:
 
