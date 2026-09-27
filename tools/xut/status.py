@@ -559,18 +559,15 @@ def _load_results(
 def _unless_transform_bug(
     root: Path, ms: str, test_id: str, flow: str, warn: Callable[[str], None]
 ) -> str:
-    """A Verilator ``pass``, unless the test's iverilog-vz trace differs from its iverilog
-    trace: a ``transform-bug`` blocks the Verilator results (spec §6.2; PR #10 nit), so the
-    pass is recorded as ``error``."""
-    from xut.crosscheck import transform_bug
+    """A Verilator ``pass``, unless its iverilog-vz companion does not confirm it (ruling
+    S50a: missing, not a pass or a comparable fail, or a trace differing from iverilog's,
+    a transform-bug; ``crosscheck.companion_gap``): then ``error``, fail closed."""
+    from xut.crosscheck import UNCONFIRMED, verilator_unconfirmed
 
-    pts = transform_bug(root, ms, test_id, flow)
-    if not pts:
+    gap = verilator_unconfirmed(root, ms, test_id, flow)
+    if gap is None:
         return "pass"
-    warn(
-        f"{flow}/verilator/{test_id}: iverilog-vz differs from iverilog at {len(pts)} "
-        f"point(s) ({pts[0]}): a transform-bug blocks the Verilator result; recorded as error"
-    )
+    warn(f"{flow}/verilator/{test_id}: {UNCONFIRMED}: {gap}; recorded as error")
     return "error"
 
 

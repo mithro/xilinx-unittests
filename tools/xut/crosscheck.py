@@ -204,19 +204,41 @@ def gather(root: Path, test_id: str) -> dict[str, dict[tuple[str, str], View]]:
     return dict(out)
 
 
-def transform_bug(root: Path, ms: str, test_id: str, flow: str) -> list[str]:
-    """The points where ``test_id``'s iverilog-vz trace differs from its iverilog trace on
-    ``flow`` against ``ms`` (a ``transform-bug``, spec §6.2); empty when they agree or
-    either has no trace. ``xut status record`` refuses a Verilator pass over one."""
+#: The reason prefix of a Verilator pass its iverilog-vz companion does not confirm.
+UNCONFIRMED = "verilator pass not confirmed by iverilog-vz"
+
+
+def companion_gap(vz: View | None, iv: View | None) -> str | None:
+    """Why a Verilator ``pass`` is not confirmed by its iverilog-vz companion (ruling
+    S50a; spec §6.2: a transform-bug blocks the Verilator results), or None. Confirmed:
+    iverilog-vz ``pass`` whose trace (when both it and iverilog's exist) does not differ
+    from iverilog's, or ``fail`` with both traces and no difference. Otherwise
+    ``missing`` (never run), ``transform-bug`` (the traces differ) or ``error``
+    (anything else: an error, a skip, a z-refused cocotb run, a fail that cannot be
+    compared). Fail closed."""
+    if vz is None or vz.status == "not-run":
+        return "missing"
+    if vz.status not in RAN:
+        return "error"
+    both = _has_trace(vz) and _has_trace(iv)
+    if both:
+        assert iv is not None
+        if list(diff(*_pair(iv, vz))):
+            return "transform-bug"
+        return None
+    return None if vz.status == "pass" else "error"
+
+
+def verilator_unconfirmed(root: Path, ms: str, test_id: str, flow: str) -> str | None:
+    """``companion_gap`` of ``test_id``'s results on disk (``xut status record``)."""
     from xut.results import result_dir
 
-    views = [
-        _view(result_dir(Path(root), flow, r, ms, test_id), flow, r, ms, test_id)
-        for r in ("iverilog", "iverilog-vz")
-    ]
-    if not all(_has_trace(v) for v in views):
-        return []
-    return [str(m) for m in diff(*_pair(*views))]
+    views = {}
+    for r in ("iverilog", "iverilog-vz"):
+        d = result_dir(Path(root), flow, r, ms, test_id)
+        present = (d / "result.json").is_file() or (d / "trace.xtr").is_file()
+        views[r] = _view(d, flow, r, ms, test_id) if present else None
+    return companion_gap(views["iverilog-vz"], views["iverilog"])
 
 
 # --- classification ----------------------------------------------------------------------
@@ -876,6 +898,11 @@ def check(root: Path, case: TestCase, model_source: str | None = None) -> Report
         rep.compared |= shared
         rep.coverage_gaps += notes
         rep.issues += issues
+        for (flow, runner), v in sorted(views.items()):
+            if runner == "verilator" and v.status == "pass":
+                gap = companion_gap(views.get((flow, "iverilog-vz")), views.get((flow, "iverilog")))
+                if gap is not None:
+                    rep.issues.append(f"{ms} {flow}/verilator: {UNCONFIRMED}: {gap}")
         notes, cfg_issues = _config_coverage(ms, views)
         rep.coverage_gaps += _coverage_gaps(ms, views) + notes
         rep.issues += cfg_issues
