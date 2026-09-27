@@ -41,7 +41,7 @@
 - `xut.golden.replay`; `xut_models.base.Model`/`Out`; `xut_models.registry.get`;
 - `xut.runners.base`: `Runner`, `RunContext`, `RunResult`, `ConfigResult`, `workdir`, `python_dir`, `load_generated`, `expected_trace`, `NoExpectedTrace`, `sha256_file`, `error_reason`;
 - `xut.runners.xsim`: `render_script`, `run_script`, `settings_available`, `xsim_version`, `LIBRARY_PATH_GUARD`;
-- `xut.container`: `executor_for`, `RunTimeout`; `xut.modelsrc.resolve`;
+- `xut.container`: `executor_for`, `RunTimeout`, and PR #10's `max_jobs`, `size_bytes`, `BUDGET_ENV`, `DEFAULT_BUDGET` (the container memory budget); `xut.modelsrc.resolve`;
 - `xut.slots.vivado_slot` (PR #10, ruling S50 CQ2): the host-wide Vivado/xsim slot every Vivado or xsim invocation in this plan takes;
 - `xut.testspec`: `TestCase`, `declared`, `exclusions_for`, `runner_flows`; `xut.run.run_tests`; `xut.crosscheck` (reads `result.json` `hw.selftest`, `hw.repeats`, `hw.repeats_differ`);
 - `xut.doctor`: `Check`, `Probe`, `run_checks`, `_safe`;
@@ -3025,7 +3025,9 @@ Then make `tools/xut/runners/xsim.py` use them instead of its own copies (its st
 ```python
 def run_script(cd: Path, timeout_s: int) -> int:
     """``bash xsim.sh > run.log 2>&1`` in ``cd``, in its own process group; its exit code."""
-    return run_in_group(["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w")
+    return run_in_group(
+        ["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w"
+    )
 
 
 def xsim_version(scratch: Path) -> str:
@@ -3392,6 +3394,8 @@ def max_sim_jobs(sim: str) -> int:
     budget = os.environ.get(container.BUDGET_ENV, container.DEFAULT_BUDGET)
     per_job = container.size_bytes(HW_SIM_MEMORY_MAX.lower(), "HW_SIM_MEMORY_MAX")
     return max(1, container.size_bytes(budget, f"${container.BUDGET_ENV}") // per_job)
+
+
 CPB = 4  # xut_hw_tb.sv's UART clocks per bit
 TB = "xut_hw_tb.sv"
 
@@ -4502,7 +4506,13 @@ def _load(d: Path) -> Bitstream:
 
 
 def _run_vivado(
-    tmp: Path, slots: Sequence[SlotBuild], key: str, bid: int, *, maxwords: int, margin: int,
+    tmp: Path,
+    slots: Sequence[SlotBuild],
+    key: str,
+    bid: int,
+    *,
+    maxwords: int,
+    margin: int,
     timeout_s: int,
 ) -> str:
     """Stage the build inputs in ``tmp``, run Vivado in a slot and a scope, and return the
@@ -4556,8 +4566,16 @@ def _post_route_checks(
 
 
 def _manifest(
-    tmp: Path, slots: Sequence[SlotBuild], key: str, bid: int, vivado: str, text: str,
-    latency: dict[str, float], *, maxwords: int, margin: int,
+    tmp: Path,
+    slots: Sequence[SlotBuild],
+    key: str,
+    bid: int,
+    vivado: str,
+    text: str,
+    latency: dict[str, float],
+    *,
+    maxwords: int,
+    margin: int,
 ) -> dict:
     wns, whs = _TIMING.findall(text)[-1]
     return {
@@ -5281,9 +5299,9 @@ from pathlib import Path
 import pytest
 
 from xut.hw import proto
-from xut.hw.steps import session_steps
 from xut.hw.interp import EmuSlot, Harness
 from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
+from xut.hw.steps import session_steps
 from xut.paths import repo_root
 
 PI = repo_root() / "hw" / "pi"
@@ -6334,7 +6352,7 @@ def preflight_command(rig: Rig) -> str:
     q = shlex.quote
     uart = q(rig.uart)
     return (
-        f"for t in {' '.join(PI_TOOLS)}; do command -v \"$t\" || "
+        f'for t in {" ".join(PI_TOOLS)}; do command -v "$t" || '
         '{ echo "missing $t"; exit 3; }; done; '
         f'test -c {uart} || {{ echo "no UART device {rig.uart}"; exit 4; }}; '
         f"openFPGALoader --Version && echo {PREFLIGHT_OK}"
@@ -7285,13 +7303,13 @@ from test_runner_base import _case
 
 from xut import crosscheck, schemas
 from xut.errors import XutError
+from xut.formats import xtr
 from xut.hw.fake import FakeBuilder, FakeRig, FakeTransport
 from xut.hw.pool import BoardPool
 from xut.hw.session import SshBoardSession
 from xut.modelsrc import ModelSource
 from xut.run import run_tests
 from xut.runners import hw as hw_runner
-from xut.formats import xtr
 from xut.runners.base import RunContext, python_dir
 from xut.runners.hw import HwBackend, HwRunner
 from xut.runners.python import PythonRunner
@@ -7849,7 +7867,9 @@ class HwRunner(Runner):
         for r in range(1, ctx.hw_repeats + 1):
             job_id = f"{_SAFE.sub('_', case.id)}-g{g}-r{r}-{uuid.uuid4().hex[:8]}"
             try:
-                out = run_job(be.pool, HwJob(job_id, bit.path, bit.build_id, runs), d / "jobs" / job_id)
+                out = run_job(
+                    be.pool, HwJob(job_id, bit.path, bit.build_id, runs), d / "jobs" / job_id
+                )
             except Exception as e:  # a second transport error, no free rig, a harness bug
                 return settle(f"repeat {r}: {error_reason(e)}")
             log += out.attempts
@@ -8018,12 +8038,12 @@ from xut.catalog.model import load_entry
 from xut.hw import proto
 from xut.hw.compile import compile_program
 from xut.hw.hwsim import simulate
-from xut.hw.steps import run_replies, session_steps
 from xut.hw.image import HwProgram, width
 from xut.hw.interp import run_program
 from xut.hw.selftest import expected_samples, selftest_programs
 from xut.hw.session import BoardSession, HwJob, SlotRun
 from xut.hw.slots import SELFTEST_SLOTS, SlotBuild, dut_slot
+from xut.hw.steps import run_replies, session_steps
 from xut.hw.vivado import Builder
 from xut.modelsrc import ModelSource
 from xut.stimgen import VecBuilder
