@@ -47,7 +47,11 @@ jobs:
       - run: uv run xut container versions
       - run: uv run pytest -v -n auto --dist loadfile -m container
       # The flops L0/L1 vector tests on iverilog against the open-source UNISIM submodule
-      # (review (b) #5). Until the flops unit has tests, `unit:flops` selects nothing and
-      # both steps exit 0 with "no tests selected".
-      - run: uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4
+      # (review (b) #5). `xut run` exits 1 on any fail, including a disagreement that a
+      # test lists in `expected_divergence` (an open finding, spec §8), so it only runs
+      # here and prints its matrix; `xut crosscheck` is the gate. It exits 0 only when
+      # every disagreement is a listed known-divergence, 3 on an unlisted finding and
+      # 4 on any error, unexplained fail or missing comparison, so nothing is masked.
+      - run: |
+          uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || echo "xut run exit $?: crosscheck decides"
       - run: uv run xut crosscheck 'unit:flops' --model-source unisim-gh-2020.1
