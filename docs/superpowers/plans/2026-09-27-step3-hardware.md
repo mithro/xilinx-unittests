@@ -2853,7 +2853,7 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
   - `session_steps(programs: dict[int, HwProgram]) -> list[Step]`: `I`, then per slot in order `L` (1 line) and `R` (`RUN_FRAME_LINES + len(labels)` lines)
   - `split_replies(data, steps) -> list[bytes]`, `slot_replies(replies, slots) -> dict[int, tuple[bytes, bytes]]` (the one owner of the reply indexing), `run_replies(replies, slots) -> dict[int, RunReply]`
   - `simulate(slots, steps, sim, workdir, *, model_source, work_root, extra_files=(), maxwords=MAXWORDS, margin=MARGIN, timeout_s=1800) -> SimResult` with `SimResult(tx: bytes, replies: list[bytes], log: Path, margin_violations: list[str])`
-  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit), `HW_SIM_MEMORY_MAX = "16G"`, `HwSimError`
+  - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit, passed to it through `host.vh`), `HW_SIM_MEMORY_MAX = "16G"`, `max_sim_jobs(sim) -> int` (PR #10's `container.max_jobs()` for Icarus; the budget // 16G, 6, for xsim), `HwSimError`
 
 Every xsim run goes through `scoped_run` at `HW_SIM_MEMORY_MAX` (Global Constraints: one cap value) **inside `vivado_slot()`**, like every Vivado run; Icarus runs in the 4g-capped container.
 
@@ -2908,6 +2908,15 @@ def test_scoped_run_runs_and_logs(tmp_path):
         timeout_s=60,
     )
     assert rc == 3 and "hello" in (tmp_path / "l.log").read_text()
+
+
+def test_hw_sim_jobs_are_capped_by_the_budget(monkeypatch):
+    from xut.hw import hwsim
+
+    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    assert hwsim.max_sim_jobs("xsim") == 6  # 100g // 16G
+    assert hwsim.max_sim_jobs("iverilog") == 25  # container.max_jobs(): 100g // 4g
 
 
 def test_hw_sim_xsim_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
@@ -3352,11 +3361,13 @@ involved, that the harness, its compiler and its protocol reproduce the golden `
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from xut import container
 from xut.container import executor_for
 from xut.errors import XutError
 from xut.hw.image import MARGIN, MAXWORDS
@@ -3370,6 +3381,17 @@ from xut.slots import vivado_slot
 SIM_BUILD_ID = 0x51AB0001  # simulation has no bitstream; any fixed value
 #: The one memory cap of `xut hw sim`: its command scope, and each xsim run (Global Constraints).
 HW_SIM_MEMORY_MAX = "16G"
+
+
+def max_sim_jobs(sim: str) -> int:
+    """The most parallel simulations the memory budget allows: Icarus jobs are containers,
+    bounded by PR #10's ``container.max_jobs()`` (budget // container cap); xsim jobs are
+    scopes of ``HW_SIM_MEMORY_MAX`` each (budget // 16G: 6 at the default 100g)."""
+    if sim == "iverilog":
+        return container.max_jobs()[0]
+    budget = os.environ.get(container.BUDGET_ENV, container.DEFAULT_BUDGET)
+    per_job = container.size_bytes(HW_SIM_MEMORY_MAX.lower(), "HW_SIM_MEMORY_MAX")
+    return max(1, container.size_bytes(budget, f"${container.BUDGET_ENV}") // per_job)
 CPB = 4  # xut_hw_tb.sv's UART clocks per bit
 TB = "xut_hw_tb.sv"
 
@@ -3852,7 +3874,13 @@ def test_simulated_harness_reproduces_the_golden_trace(sim, test_id, tmp_path):
     "--sim", type=click.Choice(["iverilog", "xsim"]), default="iverilog", show_default=True
 )
 @click.option("--model-source", default="auto", show_default=True)
-@click.option("--jobs", type=click.IntRange(min=1, max=24), default=1, show_default=True)
+@click.option(
+    "--jobs",
+    type=click.IntRange(min=1),
+    default=1,
+    show_default=True,
+    help="at most max_sim_jobs(sim): the memory budget / each job's cap",
+)
 def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: int) -> None:
     """Run vector tests' configurations through the simulated harness (spec §7.1) and
     compare with the golden traces. Exit 0: all pass or skip; 3: any mismatch (it wins,
@@ -3860,12 +3888,15 @@ def hw_sim_cmd(selectors: tuple[str, ...], sim: str, model_source: str, jobs: in
     import time
     from concurrent.futures import ThreadPoolExecutor
 
-    from xut.hw.hwsim import sim_case
+    from xut.hw.hwsim import max_sim_jobs, sim_case
     from xut.modelsrc import resolve
     from xut.run import run_tests
     from xut.runners.base import RunContext
     from xut.testspec import discover
 
+    limit = max_sim_jobs(sim)
+    if jobs > limit:
+        raise XutError(f"--jobs {jobs} > {limit} for --sim {sim} (the memory budget / its cap)")
     root = repo_root()
     cases = [c for c in _select_cases(root, discover(root), selectors) if c.style == "vector"]
     ctx = RunContext(root, "rtl", resolve(model_source), jobs=jobs)
@@ -3955,7 +3986,7 @@ The PR body lists Tasks 1–5b, the per-task review outcomes and Review Focus it
   - `vivado_version(scratch) -> str`
   - `ensure_bitstream(slots, *, cache_root, vivado, maxwords=MAXWORDS, margin=MARGIN, timeout_s=BUILD_TIMEOUT_S) -> Bitstream`
   - `VivadoBuilder(root, cache_root=None)` with `version() -> str` and `ensure(slots) -> Bitstream`, plus the `Builder` Protocol (the same two methods), which Task 9a's `FakeBuilder` also implements
-- CLI: `xut hw build SELECTORS... [--jobs N<=4]` builds (or finds in the cache) every bitstream the selected vector tests need, printing `progress:` lines.
+- CLI: `xut hw build SELECTORS... [--jobs N<=4]` builds (or finds in the cache) every bitstream the selected vector tests need, printing `progress:` lines. It exits 4 if any build fails **or** any configuration failed planning (a `plan_case` error is printed, never a silent 0).
 
 Rules:
 
@@ -4667,12 +4698,17 @@ def hw_build_cmd(selectors: tuple[str, ...], model_source: str, jobs: int) -> No
     run_tests(cases, ["python"], ctx)
     builder = VivadoBuilder(root)
     wanted = {}
+    failed = 0
     for case in cases:
         plan = plan_case(case, ctx)
+        for cfg, (status, why) in sorted(plan.settled.items()):
+            if status == "error":  # planning failed: nothing to build, never a silent 0
+                failed += 1
+                click.echo(f"plan error: {case.id} {cfg}: {why}")
         for g in range(len(plan.groups)):
             slots = plan.slots(g)
             wanted[tuple(s.digest() for s in slots)] = slots
-    t0, done, failed = time.monotonic(), 0, 0
+    t0, done = time.monotonic(), 0
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {pool.submit(builder.ensure, s): s for s in wanted.values()}
         for f in as_completed(futures):
@@ -6290,8 +6326,20 @@ def pi_dir() -> Path:
     return repo_root() / "hw" / "pi"
 
 
+#: Timeouts for one UART step: SLACK times the bytes' line time, plus FLOOR_S.
+TIMEOUT_FLOOR_S = 5
+TIMEOUT_SLACK = 3
+BITS_PER_BYTE = 10  # 8N1: start + 8 data + stop
+#: The longest ``S <sidx> `` prefix plus newline of a sample line, beyond its bits.
+SAMPLE_LINE_OVERHEAD = 12
+#: A generous bound on the run and end lines of an ``R`` reply.
+RUN_FRAME_BYTES = 128
+#: A generous bound on one reply line to ``I`` or ``L``.
+REPLY_LINE_BYTES = 96
+
+
 def _timeout_s(nbytes: int, baud: int) -> int:
-    return int(5 + 3 * nbytes * 10 / baud)
+    return int(TIMEOUT_FLOOR_S + TIMEOUT_SLACK * nbytes * BITS_PER_BYTE / baud)
 
 
 def session_json(job: HwJob, baud: int) -> dict:
@@ -6306,7 +6354,9 @@ def session_json(job: HwJob, baud: int) -> dict:
                 {
                     "send": s.send.hex(),
                     "until": "end",
-                    "timeout_s": _timeout_s(s.lines * (12 + width) + 128, baud),
+                    "timeout_s": _timeout_s(
+                        s.lines * (SAMPLE_LINE_OVERHEAD + width) + RUN_FRAME_BYTES, baud
+                    ),
                 }
             )
         else:
@@ -6314,7 +6364,7 @@ def session_json(job: HwJob, baud: int) -> dict:
                 {
                     "send": s.send.hex(),
                     "until": "line",
-                    "timeout_s": _timeout_s(len(s.send) + 96, baud),
+                    "timeout_s": _timeout_s(len(s.send) + REPLY_LINE_BYTES, baud),
                 }
             )
     return {"steps": steps}
