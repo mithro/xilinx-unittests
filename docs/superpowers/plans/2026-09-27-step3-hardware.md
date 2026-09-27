@@ -5872,11 +5872,11 @@ Expected: all pass (the lock tests need `flock` and `timeout`, which are on this
 - Produces (`xut.hw.session`):
   - `PROGRAM_ARGV = ("openFPGALoader", "-b", "arty")`, `pi_dir()`, `PI_FILES`, `FETCH`
   - errors: `TransportError` (retried once), `BoardBusy` (the lock stayed held: the job moves to the next rig; ruling S49), `BoardError` (the board is marked bad), `HarnessError`
-  - `Transport` (Protocol): `run(alias, command, log, timeout_s) -> int`, `put(alias, files, remote_dir, log, timeout_s) -> int`, `get(alias, remote_files, local_dir, log, timeout_s) -> int`
+  - `Transport` (Protocol): `run(alias, command, log, timeout_s) -> int`, `capture(alias, command, out, log, timeout_s) -> int` (stdout to `out` alone; the log gets the command line and stderr), `put(alias, files, remote_dir, log, timeout_s) -> int`, `get(alias, remote_files, local_dir, log, timeout_s) -> int`
   - `SshTransport(ssh_config)`
   - `SlotRun(slot, program)`, `HwJob(job_id, bitstream, build_id, runs)`
   - `JobResult(rig, site, board, serial, ofl_version, ident, loads, runs, duration_s, workdir)`
-  - `Preflight(ok, detail, ofl_version)`
+  - `Preflight(ok, detail, ofl_version)`; `PI_TOOLS`, `PREFLIGHT_OK`, `preflight_command(rig) -> str` (shared with `xut doctor`)
   - `BoardSession` (Protocol): `rig`, `preflight(log) -> Preflight`, `run_job(job, workdir) -> JobResult`, `reboot(log) -> None`
   - `SshBoardSession(rig, transport, owner=None)`
   - `session_json(job, baud) -> dict`, `parse_session(job, resp) -> tuple[IdReply, dict[int, LoadReply], dict[int, RunReply]]`
@@ -5906,6 +5906,7 @@ from xut.hw.fake import FakeBuilder, FakeRig, FakeTransport
 from xut.hw.rigs import Rig
 from xut.hw.selftest import selftest_programs
 from xut.hw.session import (
+    PI_TOOLS,
     PROGRAM_ARGV,
     BoardBusy,
     BoardError,
@@ -5913,6 +5914,7 @@ from xut.hw.session import (
     SlotRun,
     SshBoardSession,
     TransportError,
+    preflight_command,
     session_json,
 )
 from xut.hw.slots import SELFTEST_SLOTS
@@ -5983,6 +5985,30 @@ def test_session_json_steps_and_timeouts(tmp_path):
     assert all(x["timeout_s"] >= 5 for x in s)
 
 
+def test_preflight_reports_the_tools_version_not_the_command_line(tmp_path):
+    """The real transport logs `$ ssh ... 'openFPGALoader --Version && echo XUT_PREFLIGHT_OK'`
+    before the output; the fake does the same, so parsing the log would be caught here."""
+    t = FakeTransport({"r1": FakeRig(ofl_version="openFPGALoader v0.13.1")})
+    log = tmp_path / "pf.log"
+    pf = SshBoardSession(rig(), t).preflight(log)
+    assert pf.ok and pf.ofl_version == "openFPGALoader v0.13.1"
+    assert log.read_text().startswith("$ ssh ")
+
+
+def test_preflight_fails_when_openfpgaloader_fails(tmp_path):
+    t = FakeTransport({"r1": FakeRig(ofl_version_fails=True)})
+    pf = SshBoardSession(rig(), t).preflight(tmp_path / "pf.log")
+    assert not pf.ok and "cannot open libftdi" in pf.detail and pf.ofl_version == ""
+
+
+def test_preflight_command_masks_nothing():
+    cmd = preflight_command(rig(uart="/dev/tty USB1"))
+    assert "openFPGALoader --Version && echo XUT_PREFLIGHT_OK" in cmd
+    assert "'/dev/tty USB1'" in cmd  # quoted
+    for tool in PI_TOOLS:
+        assert tool in cmd
+
+
 def test_reboot_needs_a_configured_command_and_takes_the_lock(tmp_path):
     t = FakeTransport({"r1": FakeRig()})
     with pytest.raises(BoardError, match="reboot_command"):
@@ -6014,6 +6040,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -6062,6 +6089,11 @@ class HarnessError(XutError, RuntimeError):
 class Transport(Protocol):
     def run(self, alias: str, command: str, log: Path, timeout_s: int) -> int: ...
 
+    def capture(self, alias: str, command: str, out: Path, log: Path, timeout_s: int) -> int:
+        """Run ``command``; its stdout goes to ``out`` alone, and ``log`` gets the command
+        line and stderr. Callers parse ``out``, never ``log`` (it holds the command text)."""
+        ...
+
     def put(
         self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int
     ) -> int: ...
@@ -6075,20 +6107,28 @@ class SshTransport:
     def __init__(self, ssh_config: Path) -> None:
         self.cfg = str(ssh_config)
 
-    def _call(self, argv: list[str], log: Path, timeout_s: int) -> int:
+    def _call(self, argv: list[str], log: Path, timeout_s: int, out: Path | None = None) -> int:
+        """``argv`` with its command line and stderr in ``log``; stdout in ``out`` when
+        given, else in ``log`` too."""
         with Path(log).open("a") as f:
             f.write(f"$ {shlex.join(argv)}\n")
             f.flush()
             try:
-                return subprocess.run(
-                    argv, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s
-                ).returncode
+                if out is None:
+                    return subprocess.run(
+                        argv, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s
+                    ).returncode
+                with Path(out).open("w") as o:
+                    return subprocess.run(argv, stdout=o, stderr=f, timeout=timeout_s).returncode
             except subprocess.TimeoutExpired:
                 f.write(f"timeout after {timeout_s}s\n")
                 return RC_SSH
 
     def run(self, alias: str, command: str, log: Path, timeout_s: int) -> int:
         return self._call(["ssh", "-F", self.cfg, alias, command], log, timeout_s)
+
+    def capture(self, alias: str, command: str, out: Path, log: Path, timeout_s: int) -> int:
+        return self._call(["ssh", "-F", self.cfg, alias, command], log, timeout_s, out)
 
     def put(
         self, alias: str, files: Sequence[Path], remote_dir: str, log: Path, timeout_s: int
@@ -6149,6 +6189,27 @@ class BoardSession(Protocol):
     def run_job(self, job: HwJob, workdir: Path) -> JobResult: ...
 
     def reboot(self, log: Path) -> None: ...
+
+
+#: The Pi-side tools a rig needs (xut_lock.sh uses ps; xut_work.sh openFPGALoader and
+#: python3), checked by the preflight and by ``xut doctor``.
+PI_TOOLS = ("openFPGALoader", "flock", "timeout", "python3", "ps")
+PREFLIGHT_OK = "XUT_PREFLIGHT_OK"
+_OFL_VERSION = re.compile(r"^openFPGALoader v\S+")
+
+
+def preflight_command(rig: Rig) -> str:
+    """The rig preflight: every tool present, the UART a character device, and
+    ``openFPGALoader --Version`` succeeding; ``PREFLIGHT_OK`` is printed only if all do
+    (the ``&&`` keeps a failing ``--Version`` from being masked)."""
+    q = shlex.quote
+    uart = q(rig.uart)
+    return (
+        f"for t in {' '.join(PI_TOOLS)}; do command -v \"$t\" || "
+        '{ echo "missing $t"; exit 3; }; done; '
+        f'test -c {uart} || {{ echo "no UART device {rig.uart}"; exit 4; }}; '
+        f"openFPGALoader --Version && echo {PREFLIGHT_OK}"
+    )
 
 
 def pi_dir() -> Path:
@@ -6223,18 +6284,17 @@ class SshBoardSession:
         self.owner = owner or f"{getpass.getuser()}@{socket.gethostname()}:{os.getpid()}"
 
     def preflight(self, log: Path) -> Preflight:
-        q = shlex.quote
-        cmd = (
-            'for t in openFPGALoader flock timeout python3 ps; do command -v "$t" || '
-            '{ echo "missing $t"; exit 3; }; done; '
-            f"test -c {q(self.rig.uart)} || {{ echo 'no UART {self.rig.uart}'; exit 4; }}; "
-            "openFPGALoader --Version; echo XUT_PREFLIGHT_OK"
-        )
-        rc = self.t.run(self.rig.alias, cmd, log, 60)
-        text = Path(log).read_text(errors="replace") if Path(log).is_file() else ""
-        ok = rc == 0 and "XUT_PREFLIGHT_OK" in text
-        ver = next((ln for ln in text.splitlines() if "openFPGALoader" in ln and "v" in ln), "")
-        return Preflight(ok, f"rc {rc}" if not ok else "ok", ver)
+        """The rig's tools, UART device and ``openFPGALoader --Version``, judged from the
+        command's stdout alone (``Transport.capture``), never from the log."""
+        out = Path(log).with_suffix(".out")
+        rc = self.t.capture(self.rig.alias, preflight_command(self.rig), out, log, 60)
+        lines = out.read_text(errors="replace").splitlines() if out.is_file() else []
+        ok = rc == 0 and PREFLIGHT_OK in lines
+        ver = next((ln for ln in lines if _OFL_VERSION.match(ln)), "")
+        if not ok:
+            last = lines[-1] if lines else "no output"
+            return Preflight(False, f"rc {rc}: {last} (see {log})", ver)
+        return Preflight(True, "ok", ver)
 
     def _ok(self, rc: int, what: str) -> None:
         if rc != 0:
@@ -6351,11 +6411,15 @@ from pathlib import Path
 from xut.hw.interp import DutSim, EmuSlot, Harness
 from xut.hw.replay import ModelDut
 from xut.hw.selftest import CounterSim, PassthroughSim
-from xut.hw.session import RC_BUSY, RC_LOCK_FAULT, RC_NO_UART, RC_PROGRAM, RC_SSH
+from xut.hw.session import PREFLIGHT_OK, RC_BUSY, RC_LOCK_FAULT, RC_NO_UART, RC_PROGRAM, RC_SSH
 from xut.hw.slots import SlotBuild
 from xut.hw.vivado import Bitstream, FlowMismatch
 from xut.wrap import DutMap
 from xut_models import registry
+
+
+class FakeTransportError(AssertionError):
+    """The code under test sent the fake something a real rig must never see."""
 
 
 class FlipSim:
@@ -6391,6 +6455,8 @@ def default_sim_factory(slot: dict) -> DutSim:
 @dataclass
 class FakeRig:
     serial: str = "FAKE0001"
+    ofl_version: str = "openFPGALoader v0.13.1"
+    ofl_version_fails: bool = False  # `openFPGALoader --Version` exits 1 in the preflight
     fail_transport: int = 0  # the next N job commands exit 255
     busy: int = 0  # the next N job commands find the lock busy (75)
     program_fails: bool = False  # 90
@@ -6430,8 +6496,26 @@ class FakeTransport:
                 rc = 1  # scp reports a missing source and carries on
         return rc
 
+    def _log_command(self, alias: str, command: str, log: Path) -> None:
+        """What ``SshTransport._call`` writes first: the full command line."""
+        with Path(log).open("a") as f:
+            f.write(f"$ {shlex.join(['ssh', '-F', 'ssh_config', alias, command])}\n")
+
+    def capture(self, alias: str, command: str, out: Path, log: Path, timeout_s: int) -> int:
+        self.calls.append((alias, command))
+        self._log_command(alias, command, log)
+        rig = self.rigs[alias.removeprefix("xut-rig-")]
+        if PREFLIGHT_OK not in command:
+            raise FakeTransportError(f"unexpected captured command {command!r}")
+        if rig.ofl_version_fails:
+            Path(out).write_text("/usr/bin/openFPGALoader\nerror: cannot open libftdi\n")
+            return 1
+        Path(out).write_text(f"/usr/bin/openFPGALoader\n{rig.ofl_version}\n{PREFLIGHT_OK}\n")
+        return 0
+
     def run(self, alias: str, command: str, log: Path, timeout_s: int) -> int:
         self.calls.append((alias, command))
+        self._log_command(alias, command, log)
         store = self.remote[alias]
         if command.startswith("mkdir -p "):
             return 0
@@ -6440,10 +6524,6 @@ class FakeTransport:
             for k in [k for k in store if k.startswith(prefix)]:
                 del store[k]
             return 0
-        if "XUT_PREFLIGHT_OK" in command:
-            with Path(log).open("a") as f:
-                f.write("openFPGALoader v0.13.1 (fake)\nXUT_PREFLIGHT_OK\n")
-            return 0
         if "xut_work.sh" in command:
             return self._job(alias, command)
         if "xut_lock.sh" in command:  # a reboot under the lock
@@ -6451,7 +6531,10 @@ class FakeTransport:
         return 127
 
     def _job(self, alias: str, command: str) -> int:
-        assert "sh ./xut_lock.sh " in command and " -- sh ./xut_work.sh " in command, command
+        # The fake is the oracle of the SRAM-under-lock rule: refuse any other job shape
+        # (a raise, not an assert, so it holds under python -O too).
+        if "sh ./xut_lock.sh " not in command or " -- sh ./xut_work.sh " not in command:
+            raise FakeTransportError(f"a job must run xut_work.sh under xut_lock.sh: {command!r}")
         name = alias.removeprefix("xut-rig-")
         rig, store = self.rigs[name], self.remote[alias]
         rdir = shlex.split(command)[1]
@@ -6811,6 +6894,7 @@ def _hw_checks(p: Probe) -> list[Check]:
     hw:<rig> enables the hw runner only when every hw-key check passed and Vivado is
     installed (no bitstream can be built without it)."""
     from xut.hw.rigs import config_path, load_rigs, write_ssh_config
+    from xut.hw.session import preflight_command
     from xut.paths import VIVADO_SETTINGS, repo_root
 
     try:
@@ -6844,8 +6928,7 @@ def _hw_checks(p: Probe) -> list[Check]:
             "-F",
             str(written[0]),
             r.alias,
-            'for t in openFPGALoader flock timeout python3 ps; do command -v "$t" || exit 3; done; '
-            f"test -c {r.uart}",
+            preflight_command(r),
         ]
         c = _safe(f"hw:{r.name}", enables, lambda cmd=cmd: p.command_ok(cmd, timeout=30))
         out.append(Check(c.name, c.ok, c.detail + why, c.enables))
@@ -6871,7 +6954,7 @@ Add `Probe.mode(path) -> int` (`Path(path).stat().st_mode & 0o777`). In `run_che
 - one passing rig, with the key and Vivado present, enables `hw`;
 - a broken `XUT_HW_CONFIG` file gives one failing `hw-rigs` check, an unwritable `.cache` gives a failing `hw-ssh-config` check, and doctor still does not raise.
 
-(The Pi preflight's tool list includes `ps`, which `xut_lock.sh` uses for process groups.)
+(The command is `xut.hw.session.preflight_command`, the same one `xut hw rigs` runs: one tool list, `PI_TOOLS`, with `ps` for `xut_lock.sh`'s process groups, and the UART path quoted.)
 
 - [ ] **Step 4: Add `xut hw rigs`** to `tools/xut/cli.py`:
 
