@@ -143,11 +143,6 @@ def test_unquoted_yaml_boolean_runner_value_fails_validation():
         jsonschema.validate(data, TEST_SCHEMA)
 
 
-#: TEMPORARY: primitive -> the attribute whose catalog values were regenerated on this
-#: branch; drop with ``pre_s19`` after the orchestrator's `status init --refresh-bins`.
-REGENERATED_ON_BRANCH = {"ICAPE2": "DEVICE_ID"}
-
-
 def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
     """Repo invariant (reads the live checkout on purpose): every committed status stub
     matches its catalog entry's coverage bins and its docs/work-units.yaml unit."""
@@ -166,30 +161,11 @@ def test_every_status_stub_matches_its_catalog_entry_and_work_unit():
             continue  # recorded: its coverage is `xut status record`'s
         assert data["coverage"]["covered"] == []
         # `entry` is `load_entry`'s merge of the generated catalog with that primitive's
-        # overrides (crosses, claims, port/attribute corrections): a work unit owns its
-        # own stub and is expected to refresh it (`xut status init --refresh-bins`) when
-        # its overrides add claims or otherwise change `coverage_bins`, so a refreshed
-        # stub's `uncovered` is exactly `new` below.
-        new = coverage_bins(entry)
-        # TEMPORARY (ruling S20): the committed stubs predate ruling S19's port-class
-        # and cross bins, and an infra branch may not modify a status file. Once the
-        # orchestrator runs `xut status init --refresh-bins` on main, drop `pre_s19`:
-        # every never-recorded stub then has exactly `new`. `claim:` bins are excluded
-        # too: a work unit's overrides may add claims (or a cross) before that unit gets
-        # around to refreshing its own stub, and an unrefreshed stub never has those.
-        pre_s19 = [b for b in new if not b.startswith(("cross:", "claim:")) and b.count(":") == 1]
-        got = data["coverage"]["uncovered"]
-        # TEMPORARY (PR D fix wave): the catalog of a primitive in REGENERATED_ON_BRANCH
-        # was regenerated on this infra branch (ICAPE2: DEVICE_ID had been truncated);
-        # its stub is refreshed on main with the same --refresh-bins run. Until then the
-        # regenerated attribute's bins are left out of the comparison.
-        attr = REGENERATED_ON_BRANCH.get(entry.name)
-        if attr is not None:
-            got, new, pre_s19 = (
-                [b for b in bins if not b.startswith(f"attr:{attr}=")]
-                for bins in (got, new, pre_s19)
-            )
-        assert got in (new, pre_s19), entry.name
+        # overrides: a work unit refreshes its own stub (`xut status init
+        # --refresh-bins`, AGENTS.md §7) whenever its overrides change `coverage_bins`,
+        # and the orchestrator refreshed every stub on main (a11e51e), so a never-recorded
+        # stub's `uncovered` is exactly its current bins.
+        assert data["coverage"]["uncovered"] == coverage_bins(entry), entry.name
 
 
 def test_every_fresh_stub_has_exactly_the_current_bins():
