@@ -431,16 +431,26 @@ class UnitGuards:
 
     def test_every_exercised_bin_has_a_pure_configuration(self, prim: str) -> None:
         """Every bin a vector test exercises is reached by at least one configuration
-        whose samples are all documented, so it is credited whatever an inferred detail
-        turns out to be (rulings S44, S52; a failing configuration credits nothing)."""
+        of a test declaring it whose samples are all documented, so it is credited
+        whatever an inferred detail turns out to be (rulings S44, S52; a failing
+        configuration credits nothing). Status credits a bin only from the tests that
+        declare it, so a pure configuration of another test does not count (S57.2)."""
         if not self.unit.pure:
             return
         vector = [c for c in self._cases(prim) if c.style == "vector"]
-        pure = set().union(
-            *(r.reach.bins for v in vector for r in _replayed(self.unit.root, v) if r.reach.pure)
+        declared = {b for v in vector for b in v.exercises}
+        pure = {
+            b
+            for v in vector
+            for r in _replayed(self.unit.root, v)
+            if r.reach.pure
+            for b in r.reach.bins & set(v.exercises)
+        }
+        missing = sorted(declared - pure)
+        assert not missing, (
+            f"only order- or inference-dependent configurations of the declaring tests "
+            f"reach {missing}"
         )
-        missing = {b for v in vector for b in v.exercises} - pure
-        assert not missing, f"only order- or inference-dependent configurations reach {missing}"
 
     def test_every_credited_claim_has_a_failing_mutant(self, prim: str) -> None:
         """Ruling S55: a claim credits only where its rule decides a documented bit. Each
