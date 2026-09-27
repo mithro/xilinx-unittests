@@ -73,7 +73,7 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 - **Stdlib only.** `models/xut_models/**` and the unit's `_shared/<unit>/<unit>_recipes.py` and `<unit>_cocotb.py` import only the standard library, `xut_models` and (recipes: type-checking only) `xut`. cocotb modules run in the container, where xut's dependencies are not installed.
 - **Never weaken a test to hide a divergence** (AGENTS.md §9, spec §8). A disagreement is classified and recorded as a finding; an `expected_divergence` never masks it (it is reported as `known-divergence`); an expected bit is never turned into `-`; a check is never deleted.
 - **Long runs** follow the global progress rule: run in the background with the log in `.cache/`, watch it with a Monitor that reads the latest `progress: done=N total=M elapsed_s=E` line, compute the rate as N ÷ E and the remaining time as (M − N) ÷ rate, and report the remaining time and the finish clock-time at the cadence the estimate gives (under 10 minutes: every 60 s; under 4 hours: every 5 minutes; longer: every 15 minutes). Tighten the cadence if a later estimate drops below a threshold.
-- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (125 tests passing), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
+- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (128 tests passing), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
 - **Worktrees** live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. **One PR per branch, always.**
 
 ### Branches and PRs
@@ -93,7 +93,7 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 
 ## Review Focus
 
-1. **Clean room and provenance.** Every modelled behaviour carries `doc:<page>` for a page that says it, or `inferred:<reason>` with a real reason. `-` appears only where UG953 declares a value undefined (ruling S30). A claim is hit only where a documented rule decides the output at that event (S32), never by an inferred rule alone (S44); decision D4 below covers a documented rule with an inferred detail. No UNISIM internal names or quirks leak into a model.
+1. **Clean room and provenance.** Every modelled behaviour carries `doc:<page>` for a page that says it, or `inferred:<reason>` with a real reason. `-` appears only where UG953 declares a value undefined (ruling S30). A claim is hit only where a documented rule decides the output at that event (S32), never by an inferred rule alone (S44), and never by an output whose value depends on an inferred detail, even under a documented rule (S52: CFGLUT5 credits only order-independent reads). No UNISIM internal names or quirks leak into a model.
 2. **Reach, not declaration.** Every vector test's `exercises` is a subset of what its own generator reaches through the golden model, checked by the unit's guard test with `xut.golden.coverage_reach` (the function the python runner records `bins_reached` with). Every catalog bin is in some test's `exercises` or opens a `gaps` entry.
 3. **No weakened test, no masked finding.** Findings are handled by class (Task A6). A model changes only for a UG953 contradiction. `expected_divergence` entries name open findings and never turn a bit into `-`.
 4. **Portability declarations match the table.** A `no` row is declared `unsupported` with the table's reason; a `no: config:` row keeps `"yes"` (a lint warning until the smoke configuration is legal); a verilatorize refusal, `blocked`, or an equivalence `fail`/`error` makes `verilator` unsupported (and `iverilog-vz` with it).
@@ -140,6 +140,7 @@ tests/7series/clb/{LUT1..LUT6,LUT6_2}/sv/tb_<prim>_{x,gsr}.sv
 tests/7series/clb/CFGLUT5/sv/tb_cfglut5_{x,gsr}.sv    (not shared: CFGLUT5 has its own ports)
 tests/7series/clb/<PRIM>/{test.yaml,README.md,vectors/gen.py,cocotb/cocotb_<prim>_random.py}
 status/7series/{LUT1..LUT6,LUT6_2,CFGLUT5}.yaml
+findings/CFGLUT5-doc-gap-L1-{projections,partial_shift}.md   the missing O5/O6 tables and shift direction (S52)
 ```
 
 Part 0 (infra):
@@ -418,7 +419,7 @@ If Step 0 showed P1 unmerged, branch from `origin/infra/unit-prereqs` instead of
 - [ ] **Step 3: Write `catalog/7series/<PRIM>.overrides.yaml` for each primitive.** Rules:
   - The header comment names the UG953 pages every fact below comes from (clean room), and records doc notes (typos, a template that contradicts the table) as comments.
   - `claims:` one entry per documented behavioural statement: `{id: <PRIM>.C<n>, page: <page>, provenance: "doc:<page>", text: "<paraphrase, at most 200 characters>"}`. The page is the one the statement is on. Never quote more than a phrase: the text is a paraphrase (no AMD prose).
-  - Do not add a claim for inferred behaviour. A claim is a documented statement; ruling S44 lets only documented rules credit claims, so an inferred claim could never be covered.
+  - Do not add a claim for inferred behaviour. A claim is a documented statement; rulings S44 and S52 let only outputs decided by documented rules credit claims, so an inferred claim could never be covered.
   - A documented rule that no simulation can reach (a placement or usage rule, like FDRE.C8) is still a claim. The test that would cover it lists it in `gaps` as `claim:<id> — <why>`.
   - `ports:` `{<P>: {active: high|low}}` for every async/gate port whose active level UG953 states (spec §9: gives `assert`/`release` bins); a corrected `doc_function` (a paraphrase of at most 120 characters) where the extractor cut it.
   - `attributes:` correct an `allowed` list only where UG953 differs from the generated one, with the page in a comment. The generated lists are advisory (AGENTS.md, catalog notes).
@@ -483,7 +484,7 @@ Provenance and claim rules:
 - `doc:<page>` where UG953 states the behaviour on that page; the page is the rule's own (an inversion attribute's page for an output an inversion shaped: ruling S32's `ATTR_PAGE`).
 - `inferred:<reason>` where UG953 is silent. The reason is one token: no whitespace, `#`, `|`, `=` or `,` (use `_`, `;`, `/`, `(`, `)`, `{`, `}`); it must be checkable ("UG953_names_no_GSR_effect_on_a_LUT"), not a placeholder.
 - `-` only where UG953 **declares** a value undefined, with `doc:` provenance (ruling S30: where UG953 is silent, give a definite inferred value, so a disagreement becomes a `doc-gap` finding, never a mask). `Out` refuses `-` with an `inferred:` tag.
-- A claim is hit only where its documented rule decides the output at that event (S32): not from a probe, not redundantly from an earlier decision, not for an edge that decides nothing. An output decided by an inferred rule alone credits no claim (S44). Decision D4: a documented rule with an inferred detail (CFGLUT5's bit order) still credits its claim; its bits carry the inferred tag.
+- A claim is hit only where its documented rule decides the output at that event (S32): not from a probe, not redundantly from an earlier decision, not for an edge that decides nothing. An output decided by an inferred rule alone credits no claim (S44). Ruling S52: nor does an output whose **value depends on an inferred detail**, even when the rule it follows is documented (CFGLUT5's reconfiguration is documented, its bit order is not). Such an output is exercised, tagged `inferred:`, and credits nothing. Credit the claim only from outputs you can prove independent of the inferred detail (for CFGLUT5: uniform contents, all 0 or all 1); if no test can produce one, the claim goes to `gaps`. Write a `doc-gap` finding stub by hand for the missing documentation (Task B1 shows the form), so crosscheck later records what UNISIM does.
 - The model is written before, and committed without, any simulator run of the unit's tests. Once tests run, it changes only for a contradiction with UG953, with a test that shows it.
 
 - [ ] **Step 1: Write the failing model tests** in `test_<unit>_models.py`. For every claim: a test that drives the documented situation, asserts the output bits, asserts the exact provenance against a **literal** page table in the test (never read from the model), and asserts the claim is hit; and a negative test that the claim is **not** hit where its rule does not decide the output. Also: the defaults (no attribute set), every inferred path (tagged `inferred:`, credits nothing), the contract guards, and GTS raising `ModelUnsupported`. Parametrize exactly (`[(p, j) for p ... for j in range(...)]`) rather than skipping inapplicable combinations.
@@ -858,11 +859,11 @@ Estimate the builds first: one bitstream holds at most 64 slots and 28 DUT clock
 
 - **LUT1–LUT6**: a complete logic table per primitive: O = INIT[i] with i = {I<n-1>..I0} (LUT1 p489, LUT2 p492, LUT3 p495, LUT4 p498, LUT5 p501 (its output column is labelled "LO"), LUT6 pp. 504–506). The Introduction (p488, 491, 494, 497, 500, 504) says INIT defaults to zero, "driving the output to a zero regardless of the input values (acting as a ground)". INIT's allowed values are a range (`2'h0 to 2'h3` … `16'h0000 to 16'hffff`) or "Any 32/64-bit HEX value": not enumerated, so one bin `attr:INIT` each (needs Task P1). The primitives have no clock and no GSR text.
 - **LUT6_2** (pp. 509–512): the logic table (pp. 510–511) gives O6 = INIT[{I5..I0}] and O5 = INIT[{I4..I0}] (I5 does not reach O5); p509 says the lower 32 bits drive O5, INIT defaults to zero, and gives the example 64'hFFFFFFFFFFFFFFFE (O6 a 6-input OR, O5 a 5-input OR).
-- **CFGLUT5** (pp. 348–349): INIT (32 bits, default all zeroes) is shifted in serially from CDI, synchronously, while CE (active-High) is High; O6 is the 5-input function of the loaded INIT; O5 the "4-LUT output"; CDO cascades to the next CFGLUT5's CDI, "32-bits per LUT"; IS_CLK_INVERTED selects the active clock level. p348 refers to O5/O6 tables that **are not in the 2026.1 section**, and gives **no shift direction** and **no CDO bit**. The model infers them (decision D5); every such bit is `inferred:`, so a disagreement is a `doc-gap`, never a mask.
+- **CFGLUT5** (pp. 348–349): INIT (32 bits, default all zeroes) is shifted in serially from CDI, synchronously, while CE (active-High) is High; O6 is the 5-input function of the loaded INIT; O5 the "4-LUT output"; CDO cascades to the next CFGLUT5's CDI, "32-bits per LUT"; IS_CLK_INVERTED selects the active clock level. p348 refers to O5/O6 tables that **are not in the 2026.1 section**, and gives **no shift direction** and **no CDO bit**. The model infers them (decision D5); every such bit is `inferred:`, so a disagreement is a `doc-gap`, never a mask, and (ruling S52) such a bit credits no claim: only uniform contents, which no order can change, credit CFGLUT5's claims. Two `doc-gap` findings record the missing documentation from the start (Task B1).
 - **Portability** (`status/PORTABILITY.md`, both sources): LUT1–LUT6 and LUT6_2 are `yes`/`yes`, verilatorize `unchanged`. CFGLUT5 is iverilog `yes`, verilator `no: verilatorize: CFGLUT5: ... trigger cone contains NBA-written reg ... (ruling S28)`, verilatorize `unsupported`: every CFGLUT5 test declares `verilator: "unsupported"` (`CFG_VL`) until the srl/CFGLUT5 recovery TODO of ruling S29(2) is done.
 - **Hardware class**: no pad, inout, `clock_out` or `drp` port; CFGLUT5's CLK is a stepped clock like a flop's. Every vector test is renderable except the two GSR tests (`HW_GSR`) and the reject tests (`HW_REJ`).
 - **Legality**: every INIT value of the declared width is legal; nothing else to model. The only illegal values are non-HEX literals (x digits): `L0.illegal_init`.
-- **Size**: 87 tests (63 vector, 16 sv, 8 cocotb); 700 vector configurations (LUT1 12, LUT2 26, LUT3 46, LUT4 64, LUT5 98, LUT6 164, LUT6_2 168, CFGLUT5 122), 23 sv and 32 cocotb configurations.
+- **Size**: 87 tests (63 vector, 16 sv, 8 cocotb); 702 vector configurations (LUT1 12, LUT2 26, LUT3 46, LUT4 64, LUT5 98, LUT6 164, LUT6_2 168, CFGLUT5 124), 23 sv and 32 cocotb configurations.
 
 Claim numbering: LUTn `C1` logic table, `C2` zero default. LUT6_2 `C1` O6, `C2` O5, `C3` zero default, `C4` the OR example. CFGLUT5 `C1` O6, `C2` O5, `C3` CE-High shift, `C4` CE-Low hold, `C5` CDO cascade, `C6` INIT at start-up, `C7` IS_CLK_INVERTED.
 
@@ -871,6 +872,7 @@ Claim numbering: LUTn `C1` logic table, `C2` zero default. LUT6_2 `C1` O6, `C2` 
 **Files:**
 - Create: `catalog/7series/{LUT1,LUT2,LUT3,LUT4,LUT5,LUT6,LUT6_2,CFGLUT5}.overrides.yaml`
 - Modify: `status/7series/{LUT1,...,CFGLUT5}.yaml` (stub refresh)
+- Create: `findings/CFGLUT5-doc-gap-L1-projections.md`, `findings/CFGLUT5-doc-gap-L1-partial_shift.md` (ruling S52)
 
 - [ ] **Step 1: Worktree** (Task A1, Step 1, with `<unit>` = `luts`; from `origin/infra/unit-prereqs` if P1 has not merged).
 
@@ -1033,7 +1035,77 @@ CFGLUT5 7 claims 36 bins
 
 (LUTn: `port:O`, three bins per input, `attr:INIT`, two claims. CFGLUT5: 26 port bins, `attr:INIT`, both `IS_CLK_INVERTED` values, seven claims.)
 
-- [ ] **Step 4: Refresh the stubs, commit, log** (Task A1, Steps 5–6): `luts: add catalog overrides with behavioural claims for LUT1-LUT6, LUT6_2, CFGLUT5`, then `log/<ts>-unit-7series-luts-claims.md` with the intake above.
+- [ ] **Step 4: Write the two CFGLUT5 `doc-gap` stubs** (ruling S52). UG953 omits the O5/O6 tables and the shift direction, so the findings exist before any run. Their ids are the ones crosscheck gives a `doc-gap` of the tests that pin each order (`<PRIM>-<cls>-<level>-<name>`), so a later disagreement is appended to them as an `- Also seen:` line instead of a new file. The `Flow / model source` line deliberately names no model source, so crosscheck appends one line per source it sees. They stay `Status: open` until UG953 documents the order, whatever UNISIM shows.
+
+`findings/CFGLUT5-doc-gap-L1-projections.md`:
+
+```markdown
+# CFGLUT5: doc-gap in 7series.CFGLUT5.L1.projections
+
+- Class: doc-gap
+- Test: 7series.CFGLUT5.L1.projections
+- Flow / model source: rtl / (none yet: written by hand before the first run, ruling S52)
+- Runners: xsim, iverilog
+- First seen: UG953 v2026.1 review, before any simulation
+- Status: open
+
+## Evidence
+
+UG953 v2026.1 p348 says O5 and O6 can be used as two 4-input functions, or as a 5-input
+and a 4-input function, "see the following tables". The CFGLUT5 section (pp. 348-349) has
+no table, so it does not say which INIT bit an I4..I0 value selects on O6, or which bits
+and inputs O5 uses.
+
+The order UNISIM shows is recorded here by Task B6 of the unit playbook, for each model
+source (`unisim-2025.2`, `unisim-gh-2020.1`):
+
+- O6 index order: (to be recorded)
+- O5 bits and inputs: (to be recorded)
+
+## Analysis
+
+The golden model infers O6 = INIT[{I4..I0}], as in the LUT5 logic table (p501), and
+O5 = INIT[{I3..I0}], the lower half, as for LUT6_2's O5 (p509). Both are tagged
+`inferred:`. Ruling S52: a read whose value depends on this order credits no claim; only
+uniform contents (all 0 or all 1) credit CFGLUT5.C1/C2. This finding stays open until the
+documentation gives the tables, whatever UNISIM shows. The model is not changed to follow
+a simulator (AGENTS.md §8).
+```
+
+`findings/CFGLUT5-doc-gap-L1-partial_shift.md`:
+
+```markdown
+# CFGLUT5: doc-gap in 7series.CFGLUT5.L1.partial_shift
+
+- Class: doc-gap
+- Test: 7series.CFGLUT5.L1.partial_shift
+- Flow / model source: rtl / (none yet: written by hand before the first run, ruling S52)
+- Runners: xsim, iverilog
+- First seen: UG953 v2026.1 review, before any simulation
+- Status: open
+
+## Evidence
+
+UG953 v2026.1 p348 says a new INIT is shifted in serially through CDI while CE is High,
+and that CDO cascades to the next CFGLUT5's CDI (32 bits per LUT). It gives no shift
+direction: which INIT bit CDI enters, and which INIT bit drives CDO.
+
+The order UNISIM shows is recorded here by Task B6 of the unit playbook, for each model
+source (`unisim-2025.2`, `unisim-gh-2020.1`):
+
+- the INIT bit CDI enters: (to be recorded)
+- the INIT bit on CDO: (to be recorded)
+
+## Analysis
+
+The golden model infers that CDI enters INIT[0], that each shift moves INIT[i] to
+INIT[i+1], and that INIT[31] drives CDO. The inference is tagged `inferred:`. Ruling S52:
+an output whose value depends on it credits no claim; CFGLUT5.C3/C5/C7 are credited only
+where a shift leaves uniform contents. This finding stays open until the documentation
+states the direction, whatever UNISIM shows.
+```
+
+- [ ] **Step 5: Refresh the stubs, commit, log** (Task A1, Steps 5–6): `luts: add catalog overrides with behavioural claims for LUT1-LUT6, LUT6_2, CFGLUT5`, then `luts: add doc-gap findings for CFGLUT5's undocumented bit order (ruling S52)` (`git add findings/CFGLUT5-*.md`), then `log/<ts>-unit-7series-luts-claims.md` with the intake above.
 
 ---
 
@@ -1052,7 +1124,7 @@ Model decisions (the Review Focus 1 items a reviewer checks):
 - **LUTn/LUT6_2 outputs are `doc:`**: the table page for an explicit INIT (claim C1, LUT6_2 C1/C2), the Introduction page when INIT was not set (the zero default decides it: claim C2, LUT6_2 C3, never C1). LUT6_2's C4 is hit only for INIT = 64'hFFFFFFFFFFFFFFFE.
 - **GSR on a LUT** (decision D6): UG953 names none. While GSR is asserted the table is taken to hold, tagged `inferred:UG953_names_no_GSR_effect_on_a_LUT;...`, and no claim is credited (S44). `L1.gsr_transparent` compares that inference with UNISIM.
 - **CFGLUT5 bit order** (decision D5): O6 = INIT[{I4..I0}] as in the LUT5 table (p501); O5 = INIT[{I3..I0}], the lower half, as LUT6_2's O5 is (p509); a shift moves CDI into INIT[0] and INIT[31] drives CDO. Each carries its own `inferred:` reason. Where the loaded contents are all 0 or all 1 the order cannot matter, and the bit is `doc:348`.
-- **CFGLUT5 claims** (decision D4): C1/C2 on every read, C3 (and C7 when inverted) on each CE-High active edge, C4 on each CE-Low active edge, C5 on a CDO read once 32 shifts have passed (CDO then carries a bit that came in on CDI), C6 at power-on.
+- **CFGLUT5 claims** (ruling S52, after S44): every read depends on the inferred order unless the contents are uniform, so every CFGLUT5 claim is credited only while the contents are all 0 or all 1 (and do not depend on the GSR inference): C1/C2 on such a read; C3 (and C7 when inverted) on a CE-High active edge that leaves uniform contents; C4 on a CE-Low active edge that holds uniform contents; C5 on a CDO read once 32 shifts have passed and the contents are uniform (CDO then carries a bit that came in on CDI, whatever the order); C6 at power-on for a uniform INIT (the all-zeroes default included). Every other read is exercised, tagged `inferred:`, and credits nothing. Every claim still has an order-independent test: C1/C2/C6 `L1.default_init`, C4 `L1.ce_low_holds` (all ones), C3/C5 `L1.reconfigure` (`rand_to_zero`) and `L1.cdo_cascade` (`ones_zeros_ones`), C7 `L1.is_clk_inverted`; none moves to `gaps`.
 - **CFGLUT5 under GSR** (decision D6): UG953 names no GSR effect. The loaded function is taken to be kept and CE shifts to continue. Every output whose value depends on that inference (GSR asserted, or a GSR pulse that met contents different from INIT, until 32 later documented shifts have replaced every bit) carries `inferred:UG953_names_no_GSR_effect_on_CFGLUT5;...` and credits nothing.
 
 - [ ] **Step 1: Write the failing tests** `tests/7series/clb/_shared/luts/test_lut_models.py`:
@@ -1253,42 +1325,49 @@ def table(m):
     return out
 
 
-def test_cfglut5_c6_power_on_loads_init_and_c1_c2_read_it():
-    init = random.Random("CFGLUT5").getrandbits(32)
-    m = get("7series", "CFGLUT5")({"INIT": lit("CFGLUT5", init)})
-    m.power_on()
-    assert m.claims_hit == {"CFGLUT5.C6"}
-    for p in ("CDI", "CE", "I0", "I1", "I2", "I3", "I4"):
-        m.set_input(p, 0)
-    m.glbl("GSR", 0)
+NON_UNIFORM = 0x1234_5678  # a pattern whose reads depend on the inferred bit order
+
+
+def test_cfglut5_non_uniform_power_on_is_read_but_credits_nothing():
+    """S52: the reads follow the inferred order (C1/C2 are exercised) but credit nothing,
+    and nor does power-on (C6): every value observed depends on the order."""
+    init = random.Random("CFGLUT5").getrandbits(32) | 1  # never uniform
+    m = cfg(init)
     for a, (o6, o5) in enumerate(table(m)):
         assert o6 == str((init >> a) & 1) and o5 == str((init >> (a & 15)) & 1)
     assert m.outputs()["O6"].prov.startswith("inferred:CFGLUT5_p348")
-    assert m.claims_hit == {"CFGLUT5.C1", "CFGLUT5.C2", "CFGLUT5.C6"}  # no C5 before 32 shifts
+    assert m.claims_hit == set()
 
 
-def test_cfglut5_uniform_contents_are_documented():
-    for init, bit in ((0, "0"), (0xFFFF_FFFF, "1")):
-        m = cfg(init)
-        for o in m.outputs().values():
-            assert (o.bits, o.prov) == (bit, "doc:348")
+@pytest.mark.parametrize(("init", "bit"), [(0, "0"), (0xFFFF_FFFF, "1"), (None, "0")])
+def test_cfglut5_uniform_contents_are_documented_and_credit_c1_c2_c6(init, bit):
+    m = cfg(init)  # None: INIT unset, the all-zeroes default (p349)
+    assert m.claims_hit == {"CFGLUT5.C6"}
+    for o6, o5 in table(m):
+        assert (o6, o5) == (bit, bit)
+    for o in m.outputs().values():
+        assert (o.bits, o.prov) == (bit, "doc:348")
+    assert m.claims_hit == {"CFGLUT5.C1", "CFGLUT5.C2", "CFGLUT5.C6"}  # no C5: no shift yet
 
 
-def test_cfglut5_default_init_is_zero():
-    assert {o.bits for o in cfg().outputs().values()} == {"0"}
-
-
-def test_cfglut5_c3_reload_replaces_the_function():
-    new = random.Random("reload").getrandbits(32)
-    m = cfg(0xFFFF_FFFF)
+def test_cfglut5_reload_to_non_uniform_credits_no_c3():
+    new = NON_UNIFORM
+    m = cfg(0xF0F0_F0F0)
     load(m, new)
-    assert [o6 for o6, _ in table(m)] == [str((new >> a) & 1) for a in range(32)]
-    assert {"CFGLUT5.C3", "CFGLUT5.C5"} <= m.claims_hit
-    assert "CFGLUT5.C7" not in m.claims_hit  # the rising edge is the default
+    assert [o6 for o6, _ in table(m)] == [str((new >> a) & 1) for a in range(32)]  # inferred
+    assert m.claims_hit == set()
 
 
-def test_cfglut5_c4_ce_low_holds_and_is_the_only_claim():
-    init = random.Random("hold").getrandbits(32)
+def test_cfglut5_c3_c5_reload_to_uniform_credits():
+    m = cfg(NON_UNIFORM)
+    load(m, 0)  # 32 zero shifts replace every bit, whatever the order
+    assert "CFGLUT5.C3" in m.claims_hit and "CFGLUT5.C7" not in m.claims_hit
+    assert {o.bits for o in m.outputs().values()} == {"0"}
+    assert {"CFGLUT5.C1", "CFGLUT5.C2", "CFGLUT5.C5"} <= m.claims_hit
+
+
+@pytest.mark.parametrize(("init", "credited"), [(0xFFFF_FFFF, True), (NON_UNIFORM, False)])
+def test_cfglut5_c4_ce_low_holds_credited_only_when_uniform(init, credited):
     m = cfg(init)
     before = table(m)
     m.claims_hit.clear()
@@ -1297,7 +1376,7 @@ def test_cfglut5_c4_ce_low_holds_and_is_the_only_claim():
         m.set_input("CDI", b)
         m.clock_edge("CLK", True)
         m.clock_edge("CLK", False)
-    assert m.claims_hit == {"CFGLUT5.C4"}
+    assert m.claims_hit == ({"CFGLUT5.C4"} if credited else set())
     assert table(m) == before
 
 
@@ -1306,16 +1385,18 @@ def test_cfglut5_c7_falling_edge_only():
     m.set_input("CE", 1)
     m.set_input("CDI", 1)
     m.clock_edge("CLK", True)
-    assert m.outputs()["CDO"].bits == "0" and "CFGLUT5.C3" not in m.claims_hit
-    for _ in range(32):
+    assert m.outputs()["CDO"].bits == "0" and m.shifts == 0
+    for _ in range(31):
         m.clock_edge("CLK", False)
         m.clock_edge("CLK", True)
+    assert "CFGLUT5.C7" not in m.claims_hit  # 31 shifts: a mix, order-dependent
+    m.clock_edge("CLK", False)  # the 32nd: all ones, whatever the order
     assert m.outputs()["O6"].bits == "1"
-    assert {"CFGLUT5.C3", "CFGLUT5.C7"} <= m.claims_hit
+    assert {"CFGLUT5.C3", "CFGLUT5.C7", "CFGLUT5.C5"} <= m.claims_hit
 
 
-def test_cfglut5_c5_cdo_cascades_after_32_shifts():
-    init = random.Random("cdo").getrandbits(32)
+def test_cfglut5_cdo_order_is_inferred_and_random_data_credits_nothing():
+    init = NON_UNIFORM
     bits = [random.Random(i).randrange(2) for i in range(64)]
     m = cfg(init)
     m.set_input("CE", 1)
@@ -1326,31 +1407,32 @@ def test_cfglut5_c5_cdo_cascades_after_32_shifts():
         m.clock_edge("CLK", False)
         seen.append(m.outputs()["CDO"].bits)
     old = [str((init >> i) & 1) for i in reversed(range(31))]  # INIT[30]..INIT[0]
-    assert seen[:31] == old
+    assert seen[:31] == old  # the inferred order (D5)
     assert seen[31:] == [str(b) for b in bits[:33]]
-    assert "CFGLUT5.C5" in m.claims_hit
+    assert "CFGLUT5.C5" not in m.claims_hit
 
 
 def test_cfglut5_c5_not_hit_before_32_shifts():
     m = cfg(1)
-    shift(m, [1] * 31)
+    shift(m, [1] * 31)  # all ones after 31 shifts, but CDO has not cascaded CDI data yet
     m.outputs()
     assert "CFGLUT5.C5" not in m.claims_hit
 
 
 def test_cfglut5_gsr_after_reload_is_inferred_until_32_more_shifts():
-    m = cfg(0x1234_5678)
+    m = cfg(NON_UNIFORM)
     load(m, 0xFFFF_0000)
     m.claims_hit.clear()
     m.glbl("GSR", 1)
     m.glbl("GSR", 0)
     assert table(m)[16] == ("1", "0")  # kept, not reloaded (inferred)
     assert all(o.prov.startswith("inferred:UG953_names_no_GSR") for o in m.outputs().values())
-    assert m.claims_hit == set()  # S44: an inferred rule credits nothing
     shift(m, [0] * 31)
     assert m.outputs()["O6"].prov.startswith("inferred:UG953_names_no_GSR")
+    assert m.claims_hit == set()  # S44: an inferred rule credits nothing
     shift(m, [0])
     assert m.outputs()["O6"].prov == "doc:348"  # 32 shifts: all zero again, documented
+    assert "CFGLUT5.C3" in m.claims_hit
 
 
 def test_cfglut5_gsr_with_unchanged_contents_needs_no_inference():
@@ -1364,7 +1446,7 @@ def test_cfglut5_shift_under_gsr_credits_nothing():
     m = cfg(0)
     m.glbl("GSR", 1)
     m.claims_hit.clear()
-    shift(m, [1])
+    shift(m, [0])  # stays uniform, but under GSR: an inference decides it
     m.glbl("GSR", 0)
     assert m.claims_hit == set()
     assert m.outputs()["O6"].prov.startswith("inferred:UG953_names_no_GSR")
@@ -1398,9 +1480,12 @@ Provenance (AGENTS.md §8, spec §3):
 - The CFGLUT5 section refers to O5/O6 tables it does not contain and gives no shift
   direction, so the bit order is inferred (_O6_ORDER, _O5_ORDER, _SHIFT) and those bits
   are ``inferred:`` (a disagreement is a doc-gap). Where the contents are all 0 or all 1
-  the order cannot matter and the bit is ``doc:348``. A claim is credited by the
-  documented rule that decides the output even when a detail of it is inferred (plan
-  decision D4); an output decided by an inferred rule alone (GSR) credits nothing (S44).
+  the order cannot matter and the bit is ``doc:348``.
+- Ruling S52 (after S44): an output whose value depends on the inferred order is decided
+  by an inferred rule, so it credits nothing, even when the reconfiguration rule itself is
+  documented. Every CFGLUT5 claim is therefore credited only while the contents are
+  uniform (all 0 or all 1), the one order-independent case, and never while they depend
+  on the GSR inference.
 """
 
 from __future__ import annotations
@@ -1552,20 +1637,30 @@ class CfgLut5(_Powered):
     def _gsr_dependent(self) -> bool:
         return self.gsr == 1 or (self._gsr_mark >= 0 and self.shifts - self._gsr_mark < self.WIDTH)
 
+    def _uniform(self) -> bool:
+        """All 0 or all 1: the only contents no bit order can change (ruling S52)."""
+        return self.contents in (0, (1 << self.WIDTH) - 1)
+
+    def _credit(self, claim: int) -> None:
+        """Hit ``claim`` only where a documented rule alone decides what is observed:
+        uniform contents that do not depend on the GSR inference (rulings S44, S52)."""
+        if self._uniform() and not self._gsr_dependent():
+            self.hit(f"{self.PRIM}.C{claim}")
+
     def _read(self, index: int, order: str, claim: int | None) -> Out:
         bit = str((self.contents >> index) & 1)
         if self._gsr_dependent():
             return Out(bit, _GSR_CFG)  # an inferred rule decides it: no claim (S44)
         if claim is not None:
-            self.hit(f"{self.PRIM}.C{claim}")
-        uniform = self.contents in (0, (1 << self.WIDTH) - 1)
-        return Out(bit, f"doc:{self.PAGE}" if uniform else order)
+            self._credit(claim)
+        return Out(bit, f"doc:{self.PAGE}" if self._uniform() else order)
 
     # -- Model API ---------------------------------------------------------------------
     def power_on(self) -> None:
         super().power_on()
         self.contents = self.init
-        self.hit(f"{self.PRIM}.C6")  # INIT is the start-up function (p349)
+        if self._uniform():  # INIT is the start-up function (p349); uniform only (S52)
+            self.hit(f"{self.PRIM}.C6")
 
     def glbl(self, signal: str, value: int) -> None:
         super().glbl(signal, value)
@@ -1580,8 +1675,7 @@ class CfgLut5(_Powered):
         if rising == bool(self.inv_clk):
             return  # not the active edge
         if not self.pin["CE"]:
-            if not self.gsr:
-                self.hit(f"{self.PRIM}.C4")  # CE Low: the edge leaves INIT unchanged
+            self._credit(4)  # CE Low: the edge leaves INIT unchanged
             return
         mask = (1 << self.WIDTH) - 1
         self.contents = ((self.contents << 1) | self.pin["CDI"]) & mask
@@ -1589,9 +1683,9 @@ class CfgLut5(_Powered):
             self._gsr_mark = self.shifts  # shifting under GSR is itself an inference
             return
         self.shifts += 1
-        self.hit(f"{self.PRIM}.C3")
+        self._credit(3)  # credited where the shift leaves order-independent contents
         if self.inv_clk:
-            self.hit(f"{self.PRIM}.C7")
+            self._credit(7)
 
     def outputs(self) -> dict[str, Out]:
         self._require_power("outputs")
@@ -1755,7 +1849,7 @@ class CFGLUT5(CfgLut5):
 MODEL = CFGLUT5
 ```
 
-- [ ] **Step 4: Run the tests and lint** (Task A2, Step 3). Expected: `83 passed`, no skips; ruff clean.
+- [ ] **Step 4: Run the tests and lint** (Task A2, Step 3). Expected: `86 passed`, no skips; ruff clean.
 
 - [ ] **Step 5: Commit** with `luts: add clean-room LUT1-LUT6, LUT6_2 and CFGLUT5 golden models (UG953 pp. 348-349, 488-512)`. The commit holds `models/`, `test_lut_models.py` and the top part of `lut_recipes.py`.
 
@@ -1783,9 +1877,9 @@ The recipes, by test (each configuration is read with an exhaustive `sweep`: pow
 | `L1.gsr_transparent` | LUT1–LUT6, LUT6_2 | one random INIT; GSR pulsed while inputs move | the D6 inference, `hw` unsupported |
 | `L1.o5_lower_half` | LUT6_2 | lower half = I0 projection with upper half = complement; lower 0 / upper 1; random | O5 ignores I5 (C2) |
 | `L1.doc_example` | LUT6_2 | 64'hFFFFFFFFFFFFFFFE | UG953's OR example (C4) |
-| `L1.ce_low_holds` | CFGLUT5 | random, I0 projection; 8 CE-Low cycles with CDI toggling | C4 |
-| `L1.reconfigure` | CFGLUT5 | zero → random, ones → I2 projection, random → random; 32-bit reload then sweep | C3 |
-| `L1.cdo_cascade` | CFGLUT5 | random, INIT = 1<<31; 64 shifts, CDO sampled after each | C5 |
+| `L1.ce_low_holds` | CFGLUT5 | random, I0 projection, all ones; 8 CE-Low cycles with CDI toggling | C4 (credited by all ones only, S52) |
+| `L1.reconfigure` | CFGLUT5 | zero → random, ones → I2 projection, random → random, random → zero; 32-bit reload then sweep | C3 and C5 (credited by random → zero only, S52); the inferred order |
+| `L1.cdo_cascade` | CFGLUT5 | random data; all ones then 32 zeros and 32 ones; 64 shifts, CDO sampled after each | C5 (credited by the uniform case only, S52); the inferred CDO bit |
 | `L1.partial_shift` | CFGLUT5 | 1, 5, 16 and 31 shifts | the inferred shift order (doc-gap if wrong) |
 | `L1.is_clk_inverted` | CFGLUT5 | `IS_CLK_INVERTED=1'b1`, uniform INITs; samples after every edge | C7 |
 | `L1.shift_while_reading` | CFGLUT5 | two random; an address held while 8 bits shift in, 4 times | C1 with C3 |
@@ -2060,8 +2154,11 @@ def l1_doc_example(ctx: GenContext, k: LutKind) -> Gen:
 
 
 def l1_ce_low_holds(ctx: GenContext, k: LutKind) -> Gen:
-    """CE Low: CDI toggles and CLK runs, but the function and CDO stay put (C4)."""
-    for name, init in (("rand", ctx.rng.getrandbits(32)), ("p0", projection(k, 0))):
+    """CE Low: CDI toggles and CLK runs, but the function and CDO stay put. Only the
+    all-ones configuration credits C4: the others' reads depend on the inferred bit
+    order (ruling S52)."""
+    cases = (("rand", ctx.rng.getrandbits(32)), ("p0", projection(k, 0)), ("ones", ones(k)))
+    for name, init in cases:
         f = _cfg(ctx, k, name, init)
         f.sweep()
         f.shift([1, 0, 1, 1, 0, 1, 0, 0], ce=0, sample=True)
@@ -2070,11 +2167,14 @@ def l1_ce_low_holds(ctx: GenContext, k: LutKind) -> Gen:
 
 
 def l1_reconfigure(ctx: GenContext, k: LutKind) -> Gen:
-    """Load a new 32-bit function through CDI and read it back exhaustively (C3)."""
+    """Load a new 32-bit function through CDI and read it back exhaustively. Only a
+    reload that ends uniform (``rand_to_zero``) credits C3 and C5: 32 shifts replace
+    every bit whatever the order (ruling S52); the others test the inferred order."""
     pairs = [
         ("zero_to_rand", 0, ctx.rng.getrandbits(32)),
         ("ones_to_p2", ones(k), projection(k, 2)),
         ("rand_to_rand", ctx.rng.getrandbits(32), ctx.rng.getrandbits(32)),
+        ("rand_to_zero", ctx.rng.getrandbits(32) | 1, 0),
     ]
     for name, init, new in pairs:
         f = _cfg(ctx, k, name, init)
@@ -2086,11 +2186,17 @@ def l1_reconfigure(ctx: GenContext, k: LutKind) -> Gen:
 
 def l1_cdo_cascade(ctx: GenContext, k: LutKind) -> Gen:
     """64 shifts, CDO sampled after each: the old INIT leaves on CDO, then the first
-    shifted-in bits follow 32 shifts later (C5; the bit order is inferred)."""
-    for name, init in (("rand", ctx.rng.getrandbits(32)), ("w1_31", 1 << 31)):
+    shifted-in bits follow 32 shifts later. Random data tests the inferred order; all ones
+    followed by 32 zeros and 32 ones credits C3 and C5, since CDO then reads uniform
+    contents that 32 shifts replaced (ruling S52)."""
+    cases = (
+        ("rand", ctx.rng.getrandbits(32), [ctx.rng.randrange(2) for _ in range(64)]),
+        ("ones_zeros_ones", ones(k), [0] * 32 + [1] * 32),
+    )
+    for name, init, bits in cases:
         f = _cfg(ctx, k, name, init)
         f.b.sample()
-        f.shift([ctx.rng.randrange(2) for _ in range(64)], sample=True)
+        f.shift(bits, sample=True)
         f.b.set(CE=0)
         f.b.sample()
         yield f.build()
@@ -2282,6 +2388,11 @@ CFG_VL = (
     "srl/CFGLUT5 recovery of ruling S29(2)",
 )
 NO_X = "no x/z on any input (sv_x_inputs covers x)"
+#: Ruling S52: a CFGLUT5 read whose value depends on the inferred bit order credits nothing.
+S52 = (
+    "claims: reads that depend on CFGLUT5's inferred bit order are exercised but credit "
+    "nothing (ruling S52; findings/CFGLUT5-doc-gap-L1-projections.md)"
+)
 NO_TIMING = "propagation delay is not measured (timing is out of scope, spec §2)"
 
 _ENTRIES: dict[str, CatalogEntry] = {}
@@ -2398,6 +2509,10 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         out.append((e, why))
 
     table, default = _table_claims(k), _default_claim(k)
+    # Reads of an arbitrary INIT credit C1/C2 only where the logic table is documented:
+    # CFGLUT5's order is inferred, so there they credit nothing (ruling S52).
+    ordered = [] if k.reconfig else table
+    s52 = [S52] if k.reconfig else []
     sv = f"sv/tb_{prim.lower()}"
     add(
         "L0",
@@ -2415,7 +2530,7 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
                 + _bins(prim, "CE")
                 + _bins(prim, "CLK")
                 + [f"attr:IS_CLK_INVERTED={v}" for v in BIN]
-                + _claims(k, 3, 7)
+                + _claims(k, 3)
                 if k.reconfig
                 else []
             )
@@ -2464,11 +2579,11 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         "projections",
         "vector",
         "vectors/gen.py:l1_projections",
-        _outs(k) + _inputs(k) + ["attr:INIT"] + table,
+        _outs(k) + _inputs(k) + ["attr:INIT"] + ordered,
         "INIT chosen so the output equals one input (and its complement), for every input: "
         "pins the input-to-address order of the logic table; a swapped pair fails at once.",
         sampling={"INIT": [f"projection of I<j> and its complement, j = 0..{k.n - 1}"]},
-        gaps=["single-input functions only; general INITs are in L2", NO_X],
+        gaps=["single-input functions only; general INITs are in L2", NO_X, *s52],
     )
     if k.reconfig:
         _cfglut5_tests(k, add)
@@ -2541,18 +2656,19 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
             "init_random",
             "vector",
             "vectors/gen.py:l2_init_random",
-            _outs(k) + _inputs(k) + ["attr:INIT"] + table,
+            _outs(k) + _inputs(k) + ["attr:INIT"] + ordered,
             "Seeded random INITs, each swept and then read at random addresses, where "
             "several inputs change at once.",
             sampling={"INIT": [f"{RANDOM_INITS} seeded random (the test's seed)"]},
             gaps=[
                 "one seed per run; a failing seed is frozen by hand (xut freeze-seed is deferred)",
                 NO_X,
+                *s52,
             ],
             related=[f"7series.{prim}.L2.cocotb_random"],
         )
     sv_ports = [f"port:{p['name']}" for p in _entry(prim).ports]
-    sv_claims = _claims(k, 1, 4) if k.reconfig else table
+    sv_claims = _claims(k, 1, 2, 4) if k.reconfig else table  # CFGLUT5: uniform reads only
     sv_cfgs = (
         [{"cfg": "ones", "attrs": {"INIT": lit(k, ones(k))}}]
         if k.reconfig
@@ -2585,7 +2701,7 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         "sv_gsr_midsim",
         "sv",
         f"{sv}_gsr.sv",
-        sv_ports + ["attr:INIT"] + (_claims(k, 1, 3, 6) if k.reconfig else table),
+        sv_ports + ["attr:INIT"] + (_claims(k, 1, 2, 3, 5, 6) if k.reconfig else table),
         (
             "32 zero shifts replace the whole function whatever the shift order; GSR is then "
             "pulsed, its effect recorded as checkpoints, and 32 one shifts are checked."
@@ -2607,9 +2723,9 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         f"cocotb/cocotb_{prim.lower()}_random.py",
         sv_ports
         + ["attr:INIT"]
-        + table
+        + ordered
         + default
-        + ([f"attr:IS_CLK_INVERTED={v}" for v in BIN] + _claims(k, 3, 4) if k.reconfig else []),
+        + ([f"attr:IS_CLK_INVERTED={v}" for v in BIN] if k.reconfig else []),
         "Long model-checked random sessions on Icarus"
         + ("" if k.reconfig else " and Verilator")
         + "; a failing seed is frozen into a vector test that also runs on xsim and hardware.",
@@ -2650,7 +2766,12 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         + ["attr:INIT"]
         + _claims(k, 1, 2, 4),
         "CE Low with CDI toggling and CLK running: the function and CDO do not move.",
-        gaps=["CE is never raised here (see reconfigure)", NO_X],
+        gaps=[
+            "CE is never raised here (see reconfigure)",
+            "only the all-ones configuration "
+            "credits C4; the others' reads depend on the inferred order (ruling S52)",
+            NO_X,
+        ],
         related=rel,
     )
     add(
@@ -2662,7 +2783,7 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "A new 32-bit function is shifted in through CDI and read back at every address.",
         gaps=[
             "the read-back order relies on the inferred shift direction (a disagreement "
-            "is a doc-gap)",
+            "is a doc-gap); only rand_to_zero credits C3 and C5 (ruling S52)",
             NO_X,
         ],
     )
@@ -2675,7 +2796,8 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "64 shifts with CDO sampled after each: the old INIT leaves on CDO, then the first "
         "shifted-in bits arrive 32 shifts later, as a CDO-to-CDI chain needs.",
         gaps=[
-            "which INIT bit reaches CDO first is inferred",
+            "which INIT bit reaches CDO first is inferred; only ones_zeros_ones credits "
+            "(ruling S52)",
             "no second LUT in the chain (an L3 design)",
             NO_X,
         ],
@@ -2686,9 +2808,14 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "partial_shift",
         "vector",
         "vectors/gen.py:l1_partial_shift",
-        outs + ins + sh + ["attr:INIT"] + _claims(k, 1, 2, 3),
+        outs + ins + sh + ["attr:INIT"],
         "1, 5, 16 and 31 shifts leave a mix of old and new bits: pins the shift order.",
-        gaps=["the order is inferred; a disagreement is a doc-gap", NO_X],
+        gaps=[
+            "the order is inferred; a disagreement is a doc-gap "
+            "(findings/CFGLUT5-doc-gap-L1-partial_shift.md)",
+            S52,
+            NO_X,
+        ],
         related=rel,
     )
     add(
@@ -2713,9 +2840,9 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "shift_while_reading",
         "vector",
         "vectors/gen.py:l1_shift_while_reading",
-        outs + ins + sh + ["attr:INIT"] + _claims(k, 1, 2, 3),
+        outs + ins + sh + ["attr:INIT"],
         "An address is held while bits shift in, so the function changes while in use.",
-        gaps=[NO_X],
+        gaps=[S52, NO_X],
         related=rel,
     )
     add(
@@ -2723,7 +2850,7 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "gsr_after_reconfig",
         "vector",
         "vectors/gen.py:l1_gsr_after_reconfig",
-        outs + ins + sh + ["attr:INIT"] + _claims(k, 3),
+        outs + ins + sh + ["attr:INIT"],
         "GSR after a reload, with and without shifts under it. UG953 names no GSR effect "
         "on CFGLUT5: the model infers the function is kept (inferred:, no claim, S44).",
         runners=_runners(k, hw=HW_GSR),
@@ -2735,15 +2862,10 @@ def _cfglut5_tests(k: LutKind, add: Callable[..., None]) -> None:
         "random",
         "vector",
         "vectors/gen.py:l2_random",
-        outs
-        + ins
-        + sh
-        + ["attr:INIT"]
-        + [f"attr:IS_CLK_INVERTED={v}" for v in BIN]
-        + _claims(k, 1, 2, 3, 4, 5, 7),
+        outs + ins + sh + ["attr:INIT"] + [f"attr:IS_CLK_INVERTED={v}" for v in BIN],
         "Seeded random mixes of reloads (CE 0/1, random CDI) and reads, both clock senses.",
         sampling={"INIT": ["8 seeded random"], "IS_CLK_INVERTED": [0, 1]},
-        gaps=["one seed per run", "no GSR (L1.gsr_after_reconfig)", NO_X],
+        gaps=["one seed per run", "no GSR (L1.gsr_after_reconfig)", S52, NO_X],
         related=[f"7series.{k.prim}.L2.cocotb_random"],
     )
 
@@ -2988,7 +3110,7 @@ def test_every_bin_is_exercised_or_a_gap(prim):
 
 Expected:
 - `lut_tests.py` prints eight `wrote tests/7series/clb/<PRIM>/test.yaml and README.md` lines. The files hold LUT1 9 tests, LUT2 9, LUT3–LUT6 10 each, LUT6_2 12 and CFGLUT5 17 (87).
-- `pytest tests/7series/clb/_shared/luts`: `125 passed` (83 model tests, 42 guards). The reach guard replays all 700 vector configurations in about 20 s.
+- `pytest tests/7series/clb/_shared/luts`: `128 passed` (86 model tests, 42 guards). The reach guard replays all 702 vector configurations in about 25 s.
 - `xut lint`: no errors. Expected warnings: `portability-agreement` for the 7 `L1.sv_x_inputs` and 7 `L0.illegal_init` tests of LUT1–LUT6/LUT6_2 that declare `verilator: "unsupported"` for an x stimulus or an x attribute (decision D12). CFGLUT5's declarations match its `no` row and raise none.
 - `xut run 'unit:luts' --runner python`: `exit=0`; 63 vector tests `pass`, 24 sv/cocotb tests `skip` (`SV_PY`, `CO_PY`). `L1.gsr_transparent` and `L1.gsr_after_reconfig` stimuli are `hw_renderable no` ("glbl GSR on hardware needs the GSR-immune harness …"); every other vector stimulus is `hw_renderable yes`.
 
@@ -3610,9 +3732,11 @@ uv run python .cache/write_lut_cocotb.py > .cache/write-cocotb.log 2>&1; cat .ca
 
 ### Task B6: Full run, crosscheck, findings and status (Task A6)
 
-- [ ] **Step 1: Estimate.** 700 vector configurations + 23 sv + 32 cocotb. xsim dominates: (700 + 23) × about 15 s ÷ 4 slots ≈ 45 minutes. Verilator: about 630 builds (CFGLUT5 excluded) × 30–40 s ÷ 16 ≈ 20–25 minutes, in parallel with xsim. Expect 45–60 minutes in total: under 4 hours, so report every 5 minutes, with the remaining time and the finish clock-time, from the `progress:` lines. The `unisim-gh-2020.1` run (python, iverilog, verilator) takes about 25 minutes more.
+- [ ] **Step 1: Estimate.** 702 vector configurations + 23 sv + 32 cocotb. xsim dominates: (702 + 23) × about 15 s ÷ 4 slots ≈ 45 minutes. Verilator: about 630 builds (CFGLUT5 excluded) × 30–40 s ÷ 16 ≈ 20–25 minutes, in parallel with xsim. Expect 45–60 minutes in total: under 4 hours, so report every 5 minutes, with the remaining time and the finish clock-time, from the `progress:` lines. The `unisim-gh-2020.1` run (python, iverilog, verilator) takes about 25 minutes more.
 
 - [ ] **Step 2: Run, crosscheck, handle findings, record** exactly as Task A6, Steps 1–6, with `<unit>` = `luts`. What to expect, and what is **not** to be "fixed":
+
+- **Record the order UNISIM shows** (ruling S52) in the two Task B1 findings, per model source, under their `(to be recorded)` lines. If crosscheck reports no disagreement on `L1.projections`, `L1.partial_shift`, `L1.cdo_cascade` and `L2.init_sweep`, UNISIM follows the inferred order: write that ("UNISIM <source> on iverilog and xsim: O6 = INIT[{I4..I0}] … as inferred; tests … agree"). If it disagrees, crosscheck appends `- Also seen:` lines to these two files and writes stubs for the other affected tests; describe the order the evidence points to (the mismatching points name the address, the output and the expected bit). Either way the findings stay open, the model is not changed, and `expected_divergence` entries (if any) name these findings.
 
 - The LUT1–LUT6/LUT6_2 logic tables are complete, so a disagreement there is `doc-vs-model`: re-read the table page first (a model bug is fixed with a test); otherwise it is a finding against UNISIM.
 - `L1.gsr_transparent` and `L1.gsr_after_reconfig` compare the D6 inferences: a disagreement is a `doc-gap`. Write it up, list it, keep the inference.
@@ -3627,7 +3751,7 @@ uv run python .cache/write_lut_cocotb.py > .cache/write-cocotb.log 2>&1; cat .ca
 
 ### Task B7: The luts PR (Task A7)
 
-Title "luts: LUT1-LUT6, LUT6_2 and CFGLUT5". The body also states: the D4/D5/D6 decisions and where the orchestrator's confirmation is still needed; the CFGLUT5 Verilator declaration and the S29(2) TODO; that every vector test declares `hw: "yes"` except the two GSR tests and the reject tests, pending Task B8.
+Title "luts: LUT1-LUT6, LUT6_2 and CFGLUT5". The body also states: the D5/D6 inferences, ruling S52's effect on CFGLUT5's claims, and the two open CFGLUT5 `doc-gap` findings; the CFGLUT5 Verilator declaration and the S29(2) TODO; that every vector test declares `hw: "yes"` except the two GSR tests and the reject tests, pending Task B8.
 
 ---
 
@@ -3689,12 +3813,12 @@ Infra that later units need, beyond Task P1 (each is an `infra/*` branch the uni
 
 ## Decisions on spec gaps (made while writing this plan)
 
-Each needs no spec change unless noted; the orchestrator may overrule any of them.
+The orchestrator ruled on PR #12: D4 is overruled by ruling S52, and D1–D3 and D5–D15 are accepted; D16 awaits its amendment.
 
 - **D1. `attr:<A>` for non-enumerated attributes was unreachable** (spec §9 names the bin; the python runner never produced it). Task P1 adds `xut.golden.coverage_reach`, which names bins exactly as `coverage_bins` does, and the python runner records it. Units with such attributes stack on P1.
 - **D2. Parallelism.** `xut run --jobs 16` in a 32G scope, not the 24 AGENTS.md §10.1 permits: 32G + 16 × 4G containers = 96G stays inside the project's 100G share, as the step-3 plan's budget (ruling S49 I5) requires; `--jobs 24` would reach 128G with the scope. Whole-suite pytest is `-n 4` in a 32G scope; the unit's own pure-Python tests may use `-n 8` in 8G.
 - **D3. ANN exemption for unit tests** (`tests/**/test_*.py`), in P1: the flops unit's open TODO, and the stated intent of the existing `tools/tests/**` exemption.
-- **D4. A documented rule with an inferred detail credits its claim.** Ruling S44 lets only documented rules credit claims. CFGLUT5's rules are documented (O6 follows the loaded INIT; CE-High edges shift CDI in; CDO cascades) but their bit order is not. The model credits the claim when the documented rule decides the output, and tags the bit `inferred:` with the order's reason, so a disagreement is a `doc-gap`; a claim is still credited in status only when a simulator passed the configuration (S21/S23), i.e. when the inferred detail was not contradicted. An output decided by an inferred rule alone (GSR) credits nothing. **Needs orchestrator confirmation.** If overruled, CFGLUT5.C1, C2 and C5 move to `gaps` ("claim:CFGLUT5.C1 — UG953 2026.1 omits the O5/O6 tables p348 refers to") and the model stops crediting them.
+- **D4 — overruled by ruling S52** (on PR #12, following S44). A CFGLUT5 output whose value depends on the inferred bit order (O6/O5 indexing, the shift direction, the bit on CDO) is decided by an inferred rule and credits nothing, even though the reconfiguration rule is documented. CFGLUT5.C1–C7 are credited only by order-independent outputs: uniform contents (all 0 or all 1, `doc:348`). Every claim has such a test (Task B2), so none moves to `gaps`. Two `doc-gap` stubs record the missing documentation (`findings/CFGLUT5-doc-gap-L1-projections.md`: the O5/O6 tables; `findings/CFGLUT5-doc-gap-L1-partial_shift.md`: the shift direction and the CDO bit), and Task B6 records there the order UNISIM shows.
 - **D5. CFGLUT5's undocumented bit order**: O6 = INIT[{I4..I0}] (the LUT5 table, p501), O5 = INIT[{I3..I0}] (the lower half, as LUT6_2's O5, p509), CDI shifts into INIT[0], INIT[31] drives CDO; all-0 and all-1 contents are order-free and `doc:348`. Each inference carries its own reason. Checked in UG953 2026.1 text; the implementer confirms against the PDF (and the 2025.2 edition) that the "following tables" are really absent, and records it.
 - **D6. GSR on LUTs and CFGLUT5.** UG953 names no GSR effect on any LUT. LUT outputs keep following the table while GSR is asserted; CFGLUT5 keeps its loaded function and keeps shifting. Both are `inferred:` and credit nothing (S44); `L1.gsr_transparent`/`L1.gsr_after_reconfig` and the sv GSR tests compare them with UNISIM.
 - **D7. sv time-0 inputs.** Testbench input regs get their first value by a time-0 non-blocking assignment, not a declaration initialiser. Found while checking this plan's testbenches on Icarus: LUT6's output stayed x at the first check with a declaration initialiser, which raised no event for the combinational model. This is a testbench rule, not a finding; the vector testbench already works this way.
@@ -3714,7 +3838,7 @@ Each needs no spec change unless noted; the orchestrator may overrule any of the
 
 **Spec coverage.**
 
-- **§3 clean room and provenance**: Global Constraints, Task A2's rules, the luts model decisions (D4–D6), the reviewer (b) checks in Task A7.
+- **§3 clean room and provenance**: Global Constraints, Task A2's rules, the luts model decisions (S52, D5, D6), the reviewer (b) checks in Task A7.
 - **§4.1 levels**: L0 smoke and reject tests, L1 one test per claim, L2 exhaustive/sampled/random and cocotb; L3 stays with the integ branches (spec §16 step 5).
 - **§4.2 sampling**: Task A3's rules; luts D9; crosses pairwise over legal pairs (legality model).
 - **§4.3 styles**: vector (A3), sv (A4, with the common-subset and checkpoint rules), cocotb (A5, with seed freezing).
@@ -3734,4 +3858,4 @@ Each needs no spec change unless noted; the orchestrator may overrule any of the
 
 **Type and name consistency.** `LutKind(prim, n, width, outputs, reconfig)`, `KINDS`, `lit`, `ones`, `projection`, `init_samples`, `random_inits`, `LutDriver`, `CfgLutDriver`, `generators`, `tests_for`, `render_test_yaml`, `render_readme`, `GROUP_DIR`, `ROOT`, `random_session`, `coverage_reach`, `attr_bins`: used identically in every task. Claim numbers match between the overrides (B1), the model (B2), the model tests and the generator's `exercises` (B3).
 
-**Rulings applied**: S6 (co-timed sets), S12/S13b (reject configurations), S15 (sv checks and checkpoints), S19/S21/S23/S33 (bins and crediting), S28/S29(2) (CFGLUT5 and srl Verilator), S30 (no inferred `-`), S32/S44 (claim crediting), S36 (macro wrapping), S37 (cocotb driving), S38 (no z), S49 (memory budget), S51 (`config` rows).
+**Rulings applied**: S6 (co-timed sets), S12/S13b (reject configurations), S15 (sv checks and checkpoints), S19/S21/S23/S33 (bins and crediting), S28/S29(2) (CFGLUT5 and srl Verilator), S30 (no inferred `-`), S32/S44/S52 (claim crediting), S36 (macro wrapping), S37 (cocotb driving), S38 (no z), S49 (memory budget), S51 (`config` rows).
