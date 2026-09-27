@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+# luts work unit: claims layered over the generated LUT5.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (LUT5, pp. 500-502).
+#
+# Attributes: no override. INIT's generated `allowed` (p502) is not an
+# enumerated list, so INIT has the one bin attr:INIT (spec §9); its sampling plan is
+# recorded in test.yaml (spec §4.2). Crosses: none (one attribute).
+#
+# Not claims: the p500 statements on grouping LUT5 with other LUTs into one LUT6
+# describe how Vivado packs several primitives, not a behaviour or a configuration
+# rule of one instance (plan Task A1).
+#
+# Doc note: the p501 logic table labels its output column "LO"; the port table
+# (p502) and the rest of the section name the output O, which is what is modelled.
+claims:
+  - {id: LUT5.C1, page: 501, provenance: "doc:501", text: "O is INIT[i], where i is the binary number {I4,I3,I2,I1,I0} (logic table)."}
+  - {id: LUT5.C2, page: 500, provenance: "doc:500", text: "INIT defaults to zero, so O is 0 for every input value (a ground)."}

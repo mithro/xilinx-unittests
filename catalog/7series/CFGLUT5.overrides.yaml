@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# luts work unit: corrections and claims layered over the generated CFGLUT5.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (CFGLUT5, pp. 348-349).
+#
+# Doc notes (recorded, not modelled):
+# - p348 says O5/O6 usage is shown in "the following tables", but the 2026.1 section
+#   contains no logic table; nor does it give the shift direction or which INIT bit
+#   reaches CDO. The golden model infers them (inferred: provenance, plan decision D5).
+# - p349: the VHDL template's generic is spelled INT, not INIT.
+#
+# Attributes: no override. INIT ("Any 32-bit HEX value", p349) stays the one
+# non-enumerated bin attr:INIT; IS_CLK_INVERTED's generated `allowed` is already the
+# 1-bit pair of p349's "1'b0 to 1'b1". Crosses: none (UG953 documents no interaction
+# between INIT and IS_CLK_INVERTED).
+ports:
+  # The extractor cut the p348 function text at a table line break; a paraphrase.
+  CDO: {doc_function: "Reconfiguration data cascade output; connect it to the CDI of the next CFGLUT5."}
+claims:
+  - {id: CFGLUT5.C1, page: 348, provenance: "doc:348", text: "O6 is the 5-input function of I0-I4 given by the INIT value currently loaded."}
+  - {id: CFGLUT5.C2, page: 348, provenance: "doc:348", text: "O5 is the 4-LUT output: a 4-input function of the same inputs, using a subset of the loaded INIT."}
+  - {id: CFGLUT5.C3, page: 348, provenance: "doc:348", text: "With CE High, each active CLK edge shifts CDI serially into INIT, changing the function at run time."}
+  - {id: CFGLUT5.C4, page: 348, provenance: "doc:348", text: "CE is an active-High reconfiguration clock enable: with CE Low, CLK edges leave INIT unchanged."}
+  - {id: CFGLUT5.C5, page: 348, provenance: "doc:348", text: "CDO carries the reconfiguration data out, so a CDO-to-CDI chain passes 32 bits per LUT."}
+  - {id: CFGLUT5.C6, page: 349, provenance: "doc:349", text: "INIT, all zeroes by default, is the function loaded at start-up."}
+  - {id: CFGLUT5.C7, page: 349, provenance: "doc:349", text: "IS_CLK_INVERTED=1 makes CLK active-Low: the falling edge is the active edge."}

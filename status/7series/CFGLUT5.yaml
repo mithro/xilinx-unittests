@@ -40,4 +40,11 @@ coverage:
   - attr:INIT
   - attr:IS_CLK_INVERTED=1'b0
   - attr:IS_CLK_INVERTED=1'b1
+  - claim:CFGLUT5.C1
+  - claim:CFGLUT5.C2
+  - claim:CFGLUT5.C3
+  - claim:CFGLUT5.C4
+  - claim:CFGLUT5.C5
+  - claim:CFGLUT5.C6
+  - claim:CFGLUT5.C7
 notes: ''

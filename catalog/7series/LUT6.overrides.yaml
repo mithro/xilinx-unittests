@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# luts work unit: claims layered over the generated LUT6.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (LUT6, pp. 504-507).
+#
+# Attributes: no override. INIT's generated `allowed` (p507) is not an
+# enumerated list, so INIT has the one bin attr:INIT (spec §9); its sampling plan is
+# recorded in test.yaml (spec §4.2). Crosses: none (one attribute).
+#
+# The logic table runs over pp. 504-506; claims cite its first page.
+claims:
+  - {id: LUT6.C1, page: 504, provenance: "doc:504", text: "O is INIT[i], where i is the binary number {I5,I4,I3,I2,I1,I0} (logic table)."}
+  - {id: LUT6.C2, page: 504, provenance: "doc:504", text: "INIT defaults to zero, so O is 0 for every input value (a ground)."}

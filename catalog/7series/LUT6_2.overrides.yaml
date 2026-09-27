@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# luts work unit: claims layered over the generated LUT6_2.yaml.
+# Clean room: every fact below is from UG953 v2026.1 (LUT6_2, pp. 509-512).
+#
+# Attributes: no override. INIT ("Any 64-bit HEX value", p512) stays the one
+# non-enumerated bin attr:INIT (spec §9). Crosses: none (one attribute).
+# The logic table (O5 and O6 columns) runs over pp. 510-511; claims cite p510.
+claims:
+  - {id: LUT6_2.C1, page: 510, provenance: "doc:510", text: "O6 is INIT[i], where i is the binary number {I5,I4,I3,I2,I1,I0} (logic table)."}
+  - {id: LUT6_2.C2, page: 510, provenance: "doc:510", text: "O5 is INIT[i], i = {I4,I3,I2,I1,I0}: the lower 32 INIT bits drive O5 and I5 does not affect it (logic table; p509)."}
+  - {id: LUT6_2.C3, page: 509, provenance: "doc:509", text: "INIT defaults to zero, so O5 and O6 are 0 for every input value."}
+  - {id: LUT6_2.C4, page: 509, provenance: "doc:509", text: "INIT=64'hFFFFFFFFFFFFFFFE makes O6 a 6-input OR and O5 a 5-input OR of I4-I0."}

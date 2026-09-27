@@ -19,4 +19,6 @@ coverage:
   - port:I1:0
   - port:I1:1
   - attr:INIT
+  - claim:LUT2.C1
+  - claim:LUT2.C2
 notes: ''

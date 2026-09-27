@@ -28,4 +28,6 @@ coverage:
   - port:I4:0
   - port:I4:1
   - attr:INIT
+  - claim:LUT5.C1
+  - claim:LUT5.C2
 notes: ''
