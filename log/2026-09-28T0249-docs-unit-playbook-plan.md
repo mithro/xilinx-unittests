@@ -61,3 +61,39 @@ All Python ran in 4G-capped scopes.
 - Review this PR (two reviewers).
 - The orchestrator rules on D4 and D16.
 - After PR #10 merges: implement P1 (`infra/unit-prereqs`), then the luts unit (Part B).
+
+## Follow-up: orchestrator rulings on PR #12
+
+- **Ruling S52 overrides D4.** It follows S44: a CFGLUT5 output whose value depends on the
+  inferred bit order credits no claim. This applies to O6/O5 indexing, the shift direction
+  and the CDO bit, even though the reconfiguration rule itself is documented. The plan now
+  does the following:
+  - The model credits every CFGLUT5 claim only while the contents are uniform (all 0 or
+    all 1, `doc:348`) and do not depend on the GSR inference. C6 is credited at power-on
+    for a uniform INIT, which includes the all-zeroes default.
+  - The recipes add order-independent cases: all ones in `L1.ce_low_holds` (C4),
+    `rand_to_zero` in `L1.reconfigure` (C3, C5), and `ones_zeros_ones` in
+    `L1.cdo_cascade` (C3, C5). Every claim C1–C7 keeps a crediting test, so none moved to
+    `gaps`.
+  - The generator declares no claims for the order-dependent tests: `L1.projections`,
+    `L1.partial_shift`, `L1.shift_while_reading`, `L1.gsr_after_reconfig`,
+    `L2.init_random`, `L2.random`, and the cocotb session apart from C6. Each of these tests
+    notes S52 in its `gaps`.
+  - The sv tests' claims are limited to their uniform checks.
+  - Task B1 writes two `doc-gap` stubs up front, `findings/CFGLUT5-doc-gap-L1-projections.md`
+    (the O5/O6 tables) and `findings/CFGLUT5-doc-gap-L1-partial_shift.md` (the shift
+    direction and the CDO bit). Task B6 records in them the order UNISIM shows.
+  - Part A's claim rules state S52 in general form.
+  - Vector configurations: 702 (CFGLUT5 124).
+- **D16 is confirmed.** Task P1 now also amends AGENTS.md §7, which is infra-owned, to let a
+  unit branch refresh its own never-recorded stubs. The flops unit's 115f0cc is covered.
+- D1–D3 and D5–D15 were accepted.
+
+### Test results
+
+These ran in the scratch layout, in 4G scopes:
+- `pytest` on the luts shared directory: 128 passed (86 model tests, 42 guards; the reach
+  guard covers all 702 configurations).
+- The cocotb stand-in run passed.
+- ruff: clean on the Python blocks extracted from the plan.
+- `xut lint --branch`: see below.
