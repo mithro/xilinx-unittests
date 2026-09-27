@@ -159,7 +159,7 @@ def cell(test: dict, runner: str) -> str:
 
 
 def run_block(prim: str) -> list[str]:
-    """The README's "How to run": the heavy command under the host-wide lock and a
+    """The README's "How to run": the heavy command under the per-user heavy lock and a
     capped scope (AGENTS.md §10.1), then crosscheck and record."""
     p = prim.lower()
     return [

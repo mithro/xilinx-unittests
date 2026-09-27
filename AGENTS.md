@@ -159,12 +159,18 @@ there is no override. Each model source keeps its own tree hash, tools and
 results (`results_by_model_source`).
 
 `xut status init --refresh-bins` updates the bins of never-recorded stubs to
-the current catalog. The orchestrator runs it on `main`. A unit branch may
-also run it after its overrides change its own primitives' bins (new claims,
-`active` levels, crosses), but commits only its own never-recorded
-`status/<family>/<PRIM>.yaml` stubs: any other file it changes is restored
-with `git checkout -- <path>` and reported to the orchestrator (ruling on
-PR #12, D16).
+the current catalog, and may also create new stubs. The orchestrator runs it
+on `main`. A unit branch may also run it after its overrides change its own
+primitives' bins (new claims, `active` levels, crosses), but commits only its
+own never-recorded `status/<family>/<PRIM>.yaml` stubs. Any other stub it
+changes is restored with `git checkout -- <path>`, any stub it creates that
+the unit does not own is removed with `git clean -f -- <path>` on that exact
+path, and both are reported to the orchestrator (ruling on PR #12, D16).
+
+An infra PR that changes `coverage_bins` (a regenerated catalog, new bin
+naming) makes existing stubs stale. The orchestrator refreshes them on
+`main` right after that PR merges. Until then the PR may carry the refreshed
+stubs, as an explicit exception to §3 that its body states (ruling S57).
 
 ## 8. Clean-room golden models
 
@@ -253,24 +259,30 @@ smoke simulation whose memory grows without bound. Its container peaked at
   `XUT_MEMORY_BUDGET` (100g) ÷ the cap, which is 25 with the defaults.
   **Until PR C is merged, xut containers on `main` are uncapped: keep
   `--jobs` at 8 or below.** Never start an uncapped container by hand.
-- **Parallelism from measured memory, not cores.** Once PR C is merged, use
-  `--jobs` at most 24, one below the enforced limit of 25, as a margin.
-  **Before that, the limit is 8**, because containers are uncapped. Use
-  `pytest -n` at most 8.
+- **Parallelism from measured memory, not cores.** One heavy command's
+  budget is **scope cap + jobs × container cap ≤ 96G** (ruling S57), so its
+  usable `--jobs` is `(96 − scope cap) ÷ 4` with the default 4g containers:
+  `--jobs 16` in a 32G scope, 20 in a 16G scope. Once PR C is merged, 24 is
+  only xut's hard limit (one below the enforced 25), never the number to use;
+  the budget formula gives the usable number. **Before PR C, the limit is 8**,
+  because containers are uncapped. Use `pytest -n` at most 8.
   Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
-  time, each scope capped at 16G. That is 64G, within this project's 100G
-  share. These are conservative starting values, not yet measured for our
+  time, each scope capped at 16G: that is 64G. The 4 slots
+  (`XUT_VIVADO_SLOTS`) are counted inside the one heavy command that holds the
+  lock below, so they are that command's jobs, not a second budget. These are conservative starting values, not yet measured for our
   Vivado runs: measure the first runs with the scope's `memory.peak` and
   adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
   value in a plan or task brief is capped by this section. For example, the
   step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
-  until PR C is merged, and 24 after.
-- **One heavy command at a time, host-wide** (ruling S53). Every heavy command
+  until PR C is merged, and the budget formula above after it (16 in a 32G
+  scope).
+- **One heavy command at a time** (rulings S53, S57). Every heavy command
   (`xut run`, `xut portability`, `xut verilatorize --check`, `xut hw sim`,
-  `xut hw build`, and `pytest` with `-n` above 1) takes the one host-wide lock
-  before its scope, so two agents never run heavy jobs at once and each
-  command's own budget (at most 96G) holds:
+  `xut hw build`, a direct Vivado or xsim run, and `pytest` with `-n` above
+  1) takes the lock before its scope, so two agents never run heavy jobs at
+  once and each command's own budget (scope cap + jobs × container cap ≤ 96G)
+  is the whole project's use:
 
   ```bash
   flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
@@ -278,8 +290,9 @@ smoke simulation whose memory grows without bound. Its container peaked at
     -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
   ```
 
-  `flock` waits while another agent holds the lock; nothing ever deletes the
-  lock file.
+  The lock is a per-user lock under `$XDG_RUNTIME_DIR`, shared by every
+  session of this user on the host. `flock` waits while another session holds
+  it.
 - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
 - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
