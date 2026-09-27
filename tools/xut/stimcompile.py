@@ -38,7 +38,7 @@ from xut.errors import XutError
 from xut.formats.xtr import Trace
 from xut.formats.xvec import Vec, XvecError, check_structure, free_runs
 from xut.validate import Report, validate
-from xut.wrap import DutMap
+from xut.wrap import Bit, DutMap
 
 TB = Path(__file__).resolve().parent / "hdl" / "xut_vector_tb.sv"
 OPS = {
@@ -167,16 +167,27 @@ def write_stim(vec: Vec, m: DutMap, out_dir: Path) -> Compiled:
     return c
 
 
+def out_port_bits(m: DutMap) -> dict[str, list[Bit]]:
+    """Each out_vec port's bits, MSB first (map order of ports)."""
+    return {
+        p: sorted((b for b in m.of("out") if b.port == p), key=lambda b: -b.index)
+        for p in m.out_ports()
+    }
+
+
+def port_values(ports: dict[str, list[Bit]], bits: str) -> dict[str, str]:
+    """One out_vec sample (MSB first) as per-port values (MSB first)."""
+    by_index = bits[::-1]  # by_index[i] is out_vec[i]
+    return {p: "".join(by_index[b.bit] for b in pb) for p, pb in ports.items()}
+
+
 def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str]) -> Trace:
     """The testbench's ``raw.txt`` as a trace. Every line must be ``S <n> <bits>`` with
     ``n`` a known sample, seen once, and exactly ``max(1, nout)`` bits, and every label
     must be printed exactly once; anything else is an error (never skipped or padded)."""
     t = Trace(dict(header))
     width = max(1, m.nout)
-    ports = {  # MSB first
-        p: sorted((b for b in m.of("out") if b.port == p), key=lambda b: -b.index)
-        for p in m.out_ports()
-    }
+    ports = out_port_bits(m)
     seen: set[int] = set()
     for n, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
@@ -194,8 +205,7 @@ def raw_to_trace(raw: str, labels: list[str], m: DutMap, header: dict[str, str])
                 f"raw.txt line {n}: {len(bits)} bits, but out_vec width is {width}"
             )
         seen.add(k)
-        by_index = bits[::-1]  # by_index[i] is out_vec[i]
-        t.add(labels[k], {p: "".join(by_index[b.bit] for b in pb) for p, pb in ports.items()})
+        t.add(labels[k], port_values(ports, bits))
     missing = [f"{k} ({labels[k]})" for k in range(len(labels)) if k not in seen]
     if missing:
         more = f", ... ({len(missing) - 5} more)" if len(missing) > 5 else ""
