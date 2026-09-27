@@ -27,25 +27,55 @@ jobs:
           # the PR's actual branch, so current_branch() can't discover it from git.
           XUT_BRANCH: ${{ github.head_ref }}
         run: uv run xut lint --branch --base "origin/${{ github.base_ref }}"
-  sim:
+  # Which CI work the change needs (tools/xut/ci_select.py). Fail-safe: only a pull
+  # request whose every changed file is a log/spec/plan/README/AGENTS.md skips the sim
+  # steps; anything else, or any doubt, runs everything.
+  changes:
     runs-on: ubuntu-24.04
+    outputs:
+      sim: ${{ steps.select.outputs.sim }}
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - id: select
+        run: python3 tools/xut/ci_select.py --event "${{ github.event_name }}" --base "origin/${{ github.base_ref }}"
+  sim:
+    # Always reports (unless the run is cancelled), so its check exists on every PR.
+    # The steps skip only on an explicit sim=false; if `changes` failed, the job
+    # fails (fail-safe: never a green sim check without its steps).
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - if: needs.changes.result != 'success'
+        run: |
+          echo "the changes job did not succeed (${{ needs.changes.result }}): failing"
+          exit 1
+      - if: needs.changes.outputs.sim == 'false'
+        run: echo "docs/logs-only change, see the changes job - sim steps skipped"
+      - if: needs.changes.outputs.sim != 'false'
+        uses: actions/checkout@v4
         with: {submodules: true}
-      - uses: astral-sh/setup-uv@v3
-      - run: uv sync --locked --extra dev
+      - if: needs.changes.outputs.sim != 'false'
+        uses: astral-sh/setup-uv@v3
+      - if: needs.changes.outputs.sim != 'false'
+        run: uv sync --locked --extra dev
       # Build xut-sim:1 (the SIM_IMAGE of tools/xut/container.py) with the GitHub
       # Actions layer cache, so the Verilator source build is not redone on every run.
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - if: needs.changes.outputs.sim != 'false'
+        uses: docker/setup-buildx-action@v3
+      - if: needs.changes.outputs.sim != 'false'
+        uses: docker/build-push-action@v6
         with:
           context: containers/sim
           load: true
           tags: xut-sim:1
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - run: uv run xut container versions
-      - run: uv run pytest -v -n auto --dist loadfile -m container
+      - if: needs.changes.outputs.sim != 'false'
+        run: uv run xut container versions
+      - if: needs.changes.outputs.sim != 'false'
+        run: uv run pytest -v -n auto --dist loadfile -m container
       # The flops L0/L1 vector tests on iverilog against the open-source UNISIM submodule
       # (review (b) #5). `xut run` exits 1 on any fail, including a disagreement that a
       # test lists in `expected_divergence` (an open finding, spec §8), so it only runs
@@ -54,11 +84,13 @@ jobs:
       # 4 on any error, unexplained fail or missing comparison, so nothing is masked.
       # `xut run` exit 1 means some result is fail or error: crosscheck classifies those.
       # Anything above 1 (interrupt 130, a crash) fails the job here.
-      - run: |
+      - if: needs.changes.outputs.sim != 'false'
+        run: |
           rc=0
           uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || rc=$?
           echo "xut run exit $rc"
           [ "$rc" -le 1 ]
       # --strict with the same selection: any selected test the run did not complete
       # (not-run or uncompared) is exit 4, so a partial run never looks clean.
-      - run: uv run xut crosscheck 'unit:flops' --level L0 --level L1 --style vector --model-source unisim-gh-2020.1 --strict
+      - if: needs.changes.outputs.sim != 'false'
+        run: uv run xut crosscheck 'unit:flops' --level L0 --level L1 --style vector --model-source unisim-gh-2020.1 --strict
