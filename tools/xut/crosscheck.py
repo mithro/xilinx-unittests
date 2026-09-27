@@ -794,17 +794,30 @@ def _explained(v: View, findings: list[Finding]) -> bool:
     )
 
 
+def _failed_cfgs(v: View) -> set[str] | None:
+    """The configurations ``v`` failed; ``None`` for a synthetic view without ``configs``."""
+    cfgs = v.result.get("configs")
+    return None if cfgs is None else {c["cfg"] for c in cfgs if c.get("status") == "fail"}
+
+
 def _companion_explained(
     v: View, findings: list[Finding], views: dict[tuple[str, str], View] | None
 ) -> bool:
     """An iverilog-vz ``fail`` is explained by its iverilog companion: iverilog failed the
     same flow and model source, a value finding explains that fail, and no
-    ``transform-bug`` finding separates the two (their traces agree), so iverilog-vz
-    shows exactly the disagreement already classified for iverilog."""
+    ``transform-bug`` finding separates the two on the configurations both ran, and every
+    configuration iverilog-vz failed iverilog also failed. Then iverilog-vz shows exactly
+    the disagreement already classified for iverilog."""
     if v.runner != "iverilog-vz" or views is None:
         return False
     iv = views.get((v.flow, "iverilog"))
     if iv is None or iv.status != "fail" or not _explained(iv, findings):
+        return False
+    # Only the configurations both ran were compared (a transform-bug is found there): a
+    # configuration iverilog-vz failed that iverilog did not also fail was never checked
+    # against anything, so it is not explained (fail closed).
+    vz_failed, iv_failed = _failed_cfgs(v), _failed_cfgs(iv)
+    if vz_failed is not None and (iv_failed is None or not vz_failed <= iv_failed):
         return False
     return not any((f.known_of or f.cls) == "transform-bug" and _applies(f, v) for f in findings)
 
