@@ -229,16 +229,36 @@ def companion_gap(vz: View | None, iv: View | None) -> str | None:
     return None if vz.status == "pass" else "error"
 
 
+_STAMP = ("tree_hash", "head")
+
+
+def _stale(v: View, ref: View) -> bool:
+    """``v`` was not measured at ``ref``'s clean tree: an unstamped or dirty result
+    (either one), or another ``tree_hash``/``head`` (ruling S50a, round 3)."""
+    for r in (v, ref):
+        if r.result.get("dirty") is not False or any(not r.result.get(k) for k in _STAMP):
+            return True
+    return any(v.result.get(k) != ref.result.get(k) for k in _STAMP)
+
+
 def verilator_unconfirmed(root: Path, ms: str, test_id: str, flow: str) -> str | None:
-    """``companion_gap`` of ``test_id``'s results on disk (``xut status record``)."""
+    """``companion_gap`` of ``test_id``'s results on disk (``xut status record``), or
+    ``stale`` (fail closed) when the iverilog-vz result, or the iverilog baseline it is
+    compared against, was not measured at the Verilator result's clean tree: a different
+    ``tree_hash`` or ``head``, or either result dirty or unstamped (ruling S50a)."""
     from xut.results import result_dir
 
-    views = {}
-    for r in ("iverilog", "iverilog-vz"):
+    views: dict[str, View | None] = {}
+    for r in ("verilator", "iverilog", "iverilog-vz"):
         d = result_dir(Path(root), flow, r, ms, test_id)
         present = (d / "result.json").is_file() or (d / "trace.xtr").is_file()
         views[r] = _view(d, flow, r, ms, test_id) if present else None
-    return companion_gap(views["iverilog-vz"], views["iverilog"])
+    vl, iv, vz = views["verilator"], views["iverilog"], views["iverilog-vz"]
+    if vz is None or vz.status == "not-run":
+        return "missing"
+    if vl is None or _stale(vz, vl) or (iv is not None and _stale(iv, vl)):
+        return "stale"
+    return companion_gap(vz, iv)
 
 
 # --- classification ----------------------------------------------------------------------

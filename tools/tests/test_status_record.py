@@ -97,6 +97,7 @@ def _result(
     tree_hash: str | None = "current",
     dirty: bool | None = False,
     tools: dict | None = None,
+    head: str = "abc",
 ) -> None:
     """A result.json as `xut run` writes it, stamped with the CURRENT tree hash (or
     ``tree_hash``/``dirty`` as given). A pass or fail runs configuration ``a`` unless
@@ -130,7 +131,7 @@ def _result(
             for c, st in configs
         ],
         tree_hash=tree_hash,
-        head="abc",
+        head=head,
         dirty=dirty,
     ).write(d)
 
@@ -691,6 +692,12 @@ def _vz_traces(repo: Path, tid: str, vz_q: str, ms: str = REFERENCE_MODEL_SOURCE
         ("missing", "error", "missing"),
         ("error", "error", "error"),
         ("z-refused", "error", "error"),  # a cocotb run XutDut refused (Z_MARK): error
+        # ruling S50a (round 3): measured at another tree, dirty, or unstamped: stale
+        ("stale", "error", "stale"),
+        ("stale-head", "error", "stale"),
+        ("dirty", "error", "stale"),
+        ("unstamped", "error", "stale"),
+        ("stale-baseline", "error", "stale"),  # the iverilog trace compared against
     ],
 )
 def test_a_verilator_pass_needs_its_iverilog_vz_companion(repo, vz, want, gap):
@@ -710,6 +717,18 @@ def test_a_verilator_pass_needs_its_iverilog_vz_companion(repo, vz, want, gap):
             _vz_traces(repo, ce, "1")
     elif vz == "error":
         _result(repo, ce, "iverilog-vz", "error")
+    elif vz in ("stale", "dirty", "unstamped"):
+        kw = {"stale": {"tree_hash": "sha256:" + "0" * 64}, "dirty": {"dirty": True},
+              "unstamped": {"tree_hash": None, "dirty": None}}[vz]  # fmt: skip
+        _result(repo, ce, "iverilog-vz", "pass", **kw)
+        _vz_traces(repo, ce, "1")
+    elif vz == "stale-head":
+        _result(repo, ce, "iverilog-vz", "pass", head="def")
+        _vz_traces(repo, ce, "1")
+    elif vz == "stale-baseline":
+        _result(repo, ce, "iverilog-vz", "pass")
+        _result(repo, ce, "iverilog", "fail", head="def")  # record checks its tree only
+        _vz_traces(repo, ce, "1")
     elif vz == "z-refused":
         _result(repo, ce, "iverilog-vz", "error", style="cocotb", configs=[("a", "error")],
                 reason="cocotb test drove z into the DUT: FDRE: in_vec = 0z0")  # fmt: skip
