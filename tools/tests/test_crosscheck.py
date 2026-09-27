@@ -1458,7 +1458,8 @@ def test_cli_strict_is_clean_when_the_selection_matches_the_run(repo):
     assert r.exit_code == 0, r.output
 
 
-def test_cli_strict_with_nothing_selected_exits_4(repo):
+def test_cli_strict_with_nothing_selected_is_clean_and_says_so(repo):
+    """As xut run: filters leaving no test (a unit before its tests exist) exit 0."""
     _two_tests(repo)
-    assert _xc("TOYFF", "--style", "cocotb", "--strict").exit_code == 4
-    assert _xc("TOYFF", "--style", "cocotb").exit_code == 0
+    r = _xc("TOYFF", "--style", "cocotb", "--strict")
+    assert r.exit_code == 0 and "no tests selected" in r.output

@@ -59,5 +59,6 @@ jobs:
           uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || rc=$?
           echo "xut run exit $rc"
           [ "$rc" -le 1 ]
-      # --strict with the same selection: a test the run did not complete is exit 4.
+      # --strict with the same selection: any selected test the run did not complete
+      # (not-run or uncompared) is exit 4, so a partial run never looks clean.
       - run: uv run xut crosscheck 'unit:flops' --level L0 --level L1 --style vector --model-source unisim-gh-2020.1 --strict
