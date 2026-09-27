@@ -479,11 +479,7 @@ def _run_scripts(
     def job(script: str) -> None:
         if halt.is_set():  # interrupted: never start another container
             return
-        try:
-            _run_one(exe, work, script, lock)
-        except KeyboardInterrupt:
-            halt.set()
-            raise
+        _run_one(exe, work, script, lock)
 
     pool = ThreadPoolExecutor(max_workers=max(1, jobs))
     try:

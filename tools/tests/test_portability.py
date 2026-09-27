@@ -620,7 +620,7 @@ def test_cli_jobs_defaults_stay_within_the_limit(monkeypatch):
 def test_run_scripts_interrupt_kills_the_live_containers(tmp_path, monkeypatch):
     from xut import container
 
-    work, scripts = _pool_work(tmp_path, 3)
+    work, scripts = _pool_work(tmp_path, 1)  # two scripts: jobs=1 leaves no race
     killed: list[bool] = []
     monkeypatch.setattr(container, "kill_live", lambda: killed.append(True) or [])
 
