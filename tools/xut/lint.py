@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jsonschema
 import yaml
@@ -22,6 +23,9 @@ from xut.schemas import validate as validate_schema
 from xut.status import load_status
 from xut.testspec import DECLARATION_OF, DECLARED_RUNNERS, finding_id, finding_status
 from xut.workunits import WorkUnit, branch_slug, owned_paths, unit_for_branch
+
+if TYPE_CHECKING:
+    from xut.portability import Row
 
 #: Tracked-file extensions checked for the SPDX header (global constraints; controller
 #: ruling: also `tools/hooks/*` regardless of extension).
@@ -490,31 +494,34 @@ def check_status_files(root: Path) -> list[LintIssue]:
 # --- portability-agreement, verilatorize-equiv ----------------------------------------
 
 PORTABILITY = "status/PORTABILITY.md"
-#: The runners the portability table measures (`xut.portability.TOOLS`).
-_PORTABILITY_RUNNERS = ("iverilog", "verilator")
 
 
-def _declared_tests(root: Path) -> list[tuple[str, str, dict]]:
-    """``(test.yaml path, primitive, test)`` for every test of every valid test.yaml (an
-    invalid one is `check_tests_documented`'s to report)."""
-    out = []
-    for f in sorted(root.glob("tests/**/test.yaml")):
-        try:
-            data = yaml.safe_load(f.read_text())
-            validate_schema(data, "test")
-        except (yaml.YAMLError, jsonschema.ValidationError):
-            continue
-        rel = str(f.relative_to(root))
-        out += [(rel, data["primitive"], t) for t in data["tests"]]
-    return out
+def _model_of(root: Path, family: str, prim: str) -> str:
+    """The model a primitive's tests run: its catalog entry's ``model.file`` stem (a
+    retarget can differ from the primitive), else the primitive's own name."""
+    from xut.catalog.model import load_entry
+
+    try:
+        entry = load_entry(family, prim, root)
+    except (OSError, yaml.YAMLError, jsonschema.ValidationError, XutError):
+        return prim
+    return Path(entry.model.get("file", f"{prim}.v")).stem
 
 
 def check_portability(root: Path) -> list[LintIssue]:
     """The tests agree with `status/PORTABILITY.md` (spec §6.2: "Test declarations of
-    `unsupported` must match this table"):
+    `unsupported` must match this table"). Tests are matched to rows by the model their
+    primitive runs (the catalog's `model.file`, so a retarget finds its row):
 
     * `portability-agreement` (error): a test declares `iverilog` or `verilator` `"yes"`
-      for a primitive whose row, in any model-source section, says `no`;
+      for a primitive whose row, in any model-source section, says `no`. When the row's
+      reason is an `infra-error` (the smoke run itself failed, PR #10 CQ1), the error asks
+      for the table to be regenerated instead: the model never ran, so nothing is known
+      about it;
+    * `portability-agreement` (warning): a test declares `unsupported` for a runner every
+      row of its model says runs (and, for `verilator`, whose equivalence does not block
+      it): the declaration matches no row, so it may hide a divergence (AGENTS.md §9); or
+      a test's model has no row in any section (the table predates it);
     * `verilatorize-equiv` (error): a gated row (verilatorize `transformed`, or `(gated:
       ...)`: a transformed model in its hierarchy, ruling S45/S47) has no equivalence
       verdict (`—`), whatever the tests say (spec §6.2: "`xut lint` fails if a transformed
@@ -523,7 +530,7 @@ def check_portability(root: Path) -> list[LintIssue]:
       not missing: the Verilator results are refused anyway.
 
     A missing table is one warning (it is generated on main only)."""
-    from xut.portability import NONE, PortabilityError, parse
+    from xut.portability import NONE, TOOLS, PortabilityError, parse
 
     root = Path(root)
     path = root / PORTABILITY
@@ -541,10 +548,10 @@ def check_portability(root: Path) -> list[LintIssue]:
     except PortabilityError as e:
         return [LintIssue(PORTABILITY, "portability-agreement", str(e), "error")]
     issues: list[LintIssue] = []
-    by_prim: dict[str, list[tuple[str, object]]] = {}
+    by_model: dict[str, list[tuple[str, Row]]] = {}
     for section, rows in table.items():
         for model, row in rows.items():
-            by_prim.setdefault(model, []).append((section, row))
+            by_model.setdefault(model, []).append((section, row))
             if row.gated and row.equiv == NONE:
                 issues.append(
                     LintIssue(
@@ -556,34 +563,86 @@ def check_portability(root: Path) -> list[LintIssue]:
                         "error",
                     )
                 )
-    for rel, prim, t in _declared_tests(root):
-        tid, runners = t["id"], t.get("runners", {})
-        for section, row in by_prim.get(prim, []):
-            for runner in _PORTABILITY_RUNNERS:
-                if runners.get(runner) == "yes" and not row.ok(runner):
-                    issues.append(
-                        LintIssue(
-                            rel,
-                            "portability-agreement",
-                            f'{tid}: declares {runner}: "yes", but {PORTABILITY} ({section}) '
-                            f"says {prim} does not run on {runner}: {row.why(runner)}; declare "
-                            f'runners.{runner}: "unsupported" with that reason in '
-                            f"unsupported_reasons.{runner}",
-                            "error",
-                        )
-                    )
-            if runners.get("verilator") == "yes" and row.equiv in ("fail", "error"):
-                issues.append(
-                    LintIssue(
-                        rel,
-                        "verilatorize-equiv",
-                        f'{tid}: declares verilator: "yes", but the equivalence check of '
-                        f"{prim} is {row.equiv} in {PORTABILITY} ({section}), which blocks "
-                        f"its Verilator results (spec §6.2): {row.why('equiv') or row.reason}",
-                        "error",
-                    )
-                )
+    models: dict[tuple[str, str], str] = {}
+    for rel, data in _valid_test_files(root):
+        prim = data["primitive"]
+        key = (data["family"], prim)
+        if key not in models:
+            models[key] = _model_of(root, *key)
+        model = models[key]
+        rows = by_model.get(model, [])
+        for t in data["tests"]:
+            issues += _test_portability(rel, prim, model, t, rows, TOOLS)
     return issues
+
+
+def _test_portability(
+    rel: str, prim: str, model: str, t: dict, rows: list[tuple[str, Row]], tools: tuple[str, ...]
+) -> list[LintIssue]:
+    """`check_portability`'s rules for one test against its model's rows."""
+    tid, runners = t["id"], t.get("runners", {})
+    what = prim if model == prim else f"{prim} (model {model})"
+    if not rows:
+        return [
+            LintIssue(
+                rel,
+                "portability-agreement",
+                f"{tid}: {PORTABILITY} has no row for {what} in any section (regenerate it)",
+                "warning",
+            )
+        ]
+    out: list[LintIssue] = []
+    for section, row in rows:
+        for runner in tools:
+            if runners.get(runner) != "yes" or row.ok(runner):
+                continue
+            why = row.why(runner)
+            if why.startswith("infra-error"):
+                msg = (
+                    f'{tid}: declares {runner}: "yes", but {PORTABILITY} ({section}) has an '
+                    f"infrastructure failure for {what} on {runner}: {why}; the model never "
+                    "ran, so the table must be regenerated (uv run xut portability --write "
+                    "on main), not the test changed"
+                )
+            else:
+                msg = (
+                    f'{tid}: declares {runner}: "yes", but {PORTABILITY} ({section}) says '
+                    f"{what} does not run on {runner}: {why}; declare "
+                    f'runners.{runner}: "unsupported" with that reason in '
+                    f"unsupported_reasons.{runner}"
+                )
+            out.append(LintIssue(rel, "portability-agreement", msg, "error"))
+        if runners.get("verilator") == "yes" and row.equiv in ("fail", "error"):
+            out.append(
+                LintIssue(
+                    rel,
+                    "verilatorize-equiv",
+                    f'{tid}: declares verilator: "yes", but the equivalence check of '
+                    f"{what} is {row.equiv} in {PORTABILITY} ({section}), which blocks "
+                    f"its Verilator results (spec §6.2): {row.why('equiv') or row.reason}",
+                    "error",
+                )
+            )
+    for runner in tools:
+        if runners.get(runner) != "unsupported":
+            continue
+        blocked = [
+            r
+            for _, r in rows
+            if not r.ok(runner) or (runner == "verilator" and r.equiv in ("fail", "error"))
+        ]
+        if not blocked:
+            out.append(
+                LintIssue(
+                    rel,
+                    "portability-agreement",
+                    f'{tid}: declares {runner}: "unsupported", but every {PORTABILITY} row of '
+                    f"{what} says it runs on {runner}: the declaration matches no row (an "
+                    "x stimulus is a valid reason; a divergence is a finding, AGENTS.md §9)",
+                    "warning",
+                )
+            )
+    return out
 
 
 # --- orchestration ---------------------------------------------------------------

@@ -34,7 +34,10 @@ in ``jobs.txt`` order (the slowest first), each container's own log in
 elapsed_s=E`` every 10 s. A container the kernel OOM-killed at its cap is category ``oom``:
 the host copies the executor's ``xut-container: oom-killed`` line into ``<tool>.log`` and,
 if the script was killed before it could, writes ``<tool>.rc`` (137) and its ``done.txt``
-line itself.
+line itself. An infrastructure failure (a host exception such as ``ContainerError``, or
+docker run's own exit 125) is category ``infra-error`` (``INFRA_MARK``): the model never
+ran, so ``xut lint`` asks for the table to be regenerated rather than for tests to declare
+the simulator unsupported.
 The rows go to ``build/portability/<model-source>.json`` (a ``--models`` run: under
 ``build/portability/partial/``, never mistaken for a full table, and its work directory is
 ``build/portability/partial/<model-source>/``, so it never deletes a full run's).
@@ -69,10 +72,20 @@ if TYPE_CHECKING:
     from xut.verilatorize.driver import ModelEntry
 
 CATEGORIES = (
-    "udp", "tri0-tri1", "real", "secureip", "strength", "deassign", "oom", "timeout", "other",
+    "infra-error", "udp", "tri0-tri1", "real", "secureip", "strength", "deassign", "oom",
+    "timeout", "other",
 )  # fmt: skip
 SMOKE_OK = "XUT_SMOKE_OK"
+#: 124 (``timeout``'s own exit) is a timeout; 137 (SIGKILL) is ``timeout -k``'s kill or an
+#: OOM kill, which docker's ``State.OOMKilled`` tells apart (``xut-container: oom-killed``:
+#: checked on this host for a child killed at the cap while the main process exits 0);
+#: without that mark a 137 is reported as a timeout, its log line saying ``timeout-or-kill``
 TIMEOUT_MARK = "xut-smoke: timeout"
+#: the host's note for an infrastructure failure (a host exception, docker run's own exit
+#: 125): the model never ran, so the cell is category ``infra-error``, never a model verdict
+INFRA_MARK = "xut-smoke: infra-error:"
+#: docker run's own failure (the container never started)
+DOCKER_RUN_FAILED = 125
 #: the host's note when a script wrote no rc: the container's exit code and last log line
 CONTAINER_EXIT = "xut-container: exit"
 TOOLS = ("iverilog", "verilator")
@@ -181,16 +194,21 @@ def error_lines(log_text: str) -> list[str]:
     return [
         ln.strip()
         for ln in log_text.splitlines()
-        if _ERROR_LINE.search(ln) and not ln.lstrip().startswith(("%Warning", "$ ", "xut-smoke:"))
+        if _ERROR_LINE.search(ln)
+        and not ln.lstrip().startswith(("%Warning", "$ "))
+        and (not ln.startswith("xut-smoke:") or ln.startswith(INFRA_MARK))
     ]
 
 
 def classify(log_text: str) -> str:
-    """The category of a failed smoke log (``CATEGORIES``): an OOM kill at the container's
-    memory cap first, then a timeout (an OOM-killed tool exits 137, which the script also
-    marks as a timeout), then the first category any error line matches, else ``other``."""
+    """The category of a failed smoke log (``CATEGORIES``): an infrastructure failure
+    first (``INFRA_MARK``), then an OOM kill at the container's memory cap, then a timeout
+    (an OOM-killed tool exits 137, which the script marks as ``timeout-or-kill``), then the
+    first category any error line matches, else ``other``."""
     from xut.container import OOM_MARK
 
+    if INFRA_MARK in log_text:
+        return "infra-error"
     if OOM_MARK in log_text:
         return "oom"
     if TIMEOUT_MARK in log_text:
@@ -208,13 +226,16 @@ def _short(text: str) -> str:
 
 
 def failure(log_text: str, rc: int | None) -> str:
-    """``<category>: <first error line>`` of a failed smoke log (an OOM kill: the line
-    naming the memory cap; a script that wrote no rc: the host's container-exit note)."""
+    """``<category>: <first error line>`` of a failed smoke log (an infrastructure failure:
+    the host's note; an OOM kill: the line naming the memory cap; a script that wrote no
+    rc: the host's container-exit note)."""
     from xut.container import OOM_MARK
 
-    oom = [ln.strip() for ln in log_text.splitlines() if ln.startswith(OOM_MARK)]
-    exits = [ln.strip() for ln in log_text.splitlines() if ln.startswith(CONTAINER_EXIT)]
-    first = (oom or (exits if rc is None else []) or error_lines(log_text) or [""])[0]
+    lines = log_text.splitlines()
+    infra = [ln.removeprefix(INFRA_MARK).strip() for ln in lines if ln.startswith(INFRA_MARK)]
+    oom = [ln.strip() for ln in lines if ln.startswith(OOM_MARK)]
+    exits = [ln.strip() for ln in lines if ln.startswith(CONTAINER_EXIT)]
+    first = (infra or oom or (exits if rc is None else []) or error_lines(log_text) or [""])[0]
     if not first:
         first = f"exit {rc}, no {SMOKE_OK}" if rc is not None else "the script did not finish"
     return f"{classify(log_text)}: {_short(first)}"
@@ -324,7 +345,8 @@ if [ "$rc" -eq 0 ]; then
   timeout -k 10 {run_t} {run} >> {tool}.log 2>&1 || rc=$?
   echo "xut-smoke: run exit $rc" >> {tool}.log
 fi
-if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "{timeout_mark} ($rc)" >> {tool}.log; fi
+if [ "$rc" -eq 124 ]; then echo "{timeout_mark} ($rc)" >> {tool}.log; fi
+if [ "$rc" -eq 137 ]; then echo "{timeout_mark}-or-kill ($rc)" >> {tool}.log; fi
 {cleanup} >> {tool}.log 2>&1
 echo "$rc" > {tool}.rc
 echo "{name}" >> ../../done.txt
@@ -425,10 +447,11 @@ def _outcome(d: Path, tool: str) -> tuple[bool, str]:
     text = log.read_text(errors="replace") if log.is_file() else ""
     if not rc_file.is_file():
         return False, failure(text, None)
+    raw = rc_file.read_text().strip()
     try:
-        rc = int(rc_file.read_text().strip())
-    except ValueError:
-        rc = None
+        rc = int(raw)
+    except ValueError:  # the script finished and wrote garbage: say so
+        return False, f"{classify(text)}: unreadable {tool}.rc {_short(repr(raw))}"
     if rc == 0 and SMOKE_OK in text:
         return True, ""
     return False, failure(text, rc)
@@ -458,7 +481,7 @@ def _run_one(exe: Executor, work: Path, script: str, lock: threading.Lock) -> No
         timed_out = True
         notes.append(f"{TIMEOUT_MARK} (host: {e})")
     except (XutError, OSError, subprocess.SubprocessError) as e:
-        notes.append(f"xut-smoke: host error: {e}")
+        notes.append(f"{INFRA_MARK} host error: {type(e).__name__}: {e}")
     text = clog.read_text(errors="replace") if clog.is_file() else ""
     oom = [ln.strip() for ln in text.splitlines() if ln.startswith(OOM_MARK)]
     notes = oom[:1] + notes
@@ -466,7 +489,9 @@ def _run_one(exe: Executor, work: Path, script: str, lock: threading.Lock) -> No
     if not has_rc and not oom and rc is not None:
         # the script never finished and nothing says why: docker run's own failure (S48a M-5)
         rest = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("$ ")]
-        notes.append(f"{CONTAINER_EXIT} {rc}: {rest[-1] if rest else '(no output)'}")
+        note = f"{CONTAINER_EXIT} {rc}: {rest[-1] if rest else '(no output)'}"
+        # exit 125: docker run itself failed (the container never started): infrastructure
+        notes.append(f"{INFRA_MARK} {note}" if rc == DOCKER_RUN_FAILED else note)
     if notes:
         with (d / f"{tool}.log").open("a") as f:
             f.write("".join(f"{n}\n" for n in notes))
