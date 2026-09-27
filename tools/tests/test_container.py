@@ -514,10 +514,10 @@ def test_docker_memory_refuses_a_malformed_cap(tmp_path, monkeypatch, bad):
         DockerExecutor(root=tmp_path)
 
 
-def _fake_docker(calls, run_rc=0, oom="false", run_exc=None, rm_exc=None):
+def _fake_docker(calls, run_rc=0, oom="false", run_exc=None, rm_exc=None, exit_code=None):
     """A fake `subprocess.run`: `docker run` exits `run_rc` (or raises
-    `run_exc(argv, timeout)`),
-    `docker inspect` answers `oom`, `docker rm -f` raises `rm_exc` if given."""
+    `run_exc(argv, timeout)`), `docker inspect` answers `oom` and the container's exit code
+    (`exit_code`, default `run_rc`), `docker rm -f` raises `rm_exc` if given."""
 
     def fake_run(argv, **kw):
         calls.append(argv)
@@ -526,7 +526,8 @@ def _fake_docker(calls, run_rc=0, oom="false", run_exc=None, rm_exc=None):
                 raise run_exc(argv, kw.get("timeout"))
             return subprocess.CompletedProcess(argv, run_rc)
         if argv[:2] == ["docker", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, stdout=f"{oom}\n", stderr="")
+            code = run_rc if exit_code is None else exit_code
+            return subprocess.CompletedProcess(argv, 0, stdout=f"{oom} {code}\n", stderr="")
         if argv[:3] == ["docker", "rm", "-f"] and rm_exc is not None:
             raise rm_exc
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
@@ -546,7 +547,13 @@ def test_docker_oom_kill_is_logged_and_keeps_rc_137(tmp_path, monkeypatch):
     rc = DockerExecutor(root=tmp_path).run(["simx"], cwd=tmp_path, log=log, timeout_s=5)
     assert rc == 137
     name = _name(calls)
-    assert calls[1] == ["docker", "inspect", "-f", "{{.State.OOMKilled}}", name]
+    assert calls[1] == [
+        "docker",
+        "inspect",
+        "-f",
+        "{{.State.OOMKilled}} {{.State.ExitCode}}",
+        name,
+    ]
     assert calls[2] == ["docker", "rm", "-f", name]
     assert log.read_text().splitlines()[-1] == "xut-container: oom-killed at memory cap 4g"
     assert container.OOM_MARK in log.read_text()
@@ -872,3 +879,36 @@ def test_kill_live_misses_no_container_started_around_it(tmp_path, monkeypatch):
     late = [n for n, halted in started if halted]
     assert all(n in killed for n in late), (late, killed)
     assert len(refused) == 8  # every worker was stopped by the halt
+
+
+def test_exit_137_without_oomkilled_is_an_inferred_oom_kill(tmp_path, monkeypatch):
+    """Docker setups that never set State.OOMKilled (GitHub's runners): a container exit of
+    137 with no xut timeout is still recorded as an OOM kill, marked as inferred."""
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_rc=137, oom="false"))
+    log = tmp_path / "l.log"
+    assert DockerExecutor(root=tmp_path).run(["simx"], cwd=tmp_path, log=log, timeout_s=5) == 137
+    text = log.read_text()
+    assert container.oom_line("4g") in text
+    assert "inferred: exit 137" in text
+
+
+def test_a_timeout_kill_is_never_inferred_to_be_an_oom_kill(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    timeout = lambda argv, t: subprocess.TimeoutExpired(argv, t)  # noqa: E731
+    monkeypatch.setattr(
+        subprocess, "run", _fake_docker(calls, run_exc=timeout, oom="false", exit_code=137)
+    )
+    log = tmp_path / "l.log"
+    with pytest.raises(RunTimeout):
+        DockerExecutor(root=tmp_path).run(["simx"], cwd=tmp_path, log=log, timeout_s=5)
+    assert container.OOM_MARK not in log.read_text()
+
+
+def test_a_clean_exit_is_never_an_oom_kill(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls, run_rc=1, oom="false"))
+    log = tmp_path / "l.log"
+    assert DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=log, timeout_s=5) == 1
+    assert container.OOM_MARK not in log.read_text()

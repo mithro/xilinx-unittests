@@ -295,9 +295,11 @@ class DockerExecutor:
                     f.write(f"xut-container: interrupted: {name} not started\n")
                     raise RunCancelled(f"xut was interrupted: not starting {argv[0]} ({name})")
                 _LIVE.add(name)
+            timed_out = False
             try:
                 p = subprocess.run(full, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s)
             except subprocess.TimeoutExpired as e:
+                timed_out = True
                 # Killing the `docker run` client does not stop the container; kill it.
                 try:
                     subprocess.run(
@@ -315,22 +317,34 @@ class DockerExecutor:
             finally:
                 # Every path (a result, a timeout, an exception): record an OOM kill, then
                 # remove the container (no --rm: the check needs it stopped, not gone).
-                self._finish(name, f)
+                self._finish(name, f, timed_out)
         return p.returncode
 
-    def _finish(self, name: str, f: TextIO) -> None:
+    def _finish(self, name: str, f: TextIO, timed_out: bool = False) -> None:
         """Append the OOM line to `f` if container `name` was OOM-killed, then remove it,
         even when the check is interrupted (S48a M-1). A failure of either step is logged,
-        never raised: it must not mask the run's own result or exception."""
+        never raised: it must not mask the run's own result or exception.
+
+        Some docker/cgroup setups (seen on GitHub's runners) never set `State.OOMKilled`
+        when the kernel kills a process at the cap: the container just exits 137. Only the
+        cap or a `docker kill` can SIGKILL the container's main process, and xut kills only
+        on its own timeout, so an exit of 137 without a timeout is recorded as an OOM kill,
+        marked as inferred."""
         try:
             q = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.OOMKilled}}", name],
+                ["docker", "inspect", "-f", "{{.State.OOMKilled}} {{.State.ExitCode}}", name],
                 capture_output=True,
                 text=True,
                 timeout=_CLEANUP_TIMEOUT_S,
             )
-            if q.returncode == 0 and (q.stdout or "").strip() == "true":
+            oom, _, code = (q.stdout or "").strip().partition(" ")
+            if q.returncode == 0 and oom == "true":
                 f.write(oom_line(self.memory) + "\n")
+            elif q.returncode == 0 and code == "137" and not timed_out:
+                f.write(
+                    oom_line(self.memory)
+                    + " (inferred: exit 137 with no xut timeout; docker reported no OOM kill)\n"
+                )
         except (OSError, subprocess.SubprocessError) as e:
             f.write(f"xut-container: docker inspect {name} failed: {e}\n")
         finally:
