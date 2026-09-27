@@ -1105,7 +1105,8 @@ If Step 0 showed P1 unmerged, branch from `origin/infra/unit-prereqs` instead of
   - The header comment names the UG953 pages every fact below comes from (clean room), and records doc notes (typos, a template that contradicts the table) as comments.
   - `claims:` one entry per documented behavioural statement: `{id: <PRIM>.C<n>, page: <page>, provenance: "doc:<page>", text: "<paraphrase, at most 200 characters>"}`. The page is the one the statement is on. Never quote more than a phrase: the text is a paraphrase (no AMD prose).
   - Do not add a claim for inferred behaviour. A claim is a documented statement; rulings S44 and S52 let only outputs decided by documented rules credit claims, so an inferred claim could never be covered.
-  - A documented rule that no simulation can reach (a placement or usage rule, like FDRE.C8) is still a claim. The test that would cover it lists it in `gaps` as `claim:<id> — <why>`.
+  - A documented rule that no simulation can reach (a placement or usage rule of one instance's configuration, like FDRE.C8) is still a claim. The test that would cover it lists it in `gaps` as `claim:<id> — <why>`.
+  - Statements about how Vivado may **pack several primitives** together (LUT1–LUT5's "can be grouped with … into a single LUT6", p488 etc.) are not claims: they describe the tool's placement of many instances, not a behaviour or a configuration rule of one. Record them as a comment in the overrides, as luts does.
   - `ports:` `{<P>: {active: high|low}}` for every async/gate port whose active level UG953 states (spec §9: gives `assert`/`release` bins); a corrected `doc_function` (a paraphrase of at most 120 characters) where the extractor cut it.
   - `attributes:` correct an `allowed` list only where UG953 differs from the generated one, with the page in a comment. The generated lists are advisory (AGENTS.md, catalog notes).
   - `crosses:` only for attribute pairs whose interaction UG953 documents, over enumerated attributes only (lint rule `crosses-enumerated`). A cross value pair UG953 forbids is a bin no legal configuration can reach: it goes in a `gaps` entry citing the rule's page.
@@ -1169,7 +1170,7 @@ Provenance and claim rules:
 - `doc:<page>` where UG953 states the behaviour on that page; the page is the rule's own (an inversion attribute's page for an output an inversion shaped: ruling S32's `ATTR_PAGE`).
 - `inferred:<reason>` where UG953 is silent. The reason is one token: no whitespace, `#`, `|`, `=` or `,` (use `_`, `;`, `/`, `(`, `)`, `{`, `}`); it must be checkable ("UG953_names_no_GSR_effect_on_a_LUT"), not a placeholder.
 - `-` only where UG953 **declares** a value undefined, with `doc:` provenance (ruling S30: where UG953 is silent, give a definite inferred value, so a disagreement becomes a `doc-gap` finding, never a mask). `Out` refuses `-` with an `inferred:` tag.
-- A claim is hit only where its documented rule decides the output at that event (S32): not from a probe, not redundantly from an earlier decision, not for an edge that decides nothing. An output decided by an inferred rule alone credits no claim (S44). Ruling S52: nor does an output whose **value depends on an inferred detail**, even when the rule it follows is documented (CFGLUT5's reconfiguration is documented, its bit order is not). Such an output is exercised, tagged `inferred:`, and credits nothing. Credit the claim only from outputs you can prove independent of the inferred detail (for CFGLUT5: uniform contents, all 0 or all 1); if no test can produce one, the claim goes to `gaps`. Write a `doc-gap` finding stub by hand for the missing documentation (Task B1 shows the form), so crosscheck later records what UNISIM does.
+- A claim is hit only where its documented rule decides the output at that event (S32): not from a probe, not redundantly from an earlier decision, not for an edge that decides nothing. An output decided by an inferred rule alone credits no claim (S44). Ruling S52: nor does an output whose **value depends on an inferred detail**, even when the rule it follows is documented (CFGLUT5's reconfiguration is documented, its bit order is not). Such an output is exercised, tagged `inferred:`, and credits nothing. Credit the claim only from outputs you can prove independent of the inferred detail. Ruling S53: track that knowledge **explicitly** in the model, never by testing state computed under the inference (CFGLUT5's contents look uniform after 31 ones shifted into INIT=1 only under the inferred direction; the model instead tracks "known-uniform": uniform at power-on with only equal bits shifted in since, or 32 equal shifts in a row). Every credited claim also needs at least one **pure configuration**, one whose every sample is order-independent, because status credits per configuration, and a configuration with one mismatching inferred bit fails and credits nothing (spec §9, S21/S23); `xut.unitkit.UnitGuards` checks this. If no pure configuration can decide a claim, the claim goes to `gaps` and the plan says so. Write a `doc-gap` finding stub by hand for the missing documentation (Task B1 shows the form), so crosscheck later records what UNISIM does.
 - The model is written before, and committed without, any simulator run of the unit's tests. Once tests run, it changes only for a contradiction with UG953, with a test that shows it.
 
 - [ ] **Step 1: Write the failing model tests** in `test_<unit>_models.py`. For every claim: a test that drives the documented situation, asserts the output bits, asserts the exact provenance against a **literal** page table in the test (never read from the model), and asserts the claim is hit; and a negative test that the claim is **not** hit where its rule does not decide the output. Also: the defaults (no attribute set), every inferred path (tagged `inferred:`, credits nothing), the contract guards, and GTS raising `ModelUnsupported`. Parametrize exactly (`[(p, j) for p ... for j in range(...)]`) rather than skipping inapplicable combinations.
@@ -1191,53 +1192,40 @@ uv run ruff format models tests/7series/<group>/_shared/<unit> > .cache/ruff.log
 
 Expected: all pass, no skips; ruff clean. Optional but recommended (the step-2 reviewers did it): revert one rule at a time in a scratch copy of the model (a wrong page, a claim hit on a probe, a missing guard) and confirm some test fails for each.
 
-- [ ] **Step 4: Commit** the model before any test file that a simulator will run:
+- [ ] **Step 4: Commit** the model before any test file that a simulator will run. Stage every file the model tests import (Part B's model tests import the top part of `<unit>_recipes.py`), so the commit's own tests pass:
 
 ```bash
-git add models/xut_models/7series tests/7series/<group>/_shared/<unit>/test_<unit>_models.py && git commit -m "<unit>: add clean-room golden models for <PRIMS> (UG953 pp. <pages>)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add models/xut_models/7series tests/7series/<group>/_shared/<unit>/test_<unit>_models.py tests/7series/<group>/_shared/<unit>/<unit>_recipes.py && git commit -m "<unit>: add clean-room golden models for <PRIMS> (UG953 pp. <pages>)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task A3: Recipes, generators, the metadata generator and the reach guard
+### Task A3: Recipes, the metadata generator and the guards
 
 **Files:**
-- Create: `tests/7series/<group>/_shared/<unit>/<unit>_recipes.py`, `<unit>_tests.py`, `test_<unit>_tests.py`
-- Create: `tests/7series/<group>/<PRIM>/vectors/gen.py` per primitive
-- Create (generated, committed): `tests/7series/<group>/<PRIM>/test.yaml`, `README.md`
+- Create: `tests/7series/<group>/_shared/<unit>/<unit>_recipes.py` (complete it), `<unit>_tests.py`, `test_<unit>_tests.py`
+- Create (generated by `<unit>_tests.py`, committed): per primitive `test.yaml`, `README.md`, `vectors/gen.py`, and (Tasks A4, A5) the cocotb module and the sv wrappers
 
 **Interfaces:**
-- Consumes: `GenContext`, `VecBuilder` (`init`, `set`, `async_`, `edge`, `cycle`, `glbl`, `sample`, `simultaneous`, `build`); `xut.status.port_class_bins`; `xut.golden.replay`, `coverage_reach`
-- Produces: `generators(prim) -> dict[str, Callable[[GenContext], Iterator[Vec]]]`; `tests_for(kind) -> list[tuple[dict, str]]`; `render_test_yaml`, `render_readme`, `main(prims)`
+- Consumes: `GenContext`, `VecBuilder` (`init`, `set`, `async_`, `edge`, `cycle`, `glbl`, `sample`, `simultaneous`, `build`); `xut.unitkit` (Task P1)
+- Produces: `generators(prim)`; `tests_for(kind) -> list[tuple[dict, str]]`; `render(prim) -> dict[str, str]` (every generated file by its path under the primitive's directory); `UNIT = unitkit.Unit(...)`; `main(prims)`
 
 Recipe rules:
 
 - A recipe drives inputs and places samples; it never computes an expected value. `VecBuilder` makes every file satisfy the spec §5.1 class rules; a builder error is a recipe bug.
 - **Legality model.** Where UG953 forbids attribute values or combinations, the recipes enumerate configurations through one `legal(attrs) -> str | None` function (the reason with its page, or `None`), so no L0–L2 configuration is illegal. Each documented illegal case gets a reject configuration: `ctx.dut(cfg, allow_illegal=True, expect="reject", illegal=[<names>], **attrs)` with one `sample()`.
-- **Sampling (spec §4.2).** Every value of an enumerated attribute; a bit-vector or integer attribute by its boundaries, walking ones and walking zeros, and seeded random values from `ctx.rng` (the test's seed); declared crosses pairwise, over legal pairs only. Record the plan in each test's `attr_sampling`.
+- **Sampling (spec §4.2).** Every value of an enumerated attribute; a bit-vector or integer attribute by its boundaries, walking ones and walking zeros, and seeded random values from `ctx.rng` (the test's seed); declared crosses pairwise, over legal pairs only. Record the plan in each test's `attr_sampling`. Name every tuning constant (random step counts and probabilities) and derive widths from the kind, never a literal.
 - **Class bins are reached only by real events** (rulings S19, S33): `VecBuilder.set` of an unchanged value emits nothing; `init` always emits; the power-on 0 of an input is not a `set`; a configuration that sets no attribute reaches no `attr:` bin. Prime a value before the transition you need (flops review N2), end a sweep by driving inputs back to 0, and set attributes explicitly in the configurations meant to reach them.
 - **Observe power-on first** (flops review M6): sample once before the first change, so INIT/default values are compared.
+- **Pure configurations** (S52, S53): where a model tags outputs `inferred:` under documented rules, give every claim and bin a configuration whose samples are all documented (read only where the order-free state is known).
 - **Hardware.** Keep GSR pulses out of tests meant for hardware (spec §7.2); put them in their own test declared `hw: "unsupported"`. A configuration illegal on fabric is excluded per runner with `config_exclusions.hw` and its reason.
 
-Metadata generator rules (`<unit>_tests.py`, the single source of every `test.yaml` and `README.md`):
+Metadata generator rules (`<unit>_tests.py`, the single source of every generated file):
 
-- The step-1 schema and template: runner values are the strings `"yes"`, `"no"` or `"unsupported"`; every non-`"yes"` runner has an `unsupported_reasons` entry; every test has a non-empty `gaps` list (what it misses); `related` ids exist (lint warns otherwise); sv and cocotb tests carry `configs`; the YAML dumper writes no anchors or aliases (flops review M4).
-- Bin names come from the catalog (`xut.status.port_class_bins`), never hand-rolled. A test's `exercises` names only bins its own recipe reaches.
-- Portability declarations follow the intake table (Task A1, Step 2.3).
-- Standard reasons, reused verbatim from flops for the same situations: `SV_PY`, `SV_HW`, `X_VL`, `CO_XS`, `CO_HW`, `CO_PY`, `VL_REJ`, `HW_REJ`, `HW_GSR`.
-- The README has every section of `docs/templates/primitive-README.md`, a per-test "why" and "misses", the runner-support table, links to open findings, and a "How to run" block whose `xut run` is scoped (the Global Constraints budget).
-
-Guard rules (`test_<unit>_tests.py`, collected by pytest over `tests/`):
-
-1. the committed `test.yaml`/`README.md` equal the rendering (drift);
-2. `EXPECTED_PRESENT` lists every primitive, so a missing file fails instead of silently emptying the parametrized guards (flops review M5);
-3. every vector `source` names a generator;
-4. every `test.yaml` validates against `tools/xut/schemas/test.schema.json`, with a reason for every non-`"yes"` runner and non-empty `gaps`;
-5. **reach**: every vector test's generator, replayed through the golden model with the seed `xut run` uses (`zlib.crc32(test_id)`), reaches every bin its `exercises` declares, named by `xut.golden.coverage_reach`;
-6. **bins accounted**: every `coverage_bins` bin is in some test's `exercises` or starts a `gaps` entry (what `xut lint` rule `bins-accounted` checks, but before any file is written);
-7. unit-specific invariants (for luts: CFGLUT5 never declares Verilator).
-
-- [ ] **Step 1: Write the recipes, the per-primitive `gen.py` files, the metadata generator and the guard tests.** A `gen.py` is exactly:
+- **Use `xut.unitkit`; copy nothing** (ruling S53): `unitkit.entry` builds each test (schema key order, non-empty `gaps`, a reason for every non-`"yes"` runner), `unitkit.runners` and the standard reasons (`SV_PY`, `SV_HW`, `X_VL`, `CO_XS`, `CO_HW`, `CO_PY`, `VL_REJ`, `HW_REJ`, `HW_GSR`, `HW_PAD`) declare runners, `unitkit.class_bins` names bins from the catalog, `unitkit.dump_test_yaml` writes the YAML, `unitkit.render_readme` writes a README with every template section and a "How to run" block under the heavy lock. The unit supplies only what is its own: the tests, their "why", overview and oracle text, and the wrapper files.
+- `render(prim)` returns **every** generated file of the primitive (`test.yaml`, `README.md`, `vectors/gen.py`, the cocotb module, sv wrappers), so the drift guard covers wrappers too and none is hand-edited.
+- A test's `exercises` names only bins its own recipe reaches. Portability declarations follow the intake table (Task A1, Step 2.3). `related` ids exist (lint warns otherwise).
+- The generated `vectors/gen.py` is, for each primitive:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -1251,12 +1239,15 @@ import <unit>_recipes
 globals().update(<unit>_recipes.generators("<PRIM>"))
 ```
 
-- [ ] **Step 2: Generate the metadata and run the guards**
+Guards (`test_<unit>_tests.py`): one class, `class TestUnit(UnitGuards): unit = UNIT`, gives every primitive `unitkit`'s guards: every rendered file current; the schema, reasons and gaps; every vector source a generator; **reach** (each vector test's exercises reached by its configurations, through `vector_reach`: the python runner's own generation and `replay_config`); **bins accounted** (`xut.lint.gap_bin`, as the lint rule); **pure crediting** (every exercised vector bin reached by a configuration whose samples are all `doc:`). Add only the unit's own invariants beside it (for luts: CFGLUT5 never declares Verilator; the edge mutants fail documented bits).
+
+- [ ] **Step 1: Complete the recipes; write `<unit>_tests.py` and `test_<unit>_tests.py`.**
+
+- [ ] **Step 2: Generate the files and run the guards**
 
 ```bash
-uv run python tests/7series/<group>/_shared/<unit>/<unit>_tests.py <PRIMS> > .cache/meta.log 2>&1; cat .cache/meta.log
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-<unit>-$(date +%s) -p MemoryMax=8G -p MemorySwapMax=0 -- \
-  uv run pytest tests/7series/<group>/_shared/<unit> -q > .cache/unit-pytest.log 2>&1; echo "exit=$?"; cat .cache/unit-pytest.log
+uv run python tests/7series/<group>/_shared/<unit>/<unit>_tests.py > .cache/meta.log 2>&1; cat .cache/meta.log
+uv run pytest tests/7series/<group>/_shared/<unit> -q > .cache/unit-pytest.log 2>&1; echo "exit=$?" >> .cache/unit-pytest.log; cat .cache/unit-pytest.log
 uv run xut lint > .cache/lint.log 2>&1; cat .cache/lint.log
 ```
 
@@ -1265,7 +1256,7 @@ Expected: one `wrote ...` line per primitive; every guard passes; lint has no er
 - [ ] **Step 3: The python runner: stimuli validate and the golden model replays them**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-py-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-py-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --runner python --jobs 16 > .cache/run-<unit>-python.log 2>&1; echo "exit=$?"
 ```
 
@@ -1274,8 +1265,8 @@ Expected: `exit=0`; every vector test `pass` (reject tests included: they are pr
 - [ ] **Step 4: Commit** in two pieces:
 
 ```bash
-git add tests/7series/<group>/_shared/<unit> && git commit -m "<unit>: add shared stimulus recipes, the test.yaml/README generator and its guards" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
-git add tests/7series/<group> && git commit -m "<unit>: add <PRIMS> vector tests, test.yaml and README" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tests/7series/<group>/_shared/<unit> && git commit -m "<unit>: add shared stimulus recipes, the file generator and its guards" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tests/7series/<group> && git commit -m "<unit>: add the generated <PRIMS> test files" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -1283,7 +1274,7 @@ git add tests/7series/<group> && git commit -m "<unit>: add <PRIMS> vector tests
 ### Task A4: sv tests (GSR mid-simulation, X inputs, unit-specific behaviour)
 
 **Files:**
-- Create: `tests/7series/<group>/_shared/<unit>/<unit>_<what>_tb.svh` (shared bodies) and `tests/7series/<group>/<PRIM>/sv/tb_<prim>_<what>.sv` (wrappers)
+- Create: `tests/7series/<group>/_shared/<unit>/<unit>_<what>_tb.svh` (shared bodies); the wrappers `tests/7series/<group>/<PRIM>/sv/tb_<prim>_<what>.sv` are rendered by `<unit>_tests.py` (`render(prim)`), or hand-written for a primitive whose ports no shared body fits
 
 **Interfaces:**
 - Consumes: `tools/xut/hdl/xut_trace.svh` (`XUT_CHECK`, `XUT_CHECKN`, `XUT_POINT1`, `XUT_POINT2`, `xut_open`, `xut_fd`, `xut_finish`); glbl's `GSR_int`
@@ -1301,11 +1292,11 @@ Rules:
 - Runner declarations: `python: "no"` (`SV_PY`), `hw: "unsupported"` (`SV_HW`); an x-stimulus test is `verilator: "unsupported"` (`X_VL`); every portability `no` applies as for vectors. Flows are `["rtl"]`.
 - Unit-specific sv tests are those spec §4.3 lists: clock management, runtime attribute rejection that needs more than a vector reject configuration, DRP transactions (§5.5, when infra adds them), GTS/GRESTORE (sim-only).
 
-- [ ] **Step 1: Write the bodies and wrappers.**
+- [ ] **Step 1: Write the bodies; add the wrappers to `render(prim)` and regenerate** (`uv run python tests/7series/<group>/_shared/<unit>/<unit>_tests.py > .cache/meta.log 2>&1; cat .cache/meta.log`).
 - [ ] **Step 2: Run them on every simulator**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-sv-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-sv-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --style sv --runner iverilog --runner xsim --runner verilator --jobs 16 > .cache/run-<unit>-sv.log 2>&1; echo "exit=$?"
 ```
 
@@ -1337,7 +1328,7 @@ Rules (rulings S37, the flops Task 23 review, PR #10 must-fix 6):
 - cocotb runs on Icarus and Verilator, never xsim (`CO_XS`); `python: "no"` (`CO_PY`), `hw: "unsupported"` (`CO_HW`). A primitive whose Verilator row is `no` declares that too, so its session runs on Icarus only.
 - A failing seed is never fixed by changing the session. Classify it (Task A6), then freeze it: copy the session's events into `tests/7series/<group>/<PRIM>/vectors/frozen/<seed>.xvec` and add a vector test with `source: vectors/frozen/<seed>.xvec`, so it also runs on xsim and hardware (`xut freeze-seed` is deferred; spec §4.3).
 
-- [ ] **Step 1: Write the session and the per-primitive modules.** A module is exactly:
+- [ ] **Step 1: Write the session; add the per-primitive modules to `render(prim)` and regenerate.** A generated module is exactly:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -1355,7 +1346,7 @@ async def <prim>_random(dut: object) -> None:
 - [ ] **Step 2: Run**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-cocotb-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-cocotb-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --style cocotb --runner iverilog --runner verilator --runner xsim --jobs 16 > .cache/run-<unit>-cocotb.log 2>&1; echo "exit=$?"
 ```
 
@@ -1381,7 +1372,7 @@ Expected: `pass` on iverilog (and verilator plus its `iverilog-vz` companion whe
 - **Run it in the background** and watch it with a Monitor on the log's `progress:` lines, at the cadence of the estimate:
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --jobs 16 > .cache/run-<unit>.log 2>&1; echo "exit=$?" >> .cache/run-<unit>.log
 ```
 
@@ -1390,11 +1381,13 @@ Expected: every declared runner `pass` for every test; every undeclared cell `sk
 - [ ] **Step 3: The open-source model source** (spec §6.2 "Model identity"; CI runs it too):
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-gh-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-<unit>-gh-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --model-source unisim-gh-2020.1 --runner python --runner iverilog --runner verilator --jobs 16 > .cache/run-<unit>-gh.log 2>&1; echo "exit=$?" >> .cache/run-<unit>-gh.log
 ```
 
 xsim always uses the precompiled 2025.2 library and refuses this source. Crosscheck compares each source's traces only with each other.
+
+**A model a source does not have** (Appendix W: ROM32X1…ROM256X1 have no `unisim-gh-2020.1` row). Run the gh source only on the primitives it has (select them by name instead of `unit:<unit>`). For a missing one, that source's runners are `n/a`, with the reason "`unisim-gh-2020.1` has no <PRIM> model": write it in the primitive's README runner-support section (a line the generator renders from a per-primitive `missing_sources` table) and in the log. Record and crosscheck that primitive with `--model-source unisim-2025.2` only, so neither an `error` result nor crosscheck's `exit=4` stands for the absent model. (A per-source `n/a` field in the status file needs infra; record it as a TODO if the orchestrator wants it.)
 
 - [ ] **Step 4: Crosscheck and write the finding stubs**
 
@@ -1448,7 +1441,7 @@ Expected in each `status/7series/<PRIM>.yaml`:
 - [ ] **Step 6: Lint, tests, log, per-task review**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest.log 2>&1; echo "exit=$?" >> .cache/pytest.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
 git status --porcelain > .cache/git-status.log 2>&1; cat .cache/git-status.log
@@ -1486,7 +1479,7 @@ The step-3 plan (PR #11, `docs/superpowers/plans/2026-09-27-step3-hardware.md`) 
 
 **Which tests declare `hw: "yes"`** (from the unit's first PR on, Task A3):
 
-- vector tests whose every configuration is order-renderable (spec §5.1, S8′): stepped clocks only, no GSR/GTS/GRESTORE event, no x/z stimulus, no `simultaneous` events, no pad-class or inout port, every model-internal delay shorter than the event gap (`min_event_gap_ps`);
+- vector tests whose every configuration is order-renderable (spec §5.1, S8′): stepped clocks only, no GSR/GTS/GRESTORE event, no x/z stimulus, no `simultaneous` events, no pad-class or inout port, every model-internal delay shorter than the event gap (`min_event_gap_ps`); and a primitive that spec §7.3 does not place on an IOB/ILOGIC/OLOGIC/IDELAY/BUFIO/BUFR site (the table's pad-site row);
 - with `flows` listing `vivado` (and `yosys`, `openxc7`, `vpr` for step 4).
 
 **Which stay `hw: "unsupported"`, and the reason each carries:**
@@ -1497,7 +1490,8 @@ The step-3 plan (PR #11, `docs/superpowers/plans/2026-09-27-step3-hardware.md`) 
 | sv and cocotb tests | simulation-only (`SV_HW`, `CO_HW`); a frozen cocotb seed becomes a vector test that runs on hardware |
 | reject tests | "rejection of an illegal attribute is a simulation-model check" (`HW_REJ`) |
 | a `mode=free` clock (MMCM/PLL input clocks) | "free-running clocks need real-time rendering (spec §5.1 S8′)" until a later step defines it |
-| a pad-class or inout port (the io units, BUFIO/BUFR pins, XADC analog pins) | "pad-class port: needs the pad harness of spec §7.3" until an io-harness plan builds it |
+| a pad-class or inout port (the io units, XADC analog pins) | "pad-class port: needs the pad harness of spec §7.3" until an io-harness plan builds it |
+| a primitive that spec §7.3 places on IOB/ILOGIC/OLOGIC/IDELAY/BUFIO/BUFR sites, **whatever its catalog port classes**: IDDR, IDDR_2CLK, ODDR, ISERDESE2, OSERDESE2, IDELAYE2, ODELAYE2, IDELAYCTRL, BUFIO, BUFR, BUFMR, and the IBUF/OBUF/IOBUF families | `unitkit.HW_PAD` ("the primitive sits on IOB/ILOGIC/OLOGIC/IDELAY/BUFIO/BUFR sites: it needs the pad harness of spec §7.3") until P5. The rule goes by primitive class, not by pad-class ports: IDDR's ports are all `data`/`clock`/`async`, so the validator alone would call its stimuli renderable (ruling S53, correctness review M5). |
 | a `clock_out` port | none yet: the wrapper refuses it until the clock observers of spec §5.4 exist (Appendix W: bufg, regional_clk, mmcm_pll) |
 | GTS/GRESTORE, JTAG glbl signals | sim-only (spec §5.2) |
 | an attribute value illegal on the harness's fabric sites | `config_exclusions.hw` with the UG953 page, the test keeps `hw: "yes"` (flops `IS_D_INVERTED=1`) |
@@ -1512,7 +1506,7 @@ A test declared `"yes"` whose individual configuration is not renderable is stil
 - [ ] **Step 3: Prove it in simulation first**
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-<unit>-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-hwsim-<unit>-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
   uv run xut hw sim 'unit:<unit>' --sim iverilog --jobs 8 > .cache/hwsim-<unit>.log 2>&1; echo "exit=$?"
 ```
 
@@ -1520,11 +1514,11 @@ Expected `exit=0`. A failure is a harness bug: report it and stop.
 - [ ] **Step 4: Baseline, bitstreams, the hardware run.** Exactly step-3 Task 12, Steps 4–6, with `unit:<unit>`:
 
 ```bash
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --jobs 16 > .cache/run-<unit>-rtl.log 2>&1; echo "exit=$?"
-systemd-run --user --scope --slice=vivado.slice --unit=xut-hwbuild-$(date +%s) -p MemoryMax=8G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-hwbuild-$(date +%s) -p MemoryMax=8G -p MemorySwapMax=0 -- \
   uv run xut hw build 'unit:<unit>' --jobs 4 > .cache/hwbuild-<unit>.log 2>&1; echo "exit=$?"
-systemd-run --user --scope --slice=vivado.slice --unit=xut-run-hw-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
+flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope --slice=vivado.slice --unit=xut-run-hw-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run xut run 'unit:<unit>' --flow vivado --runner hw --jobs 3 > .cache/run-<unit>-hw.log 2>&1; echo "exit=$?"
 ```
 
