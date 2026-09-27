@@ -68,6 +68,8 @@ CATEGORIES = (
 )  # fmt: skip
 SMOKE_OK = "XUT_SMOKE_OK"
 TIMEOUT_MARK = "xut-smoke: timeout"
+#: the host's note when a script wrote no rc: the container's exit code and last log line
+CONTAINER_EXIT = "xut-container: exit"
 TOOLS = ("iverilog", "verilator")
 NONE = "—"
 EQUIV = ("pass", "fail", "error", "blocked", NONE)
@@ -202,11 +204,12 @@ def _short(text: str) -> str:
 
 def failure(log_text: str, rc: int | None) -> str:
     """``<category>: <first error line>`` of a failed smoke log (an OOM kill: the line
-    naming the memory cap)."""
+    naming the memory cap; a script that wrote no rc: the host's container-exit note)."""
     from xut.container import OOM_MARK
 
     oom = [ln.strip() for ln in log_text.splitlines() if ln.startswith(OOM_MARK)]
-    first = oom[0] if oom else next(iter(error_lines(log_text)), "")
+    exits = [ln.strip() for ln in log_text.splitlines() if ln.startswith(CONTAINER_EXIT)]
+    first = (oom or (exits if rc is None else []) or error_lines(log_text) or [""])[0]
     if not first:
         first = f"exit {rc}, no {SMOKE_OK}" if rc is not None else "the script did not finish"
     return f"{classify(log_text)}: {_short(first)}"
@@ -427,9 +430,9 @@ def _run_one(exe: object, work: Path, script: str, lock: threading.Lock) -> None
     d, tool = work / Path(script).parent, Path(script).stem
     clog = d / f"{tool}.container.log"
     notes: list[str] = []
-    timed_out = False
+    timed_out, rc = False, None
     try:
-        exe.run(["bash", script], cwd=work, log=clog, timeout_s=JOB_TIMEOUT_S)  # type: ignore[attr-defined]
+        rc = exe.run(["bash", script], cwd=work, log=clog, timeout_s=JOB_TIMEOUT_S)  # type: ignore[attr-defined]
     except RunTimeout as e:
         timed_out = True
         notes.append(f"{TIMEOUT_MARK} (host: {e})")
@@ -438,15 +441,25 @@ def _run_one(exe: object, work: Path, script: str, lock: threading.Lock) -> None
     text = clog.read_text(errors="replace") if clog.is_file() else ""
     oom = [ln.strip() for ln in text.splitlines() if ln.startswith(OOM_MARK)]
     notes = oom[:1] + notes
+    has_rc = (d / f"{tool}.rc").is_file()
+    if not has_rc and not oom and rc is not None:
+        # the script never finished and nothing says why: docker run's own failure (S48a M-5)
+        rest = [ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("$ ")]
+        notes.append(f"{CONTAINER_EXIT} {rc}: {rest[-1] if rest else '(no output)'}")
     if notes:
         with (d / f"{tool}.log").open("a") as f:
             f.write("".join(f"{n}\n" for n in notes))
-    if not (d / f"{tool}.rc").is_file():
+    if not has_rc and (oom or timed_out):
         # killed before its last lines: the script wrote neither its rc nor done.txt
-        if oom or timed_out:
-            (d / f"{tool}.rc").write_text("137\n" if oom else "124\n")
-        with lock, (work / "done.txt").open("a") as f:
-            f.write(f"{Path(script).with_suffix('')}\n")
+        (d / f"{tool}.rc").write_text("137\n" if oom else "124\n")
+    # every script counts once, even one killed between its rc and done.txt (S48a M-7);
+    # the script has exited, so its own done.txt line (if any) is already there
+    name = str(Path(script).with_suffix(""))
+    with lock:
+        done = work / "done.txt"
+        if name not in (done.read_text().splitlines() if done.is_file() else []):
+            with done.open("a") as f:
+                f.write(f"{name}\n")
 
 
 def _run_scripts(
