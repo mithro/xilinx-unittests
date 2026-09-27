@@ -140,3 +140,29 @@ The code was run on a scratch copy of `main` with P1 applied, in 4G or 16G scope
 - sv testbenches: every documented check passes on Icarus against UNISIM 2025.2, in a 1G-capped container.
 - The cocotb stand-in run passed.
 - ruff is clean on tools, models and tests.
+
+## Follow-up: PR #12 correctness re-review M6 (ruling S55)
+
+The re-review confirmed M1–M5 and raised M6: CFGLUT5 credited claims on events that a model breaking the rule would pass unchanged. Ruling S55 is applied.
+
+- **Credit only on deciding events.** CFGLUT5 now credits:
+  - C3 (and C7 when inverted) only on the edge that sets `known` to a new value;
+  - C4 only on a CE-Low edge whose CDI differs from `known`;
+  - C5 only after a 32-shift run that flipped `known`.
+- **Stimulus changes.** `L0.smoke` no longer exercises C3. `L1.edge_polarity` drives the opposite CDI before its CE-Low edge.
+- **Model tests.** Four new tests: a same-value shift credits no C3/C7; a CE-Low edge with CDI equal to the contents credits no C4; 32 same-value shifts credit no C5; the flip credits C3 and C5. The 32-equal-shifts-from-non-uniform test now asserts no C5.
+- **P1 (`xut.unitkit`).** New `mutant_fails` and `Unit.mutants` (`{claim: mutant_model_factory}`). `UnitGuards` gains `test_every_credited_claim_has_a_failing_mutant`: every claim a vector test exercises must have a mutant, and that mutant must fail a documented bit in some crediting configuration. Two new kit tests cover it.
+- **luts mutants.**
+  - LUTn: C1 reads the neighbouring address; C2 is the all-ones default.
+  - LUT6_2: C1 on O6; C2/C4 read O5 from the upper 32 bits; C3 is the all-ones default.
+  - CFGLUT5: O6/O5 stuck; never shifts; ignores CE; CDO stuck at INIT[31]; ignores INIT; ignores `IS_CLK_INVERTED`.
+  - A unit check adds a second bit-order mutant (reversed INIT order) for every LUTn and LUT6_2.
+- **Part A and the appendix.** A2 and A3 state the rule and the guard in general form. Review Focus 1–2 and D20 record it.
+
+Verification, on the scratch copy of `main` plus P1 and luts:
+- luts pytest in a 4G scope: `164 passed`;
+- the cocotb stand-in in a 4G scope: exit 0;
+- ruff format and check: clean;
+- the non-container suite under the heavy lock in a 16G scope: `1862 passed, 5 skipped` (1698 with P1 alone).
+
+Next: re-review of PR #12.
