@@ -216,6 +216,39 @@ disagreement in `expected_divergence` does not suppress it:
   bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && ...'
   ```
 
+### 10.1 Memory safety (mandatory)
+
+The shared development host has 503 GiB of RAM and no swap. Many other
+sessions run on it. Each terminal pane is its own cgroup, and systemd-oomd
+kills whole panes, including the agent that started the job, when memory
+pressure stays high.
+
+Incident (2026-09-26): a portability run with `--jobs 80` hit a Verilator
+smoke simulation whose memory grows without bound. Its container peaked at
+471.6 GiB and took down every session on the host.
+
+- **Host commands.** Run every memory-heavy command in its own capped scope.
+  This covers `pytest -n`, `xut run`, `xut portability`, `xut verilatorize`,
+  Vivado and xsim:
+
+  ```bash
+  systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
+    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
+  ```
+
+  The job then lives outside your own cgroup, and an OOM kill stays inside it.
+- **Containers.** Docker containers run under the system slice, not your
+  scope, so the scope alone does not cap them. Every container xut starts is
+  capped with `--memory` / `--memory-swap` (default `4g`,
+  `XUT_CONTAINER_MEMORY`). Never start an uncapped container by hand.
+- **Parallelism from measured memory, not cores.** Use `--jobs` at most 24
+  and `pytest -n` at most 8. Never use `-n auto` locally: it means 88
+  workers. Run Vivado at most 4 at a time, each scope capped at 16G.
+- **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
+- **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
+  `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
+  Do not raise the cap. A model that is OOM-killed on its own is a finding.
+
 ## 11. SPDX header
 
 Every source file (`.py .v .sv .yaml .sh .tcl .toml`, workflow files)
