@@ -66,3 +66,8 @@
 - Re-review PR #11.
 
 - Re-review nit 13: `max_sim_jobs` now takes the command's own 16G scope out of the budget first. Icarus gets (100 − 16) // 4 = 21 jobs. xsim gets min((100 − 16) // 16, the Vivado slot count) = 4. The test is updated to match. The plan's other job counts (the Global Constraints budget lines and every `--jobs` command) already include their command scope.
+
+- Correctness re-check fixes:
+  - (A) Task 5a's `run_script` rewrite keeps PR #10's `vivado_slot()` around xsim, so the xsim runner and the verilatorize equivalence oracle stay host-wide bounded. A new test asserts that `run_script` runs inside a slot.
+  - (B) Task 5b now stages `tools/xut/runners/sim.py`.
+  - A re-scan of every task's commit step, covering both the file lists and the files named in the task bodies, found nothing else unstaged. The only files it flagged were in Task 12, which must not touch them (`hw/rigs.yaml`, PROGRESS.md) or already stages them through a brace pattern.
