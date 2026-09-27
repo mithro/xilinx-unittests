@@ -36,7 +36,8 @@ the host copies the executor's ``xut-container: oom-killed`` line into ``<tool>.
 if the script was killed before it could, writes ``<tool>.rc`` (137) and its ``done.txt``
 line itself.
 The rows go to ``build/portability/<model-source>.json`` (a ``--models`` run: under
-``build/portability/partial/``, never mistaken for a full table).
+``build/portability/partial/``, never mistaken for a full table, and its work directory is
+``build/portability/partial/<model-source>/``, so it never deletes a full run's).
 
 ``render`` writes the table and ``parse`` reads it back (``xut lint``: rules
 ``portability-agreement`` and ``verilatorize-equiv``).
@@ -291,8 +292,11 @@ def smoke_models(ms: ModelSource, root: Path) -> dict[str, Path]:
 
 
 # ---- the run ------------------------------------------------------------------------------
-def out_dir(ms: ModelSource, root: Path) -> Path:
-    return root / "build" / "portability" / ms.name
+def out_dir(ms: ModelSource, root: Path, partial: bool = False) -> Path:
+    """The work directory of a run: a partial (``--models``) run's lives under
+    ``partial/``, so it never deletes a full run's (S48a M-4)."""
+    base = root / "build" / "portability"
+    return (base / "partial" if partial else base) / ms.name
 
 
 def result_path(ms: ModelSource, root: Path, partial: bool = False) -> Path:
@@ -529,7 +533,7 @@ def run_smoke(
         plans = list(ex.map(_plan, list(todo), list(todo.values())))
     from xut.verilatorize.equiv import config_dir, config_key
 
-    work = out_dir(ms, root)
+    work = out_dir(ms, root, partial=bool(models))
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)

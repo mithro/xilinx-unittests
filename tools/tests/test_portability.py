@@ -625,3 +625,27 @@ def test_run_scripts_interrupt_kills_the_live_containers(tmp_path, monkeypatch):
         portability._run_scripts(ex, work, scripts, jobs=1, progress=lambda _: None)
     assert killed == [True]
     assert ex.started == [scripts[0]]  # the queued scripts were cancelled
+
+
+def test_a_partial_run_never_touches_the_full_run_directory(tmp_path, fixture_source, monkeypatch):
+    """S48a M-4: a --models run works under build/portability/partial/<ms>/."""
+    import types
+
+    import xut.verilatorize.driver as vz
+    from xut import container
+
+    root = tmp_path / "root"
+    full = root / "build/portability/test-src"
+    full.mkdir(parents=True)
+    (full / "keep.txt").write_text("a full run's logs\n")
+    monkeypatch.setattr(vz, "verilatorize", lambda *a, **kw: types.SimpleNamespace(models={}))
+    monkeypatch.setattr(container, "sim_tool_versions", lambda ex, work: {"iverilog": "x"})
+    monkeypatch.setattr(container, "image_digest", lambda image=None: "sha256:x")
+    ran: list[Path] = []
+    monkeypatch.setattr(portability, "_run_scripts", lambda exe, work, *a: ran.append(work))
+    portability.run_smoke(fixture_source, jobs=1, models="PLAIN", root=root, progress=print)
+    assert (full / "keep.txt").read_text() == "a full run's logs\n"
+    assert ran == [root / "build/portability/partial/test-src"]
+    assert (ran[0] / "PLAIN/default/smoke.v").is_file()
+    assert (root / "build/portability/partial/test-src.json").is_file()
+    assert portability.out_dir(fixture_source, root) == full
