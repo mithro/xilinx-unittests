@@ -36,6 +36,7 @@ from xut.runners.xsim import (
     LIBRARY_PATH_GUARD,
     MODEL_SOURCE,
     RUN_MARKER,
+    STANDALONE_RUN,
     XsimRunner,
     generic_value,
     render_script,
@@ -108,7 +109,11 @@ def test_render_script_sources_vivado_only_in_the_subshell():
     assert "LIBRARY_PATH" not in before and "LIBRARY_PATH=/usr/lib/x86_64-linux-gnu" in after
     for word in ("xvlog -sv", "xelab -L unisims_ver -L unimacro_ver", "work.glbl", RUN_MARKER):
         assert word in after, word
-    assert after.rstrip().endswith("xsim xut_snap -R'")
+    # the standalone executable (xelab --standalone), with Vivado's kernel library found
+    assert "--debug off --standalone -s xut_snap " in after
+    assert after.rstrip().endswith(f"{STANDALONE_RUN}'")
+    assert STANDALONE_RUN.endswith("xsim.dir/xut_snap/axsim")
+    assert '"$XILINX_VIVADO/lib/lnx64.o' in STANDALONE_RUN
     assert str(VIVADO_SRC / "glbl.v") in after
 
 
@@ -194,7 +199,7 @@ def test_unavailable_for_another_model_source(tmp_path, monkeypatch):
 
 
 def test_split_log_without_marker_is_not_reject_evidence():
-    """Review I1: a compile that never reached xsim -R, with an unrelated syntax error
+    """Review I1: a compile that never reached the run, with an unrelated syntax error
     and an INFO line whose path holds "illegal" and the primitive's name, is an
     error, never a rejection."""
     d = "/w/build/rtl/xsim/unisim-2025.2/7series.FDRE.L0.illegal_init/cfg-init_x"
