@@ -11,7 +11,6 @@ and validates a status file, and builds a fresh stub.
 import os
 import subprocess
 import sys
-import zlib
 from collections.abc import Callable
 from itertools import combinations
 from pathlib import Path
@@ -25,6 +24,7 @@ from xut.errors import ConfigError, GitError, XutError
 from xut.formats.common import int_literal
 from xut.provenance import tree_paths, tree_state
 from xut.results import read_result, result_dir
+from xut.seeds import default_seed
 from xut.testspec import (
     DECLARATION_OF,
     RUNNER_ORDER,
@@ -685,14 +685,14 @@ def _warn_non_default_seed(
     case: TestCase, python: dict | None, warn: Callable[[str], None]
 ) -> None:
     """Warn when a generated vector test's credited python run used a seed other than
-    the default (``xut.runners.base.seed_for``: crc32 of the test id). The unit guards
-    (``xut.unitkit.vector_reach``) vouch for the default-seed stimulus only (ruling S57).
-    A frozen ``.xvec`` keeps its own seed. TODO: refuse such a run instead, once
-    ``xut freeze-seed`` turns an explored seed into a frozen vector test."""
+    the default (``xut.seeds.default_seed``, which ``xut.runners.base.seed_for`` uses).
+    The unit guards (``xut.unitkit.vector_reach``) vouch for the default-seed stimulus
+    only (ruling S57). A frozen ``.xvec`` keeps its own seed. TODO: refuse such a run
+    instead, once ``xut freeze-seed`` turns an explored seed into a frozen vector test."""
     if case.source and case.source.endswith(".xvec"):
         return
     seed = ((python or {}).get("seeds") or {}).get("stimulus")
-    if isinstance(seed, int) and seed != zlib.crc32(case.id.encode()):
+    if isinstance(seed, int) and seed != default_seed(case.id):
         warn(
             f"{case.id}: credits a python run made with --seed {seed}, not the default; the "
             "unit guards checked the default-seed stimulus only (ruling S57)"

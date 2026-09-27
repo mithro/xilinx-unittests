@@ -18,7 +18,6 @@ import shutil
 import socket
 import time
 import traceback
-import zlib
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -28,6 +27,7 @@ from xut import schemas
 from xut.errors import XutError
 from xut.formats import xtr, xvec
 from xut.modelsrc import ModelSource
+from xut.seeds import default_seed
 from xut.stimcompile import TB, Compiled, write_stim
 from xut.testspec import TestCase, declared, exclusions_for
 from xut.wrap import DutMap
@@ -136,14 +136,15 @@ def sha256_file(p: Path) -> str:
 
 
 def seed_for(case: TestCase, ctx: RunContext) -> int:
-    """``--seed`` if given, else ``zlib.crc32(test_id)``: stable across runs and hosts.
+    """``--seed`` if given, else ``xut.seeds.default_seed`` (crc32 of the test id):
+    stable across runs and hosts.
 
     The default never changes, so repeated runs replay the same stimulus; exploring
     other seeds takes ``--seed``. A cocotb fail/error reason names its seed
     (``[seed N]``), and ``xut run <id> --seed N`` reproduces it. Freezing a failing
     seed into a vector test (spec §4.3, ``xut freeze-seed``) is deferred: no tooling
     yet."""
-    return ctx.seed if ctx.seed is not None else zlib.crc32(case.id.encode())
+    return ctx.seed if ctx.seed is not None else default_seed(case.id)
 
 
 def timeout_for(case: TestCase, ctx: RunContext) -> int:
