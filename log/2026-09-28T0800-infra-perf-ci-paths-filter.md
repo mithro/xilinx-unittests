@@ -45,3 +45,16 @@ a future required check named `sim` is satisfied.
 
 - Shard the container pytest (424 s) across parallel jobs.
 - xsim-first scheduling (S60 item 2).
+
+## Rebase onto main after #19, and the correctness-review nits
+
+- Rebased onto main at 6be838a, which includes #19. #19's new sim steps are
+  now gated like the others: the `xut run` exit-code check and
+  `crosscheck --strict --level L0 --level L1 --style vector`. The stale
+  "selects nothing" comment went with #19's rewrite.
+- **Gate.** Steps run unless `sim` is explicitly `false`: the condition is
+  `!= 'false'`, so an empty output runs everything.
+- **The sim job.** It has `if: !cancelled()`, so it still reports when
+  `changes` failed. Its first step fails the job when `changes` did not
+  succeed, so the sim check is never green without its steps.
+- `test_ci_select.py` pins all three. 26 passed.

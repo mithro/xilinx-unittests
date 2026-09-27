@@ -12,7 +12,7 @@ from xut import ci_select
 from xut.paths import repo_root
 
 SCRIPT = Path(ci_select.__file__)
-GATE = "needs.changes.outputs.sim == 'true'"
+GATE = "needs.changes.outputs.sim != 'false'"
 
 
 @pytest.mark.parametrize(
@@ -99,15 +99,22 @@ def test_the_script_is_stdlib_only():
 def test_workflow_gates_every_sim_step_and_always_runs_the_job():
     wf = yaml.safe_load((repo_root() / ".github/workflows/ci.yml").read_text())
     jobs = wf["jobs"]
-    assert "if" not in jobs["sim"] and jobs["sim"]["needs"] == "changes"  # check reported
+    sim = jobs["sim"]
+    # the check is reported on every PR (unless cancelled), after the selection
+    assert sim["needs"] == "changes" and sim["if"] == "${{ !cancelled() }}"
     assert jobs["changes"]["outputs"]["sim"] == "${{ steps.select.outputs.sim }}"
     select = next(s for s in jobs["changes"]["steps"] if s.get("id") == "select")
     assert "tools/xut/ci_select.py" in select["run"]
     checkout = jobs["changes"]["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0  # base...HEAD needs the history
-    steps = jobs["sim"]["steps"]
-    assert steps[0]["if"] == "needs.changes.outputs.sim != 'true'"
-    assert all(s.get("if") == GATE for s in steps[1:]), [s.get("if") for s in steps]
+    steps = sim["steps"]
+    # fail-safe: a failed or skipped selection fails the sim check, never a green skip
+    assert steps[0]["if"] == "needs.changes.result != 'success'"
+    assert "exit 1" in steps[0]["run"]
+    assert steps[1]["if"] == "needs.changes.outputs.sim == 'false'"  # the only skip
+    assert all(s.get("if") == GATE for s in steps[2:]), [s.get("if") for s in steps]
+    runs = " ".join(s.get("run", "") for s in steps[2:])
+    assert "pytest" in runs and "xut run 'unit:flops'" in runs and "crosscheck" in runs
     assert "if" not in jobs["tooling"]  # the tooling job always runs in full
     assert all("if" not in s or "head_ref" in str(s) or "pull_request" in s["if"]
                for s in jobs["tooling"]["steps"])  # fmt: skip
