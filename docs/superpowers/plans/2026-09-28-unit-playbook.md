@@ -167,7 +167,7 @@ AGENTS.md                        §7: a unit refreshes its own stubs (D16); §10
 Everything here affects every unit after flops, so it lands once, before the fan-out.
 
 1. **`attr:<A>` is never reached.** Spec §9 and `xut.status.coverage_bins` give an attribute whose catalog `allowed` list is not enumerated (a range such as `2'h0 to 2'h3`, prose such as `Any 64-bit HEX value`, or nothing) the single bin `attr:<A>`. The golden replay's `Reach.bins()` names every explicitly-set attribute `attr:<A>=<value>`, so a vector test's `attr:<A>` can never be credited. Every LUT INIT, BRAM `INIT_xx` and DSP/MMCM integer attribute hits this. Fix: `xut.golden.coverage_reach` names the bins exactly as `coverage_bins` does, and the python runner records them through one function, `replay_config`.
-2. **`xut.unitkit`** (ruling S53, code-quality review M1). Without it every unit re-implements about 350 lines of generic metadata and guard code, and a fix to any of it becomes 27 edits. The kit holds the standard runner reasons, `runners`/`claims`/`class_bins`/`entry`/`cell`, the no-alias YAML dumper, the README skeleton (every template section, with the "How to run" block under the heavy lock), `vector_reach` (the python runner's own `generate` and `replay_config`, never a copy), and the parametrised guard set `UnitGuards`: drift of every rendered file, schema and reasons, generators, reach, bins accounted (through `xut.lint.gap_bin`), pure crediting and, ruling S55, the **mutant guard**: every claim a vector test exercises has a named mutant model (`Unit.mutants(prim)`, `{claim: Mutant(factory, event=...)}`), and `mutant_fails` shows the mutant failing a documented bit in at least one configuration that credits a read claim, and in **every** configuration that credits an event claim (`event=True`: a clock edge, a shift, a hold; ruling S55a). A claim no wrong model can be caught on is not tested, however often it is credited. Units import it; **no unit copies it or the flops unit's code** (Part A).
+2. **`xut.unitkit`** (ruling S53, code-quality review M1). Without it every unit re-implements about 350 lines of generic metadata and guard code, and a fix to any of it becomes 27 edits. The kit holds the standard runner reasons, `runners`/`claims`/`class_bins`/`entry`/`cell`, the no-alias YAML dumper, the README skeleton (every template section, with the "How to run" block under the heavy lock), `vector_reach` (the python runner's own `generate` and `replay_config`, never a copy), and the parametrised guard set `UnitGuards`: drift of every rendered file, schema and reasons, generators, reach, bins accounted (through `xut.lint.gap_bin`), pure crediting and, ruling S55, the **mutant guard**: every claim a vector test exercises has a named mutant model (`Unit.mutants(prim)`, `{claim: Mutant(factory, event=...)}`), and `mutant_fails` shows the mutant failing a documented bit in at least one configuration that credits a read claim, and in **every** configuration that credits an event claim (`event=True`: a clock edge, a shift, a hold; ruling S55a). A test credits only the claims it declares in `exercises`, so the guard checks only the declaring tests. A claim no wrong model can be caught on is not tested, however often it is credited. Units import it; **no unit copies it or the flops unit's code** (Part A).
 3. **Unit test files fail `ruff check`**: extend the `ANN` exemption to `tests/**/test_*.py` (the flops unit's open TODO).
 4. **AGENTS.md §7** (decision D16, confirmed on PR #12): a unit branch may refresh its own never-recorded stubs.
 5. **AGENTS.md §10.1** (ruling S53, correctness review M4): one host-wide lock, `$XDG_RUNTIME_DIR/xut-heavy.lock`, around every heavy command, so two agents never run heavy jobs at once and each command's own budget (at most 96G) holds.
@@ -1009,11 +1009,14 @@ class UnitGuards:
         for claim in claimed:
             spec = mutants[claim]
             mutant = spec.factory(golden)
+            # a test credits only the claims it declares in exercises; a claim its model
+            # reaches but it does not declare is exercise-only there (ruling S52)
+            declaring = [v for v in vector if f"claim:{claim}" in v.exercises]
             verdicts = [
-                mutant_fails(v, self.unit.root, claim, mutant, every=spec.event) for v in vector
+                mutant_fails(v, self.unit.root, claim, mutant, every=spec.event) for v in declaring
             ]
             crediting = [
-                (v.id, ok) for v, ok in zip(vector, verdicts, strict=True) if ok is not None
+                (v.id, ok) for v, ok in zip(declaring, verdicts, strict=True) if ok is not None
             ]
             assert crediting, f"{claim}: no configuration credits it"
             if spec.event:
@@ -1388,7 +1391,7 @@ import <unit>_recipes
 globals().update(<unit>_recipes.generators("<PRIM>"))
 ```
 
-Guards (`test_<unit>_tests.py`): one class, `class TestUnit(UnitGuards): unit = UNIT`, gives every primitive `unitkit`'s guards: every rendered file current; the schema, reasons and gaps; every vector source a generator; **reach** (each vector test's exercises reached by its configurations, through `vector_reach`: the python runner's own generation and `replay_config`); **bins accounted** (`xut.lint.gap_bin`, as the lint rule); **pure crediting** (every exercised vector bin reached by a configuration whose samples are all `doc:`); **a failing mutant per claim** (ruling S55: the unit's `mutants(prim)` returns `{claim: unitkit.Mutant(factory, event=...)}`, each factory taking the golden model class and returning a subclass that breaks that one rule; for every claim a vector test exercises, `unitkit.mutant_fails` replays the crediting configurations under the mutant and must find a documented bit that differs, in one of them for a read claim and in each of them for an event claim, S55a). Write the mutants in `<unit>_tests.py` and pass them as `Unit(..., mutants=mutants)`. Add only the unit's own invariants beside it (for luts: CFGLUT5 never declares Verilator; the edge mutants fail documented bits).
+Guards (`test_<unit>_tests.py`): one class, `class TestUnit(UnitGuards): unit = UNIT`, gives every primitive `unitkit`'s guards: every rendered file current; the schema, reasons and gaps; every vector source a generator; **reach** (each vector test's exercises reached by its configurations, through `vector_reach`: the python runner's own generation and `replay_config`); **bins accounted** (`xut.lint.gap_bin`, as the lint rule); **pure crediting** (every exercised vector bin reached by a configuration whose samples are all `doc:`); **a failing mutant per claim** (ruling S55: the unit's `mutants(prim)` returns `{claim: unitkit.Mutant(factory, event=...)}`, each factory taking the golden model class and returning a subclass that breaks that one rule; for every claim a vector test exercises, `unitkit.mutant_fails` replays the crediting configurations under the mutant and must find a documented bit that differs, in one of them for a read claim and in each of them for an event claim, S55a). Only tests that declare the claim in `exercises` are checked, because status credits only declared bins (`exercises` ∩ reached): a test whose model reaches a claim that no mutant can catch there on a documented bit leaves the claim out of `exercises` and says why in `gaps` (luts: C7 in `L1.is_clk_inverted`, S52). Write the mutants in `<unit>_tests.py` and pass them as `Unit(..., mutants=mutants)`. Add only the unit's own invariants beside it (for luts: CFGLUT5 never declares Verilator; the edge mutants fail documented bits).
 
 - [ ] **Step 1: Complete the recipes; write `<unit>_tests.py` and `test_<unit>_tests.py`.**
 
@@ -2949,7 +2952,7 @@ The recipes, by test. A configuration is read with an exhaustive `sweep` (power-
 | `L1.reconfigure` | CFGLUT5 | zero → random, ones → I2 projection, random → random, ones → zero (pure); a 32-bit reload between sweeps | C3, C5; the inferred order |
 | `L1.cdo_cascade` | CFGLUT5 | random data; all ones then 32 zeros and 32 ones; 64 shifts with CDO sampled after each, then a sweep | C5; the inferred CDO bit |
 | `L1.partial_shift` | CFGLUT5 | 1, 5, 16 and 31 shifts | the inferred shift order (doc-gap if wrong) |
-| `L1.is_clk_inverted` | CFGLUT5 | `IS_CLK_INVERTED=1'b1`, uniform INITs; address 0 held, samples after every edge | C7, step by step; the sample after the first rise is documented, so a simulator shifting on the rise fails there (S55a) |
+| `L1.is_clk_inverted` | CFGLUT5 | `IS_CLK_INVERTED=1'b1`, uniform INITs; samples after every edge | C3; C7 step by step, **exercised, not credited**: a simulator shifting on the rise differs here only on order-dependent samples, so C7 is left out of `exercises` and its `gaps` carry the S52 note; `L1.edge_polarity` credits C7 |
 | `L1.shift_while_reading` | CFGLUT5 | two random; an address held while 8 bits shift in, 4 times | the function changing in use |
 | `L1.gsr_after_reconfig` | CFGLUT5 | reload, GSR, with and without shifts under it | the D6 inference, `hw` unsupported |
 | `L2.init_sweep` | all | spec §4.2: every value (≤ 4-bit INIT) or all zeros, all ones, walking ones, walking zeros | every INIT bit alone, set and clear |
@@ -3343,13 +3346,12 @@ def l1_partial_shift(ctx: GenContext, k: LutKind) -> Gen:
 def l1_is_clk_inverted(ctx: GenContext, k: LutKind) -> Gen:
     """IS_CLK_INVERTED=1: samples after each rise show no shift, after each fall one. The
     intermediate samples depend on the inferred order; ``l1_edge_polarity`` is the pure
-    test of the same claim. Address 0 is held, so the sample after the first rise is
-    documented (the contents are still uniform) and a simulator that shifts on the rise
-    already shows the new bit there (ruling S55a: every configuration crediting C7 must
-    catch the ignores-IS_CLK_INVERTED mutant on a documented bit)."""
+    test of the same claim, and the only one that credits C7: here a rise-shifting
+    simulator differs only on order-dependent samples, so this test exercises C7 without
+    crediting it (ruling S52)."""
     for name, init in (("zeros", 0), ("ones", ones(k))):
         f = _cfglut(ctx, k, name, init, IS_CLK_INVERTED=BIN[1])
-        f.read(0)
+        f.read(k.width - 1)
         f.shift([1 - (init & 1)] * k.width, sample=True)
         f.b.set(CE=0)
         f.sweep()
@@ -3856,11 +3858,14 @@ def _cfglut5_tests(k: LutKind, add: Add, base: list[str], shift_bins: list[str])
         "vector",
         "vectors/gen.py:l1_is_clk_inverted",
         [*base, *_bins(prim, "CDI", "1"), *_bins(prim, "CE"), *_bins(prim, "CLK"),
-         "attr:INIT", "attr:IS_CLK_INVERTED=1'b1", *_claims(k, 3, 7)],
+         "attr:INIT", "attr:IS_CLK_INVERTED=1'b1", *_claims(k, 3)],
         "IS_CLK_INVERTED=1: samples after each rise show no shift, after each fall one.",
         sampling={"IS_CLK_INVERTED": [1], "INIT": ["all zeros", "all ones"]},
         gaps=["the intermediate samples depend on the inferred order; L1.edge_polarity is "
-              "the order-free test of the same claim", NO_X],
+              "the order-free test of the same claim",
+              "claim:CFGLUT5.C7 is exercised, not credited: a simulator that shifts on the "
+              "rise differs here only on samples that depend on the inferred shift order "
+              "(ruling S52); L1.edge_polarity credits it", NO_X],
         related=[f"{FAMILY}.{prim}.L1.edge_polarity"],
     )  # fmt: skip
     add(
@@ -4899,7 +4904,7 @@ The orchestrator ruled on PR #12: D4 is overruled by ruling S52 and refined by S
 - **D17. `xut.unitkit`** (ruling S53, code-quality review M1). Generic metadata and guard code lives in infra, in Task P1, not in each unit: the standard reasons, test entries, bin names, the YAML dumper, the README skeleton, `vector_reach` (the python runner's `generate` and `replay_config`, not a copy) and `UnitGuards`. Units import it and never copy it or the flops code. The flops unit migrates in its own later PR (a TODO in P1's log). File stems are the unit name (`luts_recipes.py`, …), unique across units because pytest's default import mode shares one flat namespace (code-quality review M2).
 - **D18. Site-constrained primitives are `hw: "unsupported"` by class** (ruling S53, correctness review M5): IDDR, IDDR_2CLK, ODDR, ISERDESE2, OSERDESE2, IDELAYE2, ODELAYE2, IDELAYCTRL, BUFIO, BUFR, BUFMR and the IBUF/OBUF/IOBUF families carry `unitkit.HW_PAD` until the pad harness (P5), even where no catalog port is pad-class and the validator would call the stimulus renderable.
 - **D19. A model a source lacks is `n/a` on that source** (Task A6 Step 3): the unit runs, records and crosschecks that source only for the primitives it has, and gives the reason in the README and the log (the rom unit on `unisim-gh-2020.1`).
-- **D20. Credit only on deciding events; a failing mutant per claim** (ruling S55, correctness re-review M6). A claim credits only on an event whose documented outcome depends on its rule: CFGLUT5 C3/C7 on the edge that sets `known` to a new value, C4 on a CE-Low edge whose CDI differs from `known`, C5 after a 32-shift run that flipped `known`. `L0.smoke` no longer exercises C3, and `L1.edge_polarity` drives the opposite CDI before its CE-Low edge. Generally (Part A, A2/A3): every claim a vector test exercises has a named mutant in the unit's `mutants(prim)` table (`{claim: mutant_model_factory}`, `Unit.mutants`), and `xut.unitkit.UnitGuards` (P1) asserts, through `mutant_fails`, that it fails a documented bit in at least one configuration crediting the claim. luts has one per claim (LUT INIT bit-order and default mutants, LUT6_2's O5-from-the-upper-32 mutant, CFGLUT5's never-shifting, CE-ignoring, CDO-stuck, INIT-ignoring and inversion-ignoring mutants), plus a reversed-INIT-order check. Correctness re-review M7: "new" is against `_last_known`, the last order-free value, kept across a shift that loses `known`, so a value lost and re-established credits nothing. Ruling S55a (re-review N8, made mandatory): an event claim (`Mutant(..., event=True)`; CFGLUT5 C3, C4, C5, C7) needs its mutant to fail in **every** crediting configuration, a read claim in one; `L1.is_clk_inverted` therefore holds address 0, so its first documented sample catches a simulator that shifts on the rise.
+- **D20. Credit only on deciding events; a failing mutant per claim** (ruling S55, correctness re-review M6). A claim credits only on an event whose documented outcome depends on its rule: CFGLUT5 C3/C7 on the edge that sets `known` to a new value, C4 on a CE-Low edge whose CDI differs from `known`, C5 after a 32-shift run that flipped `known`. `L0.smoke` no longer exercises C3, and `L1.edge_polarity` drives the opposite CDI before its CE-Low edge. Generally (Part A, A2/A3): every claim a vector test exercises has a named mutant in the unit's `mutants(prim)` table (`{claim: mutant_model_factory}`, `Unit.mutants`), and `xut.unitkit.UnitGuards` (P1) asserts, through `mutant_fails`, that it fails a documented bit in at least one configuration crediting the claim. luts has one per claim (LUT INIT bit-order and default mutants, LUT6_2's O5-from-the-upper-32 mutant, CFGLUT5's never-shifting, CE-ignoring, CDO-stuck, INIT-ignoring and inversion-ignoring mutants), plus a reversed-INIT-order check. Correctness re-review M7: "new" is against `_last_known`, the last order-free value, kept across a shift that loses `known`, so a value lost and re-established credits nothing. Ruling S55a (re-review N8, made mandatory): an event claim (`Mutant(..., event=True)`; CFGLUT5 C3, C4, C5, C7) needs its mutant to fail in **every** crediting configuration, a read claim in one; `L1.is_clk_inverted` exercises C7 without crediting it (S52): a rise-shifting simulator differs there only on order-dependent samples, so C7 is out of its `exercises` with an S52 note in `gaps`, and `L1.edge_polarity` is C7's order-free crediting configuration. The guard checks only the tests that declare a claim, as status credits only declared bins.
 
 ---
 
