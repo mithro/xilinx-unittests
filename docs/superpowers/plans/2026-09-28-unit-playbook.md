@@ -4946,6 +4946,85 @@ Run Task A8 with `<unit>` = `luts` once step-3 PRs A–C and the luts PR have me
 
 ---
 
+## Appendix T: Tier 1 breadth pass (ruling S58, owner directive 2026-09-28)
+
+**Ruling.** Coverage now proceeds breadth-first. Every commonly used primitive first gets
+**Tier 1** coverage, in the order below. Only after that pass does any unit continue into
+**Tier 2**, the full coverage of rarely used features. This amendment overrides Appendix W's
+order and Part A's per-unit scope for the first pass.
+
+**Tier 1 deliverable, per primitive.** This is Part A with the scope cut, not the rules:
+- **Claims (A1):**
+  - Only the claims about the primitive's core documented behaviour go into `claims`: the
+    default mode, the main data path, the main control pins and reset/enable semantics.
+  - Every other documented claim, attribute mode and port behaviour is listed in the test's or
+    primitive's `gaps` as `tier-2: <what>`. Nothing is silently left out.
+- **Golden model (A2):**
+  - It models the core behaviour.
+  - A mode or attribute value it does not model raises the model's refusal, so no test can
+    expect it. A test never asserts behaviour the model does not implement.
+  - The clean-room rules, provenance, S44/S52/S55 crediting and mutant guards apply in full to
+    what IS modelled.
+- **Tests (A3–A5):**
+  - L0 `smoke`: the default configuration, plus one configuration per enumerated attribute
+    value that the model supports.
+  - One L1 vector test per Tier 1 claim, each with its S55 mutant.
+  - The GSR sv test, only when the unit's shared testbench makes it cheap.
+  - **Deferred to Tier 2:** L2 exhaustive and random tests, cocotb sessions, attribute crosses
+    beyond the defaults, and rare modes. Each is listed in `gaps` as `tier-2:`.
+- **Runners (A6):**
+  - Every simulator the portability table allows: xsim, iverilog, and verilator with
+    iverilog-vz.
+  - Both model sources where they have the model.
+  - hw is declared per A8 once step 3's runner exists.
+  - Crosscheck and findings are unchanged. Every disagreement is classified and recorded.
+    Tier 1 never weakens a check.
+- **Status and PR (A6–A7):**
+  - `xut status record` as usual.
+  - Each unit's README and status `notes` say "Tier 1", and the uncovered bins show what
+    Tier 2 owes.
+  - One PR per unit, with the two-reviewer gate.
+- **Completion:** a unit is complete only after Tier 2. Tier 1 is never reported as complete
+  coverage.
+
+**Tier 1 order.** Most commonly used first; flops and luts are done or in flight:
+
+| T1 # | Unit | Tier 1 primitives and core scope | Infra it waits for |
+|---|---|---|---|
+| 0 | flops | done (beyond Tier 1) | — |
+| 1 | luts | as Part B (small unit; already fully planned) | P1 |
+| 2 | carry | CARRY4: the carry chain and the O/CO outputs for sampled DI/S/CI/CYINIT | P1 |
+| 3 | muxf | MUXF7, MUXF8: the select path (exhaustive, since it is tiny) | P1 |
+| 4 | srl | SRL16E, SRLC32E: shift with CE, the address tap, Q31; Verilator unsupported (S28) | P1 |
+| 5 | lutram | all 12 RAM*: write on WE at the WCLK edge, asynchronous read, default INIT | P1 |
+| 6 | bram | RAMB18E1, RAMB36E1: the default TDP mode at one legal width, write then read on both ports, WRITE_MODE default; other widths and modes are tier-2 | P1, **P2** (smoke_attrs) |
+| 7 | dsp | DSP48E1: the default pipeline (A×B+C with the default registers), OPMODE/ALUMODE for multiply-add; everything else tier-2 | P1, P2 |
+| 8 | obuf, ibuf, iobuf | the basic buffers (IBUF, OBUF, OBUFT, IOBUF, IBUFDS, OBUFDS): the data path and tristate in simulation; hw waits for P5 | P1 |
+| 9 | bufg | BUFG, BUFGCE, BUFGCTRL, BUFGMUX: pass-through, CE gating and select in the default mode | P1, **P3** (clock observers) |
+| 10 | mmcm_pll | MMCME2_BASE, PLLE2_BASE (then _ADV at defaults): lock, and output frequency/phase at one legal configuration | P2, P3; the DRP (P4) is tier-2 |
+| 11 | ddr_regs | IDDR, ODDR: the default DDR_CLK_EDGE, capture and launch | P1 |
+| 12 | latches | LDCE, LDPE: transparency and hold | P1 |
+| 13 | rom | ROM32X1 to ROM256X1: the read path | P1 |
+| 14 | bram_fifo | FIFO18E1, FIFO36E1: write, read, empty and full at defaults | P2 |
+| 15 | delay | IDELAYCTRL, IDELAYE2, ODELAYE2: the default FIXED tap and the RDY handshake | P1 |
+| 16+ | the rest | regional_clk, serdes (xsim only), phy_fifo, weak_drivers, dci, config_*, xadc, gt_buf: Tier 1 in Appendix W order | as Appendix W |
+
+**Infra pulled forward for Tier 1.**
+- **P2 (`smoke_attrs`)** must land before bram.
+- **P3 (clock observers, spec §5.4)** must land before bufg.
+
+Both are scheduled on infra branches while carry, muxf, srl and lutram proceed. P4 (DRP),
+P5 (pad harness) and P6 (real-time clocks) are not needed for Tier 1 simulation.
+
+**Tier 2.** After the Tier 1 pass, units return in Tier 1 order for Part A's full scope:
+- every claim;
+- L2 exhaustive and random;
+- cocotb;
+- attribute crosses;
+- rare modes;
+- the S29(2) srl/CFGLUT5 recovery for Verilator;
+- the hardware follow-up once P5 and P6 exist.
+
 ## Appendix W: the fan-out worksheet
 
 The approved order starts luts, latches, muxf, carry, srl, lutram, rom, ddr_regs, bufg; the rest follows spec §16 step 5's group order and is **provisional** (the orchestrator sets it). Portability cells are from the 2026-09-27 smoke run of PR #10 (both model sources), before ruling S51 re-labelled model attribute checks as `no: config:`; **re-read `status/PORTABILITY.md` on `main` at intake** (Task A1, Step 2.3), because it is regenerated after every infra merge.
