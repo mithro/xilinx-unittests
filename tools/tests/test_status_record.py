@@ -764,3 +764,21 @@ def test_record_warns_when_crediting_a_python_run_with_a_non_default_seed(repo, 
         assert any(cap in w and "77" in w for w in seeded), warnings
     else:
         assert not seeded, seeded
+
+
+def test_seed_for_and_status_record_share_the_default_seed(tmp_path):
+    """``runners.base.seed_for`` without ``--seed`` and ``status record``'s non-default
+    seed check use the one ``xut.seeds.default_seed`` (ruling S57)."""
+    import zlib
+    from types import SimpleNamespace
+
+    from xut import status
+    from xut.modelsrc import ModelSource
+    from xut.runners.base import RunContext, seed_for
+    from xut.seeds import default_seed
+
+    tid = TESTS[0]["id"]
+    case = SimpleNamespace(id=tid)  # seed_for reads only the test id
+    ctx = RunContext(tmp_path, "rtl", ModelSource("golden", tmp_path))
+    assert seed_for(case, ctx) == default_seed(tid) == zlib.crc32(tid.encode())
+    assert status.default_seed is default_seed
