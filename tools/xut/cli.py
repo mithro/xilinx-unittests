@@ -618,7 +618,8 @@ def run_cmd(
     "--strict",
     is_flag=True,
     help="every selected test must have been cross-checked: a not-run or uncompared "
-    "test exits 4 (CI: select exactly what was run, e.g. with --level/--style)",
+    "test exits 4, including one a runner could not run (CI: select exactly what was "
+    "run, e.g. with --level/--style)",
 )
 def crosscheck_cmd(
     selectors: tuple[str, ...],
@@ -663,8 +664,9 @@ def crosscheck_cmd(
         c for c in cases if (not levels or c.level in levels) and (not styles or c.style in styles)
     ]
     if not cases:
-        if strict:
-            raise SystemExit(xc.EXIT_INCOMPLETE)  # strict: nothing checked is never clean
+        # As `xut run`: a selection with no tests (e.g. a work unit before its tests
+        # exist) checks nothing and is not an error, strict or not; a SELECT that
+        # matches no test at all was already an error above (`_select_cases`).
         click.echo(f"no tests selected ({' '.join(selectors) or 'no tests under tests/'})")
         return
     reports = []
