@@ -264,6 +264,10 @@ def sv_seed_define(seed: int) -> str:
     return f"64'd{seed}"
 
 
+#: runners whose UNISIM models may carry the z-compare rewrite: XutDut refuses z (S38)
+NO_Z_RUNNERS = frozenset({"verilator", "iverilog-vz"})
+
+
 def cocotb_command(
     ex: Executor,
     sim: str,
@@ -310,6 +314,8 @@ def cocotb_command(
         "XUT_TRACE": "trace.xtr",
         "XUT_SEED": str(seed),
         "XUT_RUNNER": runner,
+        # the z-compare rewrite is exact only with every input driven (ruling S38)
+        "XUT_NO_Z": "1" if runner in NO_Z_RUNNERS else "0",
         "XUT_MODEL": ms.name,
         "XUT_FLOW": ctx.flow,
     }
@@ -324,6 +330,10 @@ def with_seed(r: ConfigResult, seed: int) -> ConfigResult:
     return r
 
 
+#: ``xut.cocotb_dut.Z_MARK``: XutDut refused a z stimulus (ruling S38, PR #10 must-fix 6)
+Z_MARK = "xut_z_stimulus.txt"
+
+
 def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> ConfigResult:
     """``_cocotb_verdict`` with the seed in every fail/error reason (``with_seed``)."""
     return with_seed(_cocotb_verdict(cd, rc, seed, header), seed)
@@ -332,6 +342,7 @@ def cocotb_check(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Config
 def _cocotb_verdict(cd: Path, rc: int, seed: int, header: dict[str, str]) -> ConfigResult:
     """Classify a cocotb run of configuration dir ``cd`` from its ``results.xml``:
 
+    - ``Z_MARK`` present (``XutDut`` refused a z stimulus, ruling S38): ``error``;
     - no ``results.xml``: ``error``, ``compile failed`` when the launcher says so (exit
       ``COCOTB_BUILD_FAILED``), else the test module did not import (see run.log); an
       unreadable one, no test case in it, or every one skipped: ``error``;
@@ -352,6 +363,9 @@ def _cocotb_verdict(cd: Path, rc: int, seed: int, header: dict[str, str]) -> Con
     - no failure but a non-zero launcher exit: ``error``; otherwise ``pass``.
     """
     cfg = cfg_of(header)
+    if (cd / Z_MARK).is_file():  # a refused z stimulus: an error, whatever the test did
+        why = (cd / Z_MARK).read_text(errors="replace").strip()
+        return ConfigResult(cfg, "error", f"cocotb test drove z into the DUT: {why}")
     xml = cd / "results.xml"
     if not xml.is_file() and rc == COCOTB_BUILD_FAILED:
         return ConfigResult(cfg, "error", "compile failed")

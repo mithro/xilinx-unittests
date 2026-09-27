@@ -624,3 +624,54 @@ def test_cocotb_model_error_fails_with_the_seed(ctx, toy_catalog):
     assert res.status == "fail", res.reason
     seed = seed_for(case, ctx)
     assert res.configs[0].reason == f"model reported errors: Error: TOYFF odd [seed {seed}]"
+
+
+# --- PR #10 must-fix 6: no z stimulus into a z-compare model (ruling S38) ------------------
+
+
+def test_z_marks_agree(cocotb_dut):
+    from xut.runners import sim
+
+    assert sim.Z_MARK == cocotb_dut.Z_MARK
+
+
+@pytest.mark.parametrize("op", ["set", "edge", "gsr"])
+def test_a_z_written_through_xutdut_is_refused_and_marked(cocotb_dut, tmp_path, op):
+    x = cocotb_dut.XutDut(_fake_dut(), _map(tmp_path), tmp_path / "t.xtr", header={})
+    call = {"set": lambda: x.set(R="z"), "edge": lambda: x.edge("C", "z"),
+            "gsr": lambda: x.gsr("z")}[op]  # fmt: skip
+    with pytest.raises(cocotb_dut.ZStimulusError, match="drives z"):
+        asyncio.run(call())
+    assert "drives z" in (tmp_path / cocotb_dut.Z_MARK).read_text()
+
+
+def test_a_z_written_to_the_handle_is_refused_under_xut_no_z(cocotb_dut, tmp_path, monkeypatch):
+    """A test that bypasses XutDut: under verilator/iverilog-vz (XUT_NO_Z=1) the read-back
+    of in_vec refuses it at the next operation or sample."""
+    dut = _fake_dut()
+    x = cocotb_dut.XutDut(dut, _map(tmp_path), tmp_path / "t.xtr", header={})
+    dut.in_vec.value = "0z00"
+    asyncio.run(x.set(R=1))  # not under XUT_NO_Z: not checked
+    monkeypatch.setenv("XUT_NO_Z", "1")
+    x = cocotb_dut.XutDut(dut, _map(tmp_path), tmp_path / "t.xtr", header={})
+    dut.in_vec.value = "0z00"
+    with pytest.raises(cocotb_dut.ZStimulusError, match="in_vec = 0z00"):
+        x.sample("S0")
+
+
+def test_cocotb_check_reports_a_z_stimulus_as_an_error(tmp_path):
+    cd = tmp_path / "cfg-c"
+    _xml(cd, _tc("t", '<failure message="boom" />'))
+    _trace(cd)
+    (cd / "xut_z_stimulus.txt").write_text("TOYFF: R='z' drives z\n")
+    r = cocotb_check(cd, 1, 3, HDR)
+    assert r.status == "error" and "cocotb test drove z into the DUT: TOYFF: R='z'" in r.reason
+
+
+def test_cocotb_command_sets_xut_no_z_for_the_verilator_runners(tmp_path):
+    ms = make_model_source(tmp_path / "ms")
+    ctx = RunContext(tmp_path, "rtl", ms)
+    case = next(c for c in discover(FIX) if c.style == "cocotb")
+    for runner, want in (("verilator", "1"), ("iverilog-vz", "1"), ("iverilog", "0")):
+        _, env = cocotb_command(NativeExecutor(), "icarus", case, tmp_path, ctx, runner, 1)
+        assert env["XUT_NO_Z"] == want
