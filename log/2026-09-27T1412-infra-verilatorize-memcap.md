@@ -26,3 +26,17 @@
 - `run_smoke` still deletes `build/portability/<source>/` on a `--models` (partial) run, which removes a full run's work logs. Partial runs should get their own work directory.
 - The step-2 plan (docs/superpowers/plans, lines 5414-5415) still describes `driver.sh`/`xargs`. It was left as a historical record.
 - `xut verilatorize --jobs` has no upper bound. Its containers are capped now.
+
+## Fix round 1 (review of 52e3c64..318ca87, orchestrator rulings S48a)
+- **I-1.** The cap is parsed to bytes and must be 64m to 32g. `0g`, `00g`, `1k` and `33g` raise `XutError`, which names the range.
+- **I-2.** `XUT_MEMORY_BUDGET` (default `100g`, same syntax) divided by the cap (`max_jobs()`) replaces `MAX_JOBS=64`, giving 25 at the defaults. The refusal names the budget, the cap and the limit. The defaults stay at 1, and a test pins them to at most min(cpu, 24, limit).
+- **I-3.** The limit applies to `run`, `portability` and `verilatorize`. A test walks every `--jobs`/`-j` option. The refusal tests stub every real run.
+- **M-1.** `docker rm -f` runs in a `finally` around the inspect. Live containers are tracked. On Ctrl-C, `run_tests`, `_run_scripts` and the verilatorize equiv pool cancel their queues and call `kill_live()`.
+- **M-2.** Every container has the labels `xut.owner=<pid>` and `xut.session=<uuid>`, and runs under an in-container `timeout -k 10 <timeout_s + 30>`. The extra 30 s lets the host timeout (a `RunTimeout`) fire first, so a timed-out run is never nondeterministically reported as rc 124. `xut doctor --sweep-containers` removes containers whose owner is dead. Live test: an orphan with a dead owner was removed and one with a live owner was kept.
+- **M-3.** `OOM_MARK` is in `reject.INFRA`, so an OOM kill is always `error` and never a rejection.
+- **M-4.** In its own commit: a partial run works under `build/portability/partial/<ms>/`.
+- **M-5.** A script that writes no rc gets `xut-container: exit <rc>: <last line>`, which shows in the reason.
+- **M-6.** The `NativeExecutor` docstring says the native path is uncapped and must run inside a capped scope.
+- **M-7.** Every script is counted in `done.txt` exactly once. The default-jobs test now has a real bound.
+- **Tests:** full suite, `pytest -n 8` with the container tests: 1553 passed. Lint: 0 errors.
+- **Live check 2** (same 7 models, `--jobs 8`): the smoke phase took 52 s. FDRE: yes/yes. DPLL and IDELAYE3: `oom: ... memory cap 4g`. The work went to `partial/unisim-2025.2/`, and the Task 16 directory was untouched. No containers were left.
