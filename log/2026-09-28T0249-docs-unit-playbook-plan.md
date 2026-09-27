@@ -166,3 +166,24 @@ Verification, on the scratch copy of `main` plus P1 and luts:
 - the non-container suite under the heavy lock in a 16G scope: `1862 passed, 5 skipped` (1698 with P1 alone).
 
 Next: re-review of PR #12.
+
+## Follow-up: PR #12 correctness re-review 3 (M7, ruling S55a)
+
+Re-review 3 confirmed M6 resolved and raised M7 and N8; ruling S55a made N8 mandatory.
+
+- **M7.** The CFGLUT5 model keeps `_last_known`, the last order-free value. A shift that loses `known` does not clear it; a GSR loss resets it to INIT's own uniform value.
+  - C3/C7 credit only when a re-established `known` differs from `_last_known`, and `_cascaded` (C5) is set on the same comparison. `_run_from` is gone.
+  - New model test, the reviewer's counterexample under both clock senses: INIT all ones, 20 unsampled zero-shifts, 32 one-shifts, then a sweep. Every sample is `doc:348`, and nothing credits C3, C5 or C7.
+  - A companion test: the same run ending in zeros credits C3 and C5.
+- **S55a (N8).** `xut.unitkit.Mutant(factory, event=False)`. For an event claim (`event=True`), `mutant_fails(..., every=True)` and the guard require the mutant to fail a documented bit in every configuration that credits the claim; read claims keep `any`. New kit test: a mutant that breaks TOYFF.C1 only for INIT=0 passes `any` and fails `every`. luts marks CFGLUT5 C3, C4, C5 and C7 as event claims.
+- **Recipe change the strict guard forced.** `L1.is_clk_inverted` credited C7 while the ignores-IS_CLK_INVERTED mutant agreed on every documented bit, the case the reviewer's `mut3.log` also shows. It now holds address 0, so the sample after the first rise is documented and a rise-shifting simulator fails there.
+- **Part A.** A2 and A3 say this in general form. Review Focus 2 and D20 record it.
+
+Verification, all on the scratch copy of `main` plus P1 and luts:
+- luts pytest in a 4G scope: `167 passed`;
+- P1's focused tests: `64 passed`;
+- the cocotb stand-in: exit 0;
+- ruff: clean;
+- the non-container suite under the heavy lock in a 16G scope: `1866 passed, 5 skipped` (1699 with P1 alone).
+
+Next: re-review of PR #12.
