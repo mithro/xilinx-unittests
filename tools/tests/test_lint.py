@@ -1097,7 +1097,8 @@ def test_portability_missing_table_is_one_warning(tmp_path):
 
 
 def test_portability_missing_table_lint_cli_exits_0(tmp_path, monkeypatch):
-    (_fdre_dir(tmp_path) / "test.yaml").write_text(_VALID_TEST_YAML)
+    # FDRE's catalog entry and every bin accounted, so bins-accounted runs and passes
+    _bins_tree(tmp_path, ["port:R — fixture"])
     monkeypatch.setattr("xut.paths.repo_root", lambda start=None: tmp_path)
     monkeypatch.setattr("xut.workunits.load_units", lambda root: {})
     monkeypatch.setattr("xut.lint._tracked_files", lambda root: [])
