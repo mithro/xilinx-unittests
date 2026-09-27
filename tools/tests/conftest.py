@@ -45,6 +45,16 @@ def toy(monkeypatch):
     monkeypatch.setattr("xut_models.registry.get", lambda family, prim: ToyDff)
 
 
+@pytest.fixture(autouse=True)
+def _container_halt_reset():
+    """``xut.container.kill_live`` halts every later container run in the process (S48a
+    R-1): clear it after each test so one test's interrupt never leaks into the next."""
+    yield
+    from xut import container
+
+    container._HALT.clear()
+
+
 @pytest.fixture
 def work(tmp_path):
     """A fresh run root outside the worktree (the iverilog runner mounts it at

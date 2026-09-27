@@ -21,7 +21,8 @@ them; the cap makes the kernel OOM-kill inside the container instead. `run` chec
 a child, not the main process, so the exit code alone does not tell), then removes the
 container itself (no `--rm`: the check needs the stopped container), on every path.
 
-Every container is labelled `xut.owner=<pid>` and `xut.session=<uuid>` and runs its
+Every container is labelled `xut.owner=<pid>`, `xut.session=<uuid>` and
+`xut.host=<hostname>:<boot_id>` and runs its
 command under an in-container `timeout`, so a container orphaned by a killed xut ends on
 its own; `xut doctor --sweep-containers` (`sweep_orphans`) removes the containers of
 owners that are gone. On a KeyboardInterrupt the job pools call `kill_live` (S48a).
@@ -31,6 +32,7 @@ owners that are gone. On a KeyboardInterrupt the job pools call `kill_live` (S48
 import contextlib
 import os
 import re
+import socket
 import subprocess
 import threading
 import uuid
@@ -56,8 +58,11 @@ _GUEST_GRACE_S = 30
 
 #: This xut process's session, labelled on its containers (`xut.session`).
 SESSION = uuid.uuid4().hex
-#: The containers this process is running now (`kill_live`).
+#: The containers this process is running now (`kill_live`), and the halt `kill_live`
+#: sets: from then on `DockerExecutor.run` refuses to start a container (S48a R-1). Both
+#: are changed only under `_LIVE_LOCK`, so no container starts unseen by `kill_live`.
 _LIVE: set[str] = set()
+_HALT = threading.Event()
 _LIVE_LOCK = threading.Lock()
 
 #: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`, and
@@ -108,6 +113,11 @@ def max_jobs() -> tuple[int, str, str]:
     cap = container_memory()
     budget = os.environ.get(BUDGET_ENV, DEFAULT_BUDGET)
     n = size_bytes(budget, f"${BUDGET_ENV}") // size_bytes(cap, f"${MEMORY_ENV}", MEMORY_MAX)
+    if n == 0:
+        raise XutError(
+            f"memory budget ${BUDGET_ENV}={budget} is below the container cap {cap}: no "
+            f"container can run; raise the budget or lower ${MEMORY_ENV}"
+        )
     return n, budget, cap
 
 
@@ -117,6 +127,11 @@ def oom_line(memory: str) -> str:
 
 class RunTimeout(RuntimeError):
     """A simulator command exceeded its `timeout_s`."""
+
+
+class RunCancelled(KeyboardInterrupt):
+    """xut was interrupted (`kill_live`): no new container starts. A `KeyboardInterrupt`,
+    so a runner's own `except Exception` never turns it into a result and moves on."""
 
 
 class ContainerError(XutError, RuntimeError):
@@ -234,6 +249,8 @@ class DockerExecutor:
             f"xut.owner={os.getpid()}",
             "--label",
             f"xut.session={SESSION}",
+            "--label",
+            f"xut.host={_HOST_ID}",
             "--network=none",
             "--pull=never",
             f"--memory={self.memory}",
@@ -269,6 +286,9 @@ class DockerExecutor:
             f.write(f"$ {' '.join(argv)}   [container {self.image} {name}]\n")
             f.flush()
             with _LIVE_LOCK:
+                if _HALT.is_set():
+                    f.write(f"xut-container: interrupted: {name} not started\n")
+                    raise RunCancelled(f"xut was interrupted: not starting {argv[0]} ({name})")
                 _LIVE.add(name)
             try:
                 p = subprocess.run(full, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s)
@@ -328,10 +348,14 @@ class DockerExecutor:
 
 
 def kill_live() -> list[str]:
-    """`docker kill` every container this process is running (S48a M-1: on a
-    KeyboardInterrupt, the pools call this rather than wait for their runs). Each run's
-    own cleanup then removes its container. Failures are ignored: best effort."""
+    """Halt every later container run, then `docker kill` every container this process is
+    running (S48a M-1, R-1: on a KeyboardInterrupt, the pools call this rather than wait
+    for their runs). The halt and the snapshot are taken under the lock `run` holds while
+    it checks the halt and registers its container, so a container is either in the
+    snapshot or never starts. Each run's own cleanup then removes its container. Kill
+    failures are ignored: best effort."""
     with _LIVE_LOCK:
+        _HALT.set()
         names = sorted(_LIVE)
     for name in names:
         # best effort: the in-container timeout still ends a container this cannot kill
@@ -352,30 +376,59 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def host_id() -> str:
+    """``<hostname>:<boot_id>``, labelled ``xut.host`` on every container: an owner pid is
+    meaningful only on the host, and in the boot, that started it (S48a R-3)."""
+    try:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        boot = "unknown-boot"
+    return f"{socket.gethostname()}:{boot}"
+
+
+_HOST_ID = host_id()
+
+
 def sweep_orphans() -> list[str]:
-    """Remove every xut-labelled container (running or stopped) whose `xut.owner` process
-    is gone (`xut doctor --sweep-containers`, S48a M-2); the removed container IDs. A
-    container with an unreadable owner label is left alone."""
+    """Remove every xut-labelled container (running or stopped) of this host and boot
+    (``xut.host``) whose ``xut.owner`` process is gone (``xut doctor --sweep-containers``,
+    S48a M-2, R-3); the removed container IDs. A container with an unreadable owner label
+    is left alone. A failed ``docker rm`` never stops the sweep: the failures are raised
+    together at the end (``ContainerError``, naming what was removed too)."""
     fmt = '{{.ID}}\t{{.Label "xut.owner"}}'
     p = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "label=xut.owner", "--format", fmt],
+        ["docker", "ps", "-a", "--filter", "label=xut.owner",
+         "--filter", f"label=xut.host={host_id()}", "--format", fmt],
         capture_output=True,
         text=True,
         timeout=_CLEANUP_TIMEOUT_S,
-    )
+    )  # fmt: skip
     if p.returncode != 0:
         raise ContainerError(f"docker ps failed (exit {p.returncode}): {p.stderr.strip()}")
-    removed = []
+    removed, failed = [], []
     for line in p.stdout.splitlines():
         cid, _, owner = line.partition("\t")
         if not owner.strip().isdigit() or _pid_alive(int(owner)):
             continue
-        r = subprocess.run(
-            ["docker", "rm", "-f", cid], capture_output=True, text=True, timeout=_CLEANUP_TIMEOUT_S
+        try:
+            r = subprocess.run(
+                ["docker", "rm", "-f", cid],
+                capture_output=True,
+                text=True,
+                timeout=_CLEANUP_TIMEOUT_S,
+            )
+            err = "" if r.returncode == 0 else (r.stderr.strip() or f"exit {r.returncode}")
+        except (OSError, subprocess.SubprocessError) as e:
+            err = str(e)
+        if err:
+            failed.append(f"{cid}: {err}")
+        else:
+            removed.append(cid)
+    if failed:
+        raise ContainerError(
+            f"removed {len(removed)} orphaned xut container(s) ({', '.join(removed) or '-'}); "
+            f"could not remove {len(failed)}: {'; '.join(failed)}"
         )
-        if r.returncode != 0:
-            raise ContainerError(f"docker rm -f {cid} failed: {r.stderr.strip()}")
-        removed.append(cid)
     return removed
 
 

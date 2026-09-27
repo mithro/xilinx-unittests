@@ -635,7 +635,7 @@ def test_memory_cap_error_names_the_range(tmp_path):
 @pytest.mark.parametrize(
     ("cap", "budget", "want"),
     [(None, None, 25), ("16g", None, 6), ("4g", "200g", 50), ("32g", "100g", 3),
-     ("64m", "1g", 16), ("8g", "4g", 0)],
+     ("64m", "1g", 16)],
 )  # fmt: skip
 def test_max_jobs_is_the_budget_over_the_cap(monkeypatch, cap, budget, want):
     for env, v in (("XUT_CONTAINER_MEMORY", cap), ("XUT_MEMORY_BUDGET", budget)):
@@ -663,6 +663,7 @@ def test_memory_budget_refuses_a_malformed_value(monkeypatch, bad):
 
 def test_docker_argv_labels_every_container(tmp_path):
     argv = DockerExecutor(root=tmp_path).argv(["true"], tmp_path, "n", None)
+    assert f"xut.host={container.host_id()}" in argv
     assert f"xut.owner={os.getpid()}" in argv
     assert f"xut.session={container.SESSION}" in argv
     assert argv[argv.index(f"xut.owner={os.getpid()}") - 1] == "--label"
@@ -745,7 +746,39 @@ def test_sweep_orphans_removes_containers_of_dead_owners_only(monkeypatch):
     assert container.sweep_orphans() == ["c1"]
     ps = calls[0]
     assert ps[:3] == ["docker", "ps", "-a"] and "label=xut.owner" in ps
+    # only this host's (and this boot's) containers: a pid means nothing elsewhere (R-3)
+    assert f"label=xut.host={container.host_id()}" in ps
     assert calls[1:] == [["docker", "rm", "-f", "c1"]]
+
+
+def test_sweep_orphans_reports_rm_failures_once_at_the_end(monkeypatch):
+    dead = _dead_pid()
+    calls: list[list[str]] = []
+    listing = f"c1\t{dead}\nc2\t{dead}\nc3\t{dead}\n"
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=listing, stderr="")
+        if argv[-1] == "c2":
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="device busy")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(container.ContainerError) as ei:
+        container.sweep_orphans()
+    assert [c[-1] for c in calls[1:]] == ["c1", "c2", "c3"]  # never stops partway
+    msg = str(ei.value)
+    assert "removed 2" in msg and "c1" in msg and "c3" in msg
+    assert "c2: device busy" in msg
+
+
+def test_host_id_is_hostname_and_boot_id():
+    import socket
+
+    host, _, boot = container.host_id().partition(":")
+    assert host == socket.gethostname()
+    assert boot == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 
 
 def test_sweep_orphans_docker_failure_is_an_error(monkeypatch):
@@ -770,3 +803,72 @@ def test_doctor_sweep_containers(monkeypatch):
     monkeypatch.setattr(container, "sweep_orphans", lambda: [])
     r = CliRunner().invoke(main, ["doctor", "--sweep-containers"])
     assert "no orphaned xut containers" in r.output
+
+
+# --- S48a R-1/R-2: an interrupt halts every later container; a budget below the cap ------
+
+
+def test_budget_below_the_cap_is_a_clear_error(monkeypatch):
+    from xut.errors import XutError
+
+    monkeypatch.setenv("XUT_CONTAINER_MEMORY", "4g")
+    monkeypatch.setenv("XUT_MEMORY_BUDGET", "2g")
+    with pytest.raises(XutError, match="budget.*2g.*below the container cap 4g"):
+        container.max_jobs()
+
+
+def test_a_run_after_kill_live_refuses_to_start(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_docker(calls))
+    monkeypatch.setattr(container, "_LIVE", set())
+    container.kill_live()
+    log = tmp_path / "l.log"
+    with pytest.raises(container.RunCancelled, match="interrupted"):
+        DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=log, timeout_s=5)
+    assert isinstance(container.RunCancelled("x"), KeyboardInterrupt)
+    assert not any(c[:2] == ["docker", "run"] for c in calls)
+    assert "interrupted" in log.read_text()
+    assert not container._LIVE
+
+
+def test_kill_live_misses_no_container_started_around_it(tmp_path, monkeypatch):
+    """The add-versus-snapshot race (R-1): every `docker run` issued once the halt is set
+    belongs to a container in kill_live's snapshot, and every later run refuses."""
+    import random
+    import threading
+    import time
+
+    started: list[tuple[str, bool]] = []
+    guard = threading.Lock()
+
+    def fake_run(argv, **kw):
+        if argv[:2] == ["docker", "run"]:
+            name = argv[argv.index("--name") + 1]
+            with guard:
+                started.append((name, container._HALT.is_set()))
+            time.sleep(random.random() / 200)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(container, "_LIVE", set())
+    ex = DockerExecutor(root=tmp_path)
+    refused: list[int] = []
+
+    def worker(i):
+        while True:  # until the halt stops it
+            try:
+                ex.run(["x"], cwd=tmp_path, log=tmp_path / f"{i}.log", timeout_s=5)
+            except container.RunCancelled:
+                refused.append(i)
+                return
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    time.sleep(0.02)
+    killed = set(container.kill_live())
+    for t in threads:
+        t.join()
+    late = [n for n, halted in started if halted]
+    assert all(n in killed for n in late), (late, killed)
+    assert len(refused) == 8  # every worker was stopped by the halt
