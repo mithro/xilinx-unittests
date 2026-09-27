@@ -40,3 +40,14 @@
 - **M-7.** Every script is counted in `done.txt` exactly once. The default-jobs test now has a real bound.
 - **Tests:** full suite, `pytest -n 8` with the container tests: 1553 passed. Lint: 0 errors.
 - **Live check 2** (same 7 models, `--jobs 8`): the smoke phase took 52 s. FDRE: yes/yes. DPLL and IDELAYE3: `oom: ... memory cap 4g`. The work went to `partial/unisim-2025.2/`, and the Task 16 directory was untouched. No containers were left.
+
+## Fix round 2 (re-review R-1..R-4)
+- **R-1.** `kill_live()` sets a module-level `_HALT` under `_LIVE_LOCK` before taking its snapshot. `DockerExecutor.run` checks `_HALT` in the same critical section as `_LIVE.add` and raises `RunCancelled` (a `KeyboardInterrupt` subclass) instead of starting. As a result, a container is either killed or never started, even when a job issues several runs in sequence.
+  - Tests: a run after the halt refuses and never calls `docker run`. A stress test runs 8 threads that start runs in a loop and checks that every `docker run` issued after the halt belongs to the snapshot; it passed 25 of 25 repeated runs.
+  - An autouse fixture clears the halt after each test.
+- **R-2.** A budget below the cap is now a `XutError` ("... is below the container cap ...").
+- **R-3.** Containers carry the label `xut.host=<hostname>:<boot_id>`. The sweep filters on it, and any rm failures are reported together at the end.
+  - Live test: an orphan labelled with this host was removed, and one labelled with another host was kept.
+- **R-4.** Removed the dead worker-side `KeyboardInterrupt` handler.
+- **Tests:** full suite, `pytest -n 8` with the container tests: 1557 passed.
+- **Live Ctrl-C:** `timeout -s INT 70 xut portability --models ... --jobs 8` was interrupted mid-smoke at done=12/64. It aborted promptly and left no `xut` containers.
