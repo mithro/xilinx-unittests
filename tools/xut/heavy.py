@@ -239,12 +239,15 @@ def admit(
 
 def scope_argv(name: str, mem: str, command: Sequence[str]) -> list[str]:
     """The capped-scope command line (AGENTS.md §10.1). ``systemd-run --scope`` runs the
-    command itself, so the command inherits this process's environment and fds."""
+    command itself, so the command inherits this process's environment and fds; the command
+    line is never environment-expanded by systemd (``--expand-environment=no``)."""
     if not _NAME.fullmatch(name):
         raise XutError(f"--name {name!r}: use letters, digits, '_', '.' and '-' only")
     return [
         "systemd-run", "--user", "--scope", "--slice=vivado.slice",
         f"--unit=xut-{name}-{int(time.time())}",
+        # the command is passed as written: never let systemd expand $VAR in it
+        "--expand-environment=no",
         "-p", f"MemoryMax={mem.upper()}", "-p", "MemorySwapMax=0", "--", *command,
     ]  # fmt: skip
 
