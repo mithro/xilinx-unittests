@@ -3,7 +3,6 @@
 
 import subprocess
 from collections import Counter
-from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -230,11 +229,9 @@ def _generated_header(root: Path, branch: str) -> str:
     """The header every generated status file starts with: the do-not-edit marker
     plus the generation time and git HEAD (spec §11; not part of any `render_*`
     function's output, so that output stays deterministic apart from this header)."""
-    proc = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True
-    )
-    head = proc.stdout.strip() if proc.returncode == 0 else "unknown"
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ")
+    from xut import provenance
+
+    head, now = provenance.short_head(root), provenance.utc_stamp()
     return _GENERATED_COMMENT + f"\n_Generated {now} at HEAD `{head}` on branch `{branch}`._\n\n"
 
 
@@ -708,7 +705,7 @@ def portability_cmd(
     status/PORTABILITY.md (refused unless on main or --force; never with --models). Prints
     `progress: done=N total=M elapsed_s=E` every 10 s while the smoke scripts run.
     """
-    from xut import modelsrc, portability
+    from xut import modelsrc, portability, provenance
     from xut.paths import repo_root
     from xut.status import current_branch
 
@@ -734,8 +731,8 @@ def portability_cmd(
         rows_by_source, meta = (
             runs,
             {
-                "generated": datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ"),
-                "head": portability.git_head(root),
+                "generated": provenance.utc_stamp(),
+                "head": provenance.short_head(root),
                 "image": "-",
                 "digest": "-",
             },

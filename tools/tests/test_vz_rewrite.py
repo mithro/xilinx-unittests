@@ -276,7 +276,11 @@ def _write(tmp_path, name, text):
             "reg rst_q",
         ),
         # PR #10 review must-fix 1: the NBA stage inside a same-file helper instance
-        ("vz_bad_nbahelper.v", "VZNBASUB", "q: trigger cone contains NBA-written reg vznba_stage.r"),
+        (
+            "vz_bad_nbahelper.v",
+            "VZNBASUB",
+            "q: trigger cone contains NBA-written reg vznba_stage.r",
+        ),
         ("vz_bad_nbahelper4.v", "VZCES", "q: trigger cone contains NBA-written reg vzce_stage.q"),
     ],
 )

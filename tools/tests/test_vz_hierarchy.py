@@ -240,8 +240,9 @@ def test_a_parent_is_blocked_by_its_child_verdict_for_the_instantiated_parameter
     }
     assert man["VZDSPE1"].equiv == {"AREG=0": child}
     # without the descendants' entries, blocked fails closed
-    assert "VZDSPE1 [AREG=0] has equivalence no verdict" in vl.blocked(man["VZDSP"], "VZDSP",
-                                                                         "default")
+    assert "VZDSPE1 [AREG=0] has equivalence no verdict" in vl.blocked(
+        man["VZDSP"], "VZDSP", "default"
+    )
     # never derived for a configuration: blocked too, even with the parent's own pass
     man["VZDSP"].equiv["INIT=1'b1"] = "pass"
     assert "were never derived" in vl.blocked(man["VZDSP"], "VZDSP", "INIT=1'b1", man.get)
