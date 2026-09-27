@@ -11,7 +11,6 @@ FDSE is a single D flip-flop with clock enable and a synchronous set input `S` t
 | ID | Level | Style | Exercises |
 |---|---|---|---|
 | `7series.FDSE.L0.smoke` | L0 | vector | port:C, port:CE, port:D, port:Q, port:S, port:C:edge, port:CE:1, port:D:1, attr:INIT=1'b0, attr:INIT=1'b1, attr:IS_C_INVERTED=1'b0, attr:IS_C_INVERTED=1'b1, attr:IS_D_INVERTED=1'b0, attr:IS_D_INVERTED=1'b1, attr:IS_S_INVERTED=1'b0, attr:IS_S_INVERTED=1'b1, claim:FDSE.C1, claim:FDSE.C4 |
-| `7series.FDSE.L0.illegal_init` | L0 | vector |  |
 | `7series.FDSE.L1.capture` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:1, port:D:0, port:D:1, claim:FDSE.C1 |
 | `7series.FDSE.L1.ce_hold` | L1 | vector | port:C, port:CE, port:D, port:Q, port:C:edge, port:CE:0, port:CE:1, port:D:0, port:D:1, claim:FDSE.C2 |
 | `7series.FDSE.L1.set_over_ce` | L1 | vector | port:S, port:CE, port:Q, port:CE:0, port:CE:1, port:S:0, port:S:1, claim:FDSE.C3 |
@@ -30,11 +29,8 @@ FDSE is a single D flip-flop with clock enable and a synchronous set input `S` t
 - `7series.FDSE.L0.smoke`: Every one of the 16 attribute combinations elaborates, powers up to INIT and captures once on every simulator: the minimum any toolchain must get right.
   - Misses: only one capture per configuration; no control, CE-low or GSR activity
   - Misses: no x/z on any input (sv_x_inputs covers x)
-  - Misses: illegal values are tried only by L0.illegal_init
+  - Misses: UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) accepts INIT=1'bx without rejecting it; the reject path is not exercised for flops
   - Not on hw for configurations `*_d1_*`: IS_D_INVERTED=1 (UG953 p379) is only legal on I/O registers; the fabric harness uses SLICE flops
-- `7series.FDSE.L0.illegal_init`: INIT=1'bx is outside UG953's 1'b0/1'b1 (p379); the simulation must reject it (expect=reject), which exercises the runtime-rejection path of spec §4.1.
-  - Misses: only INIT=1'bx is tried; over-width literals are truncated at elaboration and IS_*_INVERTED illegal values are not tried
-  - Misses: whether UNISIM rejects it is observed, not documented (see Task 24)
 - `7series.FDSE.L1.capture`: Pins the basic D-to-Q transfer on the active edge, for both INIT values and for the all-defaults configuration (model defaults vs UNISIM defaults).
   - Misses: CE held High and the control inactive throughout
   - Misses: no GSR after power-up
@@ -94,9 +90,7 @@ FDSE is a single D flip-flop with clock enable and a synchronous set input `S` t
 - Timing (setup/hold, clock-to-Q, recovery/removal) is out of scope (spec §2).
 - only one capture per configuration; no control, CE-low or GSR activity
 - no x/z on any input (sv_x_inputs covers x)
-- illegal values are tried only by L0.illegal_init
-- only INIT=1'bx is tried; over-width literals are truncated at elaboration and IS_*_INVERTED illegal values are not tried
-- whether UNISIM rejects it is observed, not documented (see Task 24)
+- UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) accepts INIT=1'bx without rejecting it; the reject path is not exercised for flops
 - CE held High and the control inactive throughout
 - no GSR after power-up
 - default polarities only
@@ -126,7 +120,6 @@ FDSE is a single D flip-flop with clock enable and a synchronous set input `S` t
 | Test | python | xsim | iverilog | verilator | hw |
 |---|---|---|---|---|---|
 | `7series.FDSE.L0.smoke` | yes | yes | yes | yes | yes |
-| `7series.FDSE.L0.illegal_init` | yes | yes | yes | unsupported: a 2-state simulator cannot represent the 1'bx attribute value | unsupported: rejection of an illegal attribute is a simulation-model check |
 | `7series.FDSE.L1.capture` | yes | yes | yes | yes | yes |
 | `7series.FDSE.L1.ce_hold` | yes | yes | yes | yes | yes |
 | `7series.FDSE.L1.set_over_ce` | yes | yes | yes | yes | yes |
@@ -145,8 +138,7 @@ Findings: none recorded.
 
 ## Related tests
 
-- `7series.FDSE.L0.smoke`: `7series.FDRE.L0.smoke`, `7series.FDCE.L0.smoke`, `7series.FDPE.L0.smoke`, `7series.FDSE.L0.illegal_init`
-- `7series.FDSE.L0.illegal_init`: `7series.FDRE.L0.illegal_init`, `7series.FDCE.L0.illegal_init`, `7series.FDPE.L0.illegal_init`, `7series.FDSE.L0.smoke`
+- `7series.FDSE.L0.smoke`: `7series.FDRE.L0.smoke`, `7series.FDCE.L0.smoke`, `7series.FDPE.L0.smoke`
 - `7series.FDSE.L1.capture`: `7series.FDRE.L1.capture`, `7series.FDCE.L1.capture`, `7series.FDPE.L1.capture`, `7series.FDSE.L2.exhaustive`
 - `7series.FDSE.L1.ce_hold`: `7series.FDRE.L1.ce_hold`, `7series.FDCE.L1.ce_hold`, `7series.FDPE.L1.ce_hold`
 - `7series.FDSE.L1.set_over_ce`: `7series.FDRE.L1.reset_over_ce`, `7series.FDCE.L1.clear_over_ce`, `7series.FDPE.L1.preset_over_ce`

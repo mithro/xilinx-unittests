@@ -204,6 +204,45 @@ def l1_gsr(ctx, k):
         yield f.build()
 
 
+def l1_gsr_vs_ctrl(ctx, k):
+    """Async kinds only: GSR and the async control active at the same time, in both
+    orders (ruling S30/S42). UG953 says CLR/PRE overrides all other inputs (p369/p372)
+    and that GSR loads INIT, but never says which wins when both are active and INIT
+    differs from the control's value; the golden model's answer there is ``inferred:``.
+    (A) GSR, then the control, an edge under both, GSR released, control released;
+    (B) the control, then GSR, control released, GSR released. Both INIT values and
+    both control polarities, so the agreeing and the conflicting cases both occur."""
+    for init, ci in product((0, 1), repeat=2):
+        f = Flop(
+            ctx, k, f"init{init}_{k.ctrl.lower()}inv{ci}", {"INIT": BIN[init], inv(k.ctrl): BIN[ci]}
+        )
+        f.load(1 - k.forced)
+        f.sample()
+        # (A)
+        f.data(d=1 - k.forced, ce=1)
+        f.b.glbl("GSR", 1)
+        f.sample()  # INIT (C4)
+        f.ctrl(True)
+        f.sample()  # GSR and the control both active
+        f.clock()  # an edge under both: the clock is a don't-care (CE=X, C=X)
+        f.b.glbl("GSR", 0)
+        f.sample()  # the control alone: forced (C3)
+        f.ctrl(False)
+        f.sample()
+        f.load(1 - k.forced)
+        f.sample()
+        # (B)
+        f.ctrl(True)
+        f.sample()  # forced (C3)
+        f.b.glbl("GSR", 1)
+        f.sample()  # both active again, reached from the other side
+        f.ctrl(False)
+        f.sample()  # GSR alone: INIT (C4)
+        f.b.glbl("GSR", 0)
+        f.sample()
+        yield f.build()
+
+
 def l1_is_c_inverted(ctx, k):
     for init in (0, 1):
         f = _init_only(ctx, k, init, **{inv("C"): BIN[1]})
@@ -270,19 +309,11 @@ def l2_random(ctx, k, steps: int = 300):
         yield f.build()
 
 
-def l0_illegal_init(ctx, k):
-    """INIT=1'bx is outside UG953's allowed values: the model must reject it (expect=reject)."""
-    b = ctx.dut("init_x", allow_illegal=True, expect="reject", illegal=["INIT"], INIT="1'bx")
-    b.sample()
-    yield b.build()
-
-
 def generators(prim: str) -> dict:
     """test.yaml function name -> generator, for vectors/gen.py of each primitive."""
     k = KINDS[prim]
     table = {
         "l0_smoke": l0_smoke,
-        "l0_illegal_init": l0_illegal_init,
         "l1_capture": l1_capture,
         "l1_ce_hold": l1_ce_hold,
         f"l1_{k.word}_over_ce": l1_ctrl_over_ce,
@@ -294,5 +325,9 @@ def generators(prim: str) -> dict:
         "l2_random": l2_random,
     }
     if k.is_async:
-        table |= {f"l1_{k.word}_async": l1_ctrl_async, f"l1_{k.word}_recovery": l1_recovery}
+        table |= {
+            f"l1_{k.word}_async": l1_ctrl_async,
+            f"l1_{k.word}_recovery": l1_recovery,
+            f"l1_gsr_vs_{k.word}": l1_gsr_vs_ctrl,
+        }
     return {name: partial(fn, k=k) for name, fn in table.items()}

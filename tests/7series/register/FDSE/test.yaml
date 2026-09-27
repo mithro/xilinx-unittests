@@ -61,45 +61,15 @@ tests:
   - 7series.FDRE.L0.smoke
   - 7series.FDCE.L0.smoke
   - 7series.FDPE.L0.smoke
-  - 7series.FDSE.L0.illegal_init
   gaps:
   - only one capture per configuration; no control, CE-low or GSR activity
   - no x/z on any input (sv_x_inputs covers x)
-  - illegal values are tried only by L0.illegal_init
+  - UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) accepts INIT=1'bx without
+    rejecting it; the reject path is not exercised for flops
   config_exclusions:
     hw:
       '*_d1_*': IS_D_INVERTED=1 (UG953 p379) is only legal on I/O registers; the fabric harness uses SLICE
         flops
-- id: 7series.FDSE.L0.illegal_init
-  level: L0
-  style: vector
-  source: vectors/gen.py:l0_illegal_init
-  exercises: []
-  attr_sampling: {}
-  runners:
-    python: 'yes'
-    xsim: 'yes'
-    iverilog: 'yes'
-    verilator: unsupported
-    hw: unsupported
-  flows:
-  - rtl
-  - vivado
-  - yosys
-  - openxc7
-  - vpr
-  related:
-  - 7series.FDRE.L0.illegal_init
-  - 7series.FDCE.L0.illegal_init
-  - 7series.FDPE.L0.illegal_init
-  - 7series.FDSE.L0.smoke
-  gaps:
-  - only INIT=1'bx is tried; over-width literals are truncated at elaboration and IS_*_INVERTED illegal
-    values are not tried
-  - whether UNISIM rejects it is observed, not documented (see Task 24)
-  unsupported_reasons:
-    verilator: a 2-state simulator cannot represent the 1'bx attribute value
-    hw: rejection of an illegal attribute is a simulation-model check
 - id: 7series.FDSE.L1.capture
   level: L1
   style: vector

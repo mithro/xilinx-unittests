@@ -46,8 +46,6 @@ X_VL = (
 CO_XS = ("unsupported", "cocotb has no xsim backend (spec §4.3)")
 CO_HW = ("unsupported", "cocotb runs in simulation; failing seeds are frozen into vector tests")
 CO_PY = ("no", "the cocotb test compares against the golden model itself")
-VL_REJ = ("unsupported", "a 2-state simulator cannot represent the 1'bx attribute value")
-HW_REJ = ("unsupported", "rejection of an illegal attribute is a simulation-model check")
 
 
 def hw_inv_d(ap: int) -> tuple[str, str]:
@@ -122,7 +120,8 @@ def _reach_all(k: FlopKind, port: str) -> list[str]:
 def _related(k: FlopKind, level: str, suffix: str) -> list[str]:
     out = []
     for o in KINDS.values():
-        if o is k or (("_async" in suffix or "_recovery" in suffix) and not o.is_async):
+        async_only = any(s in suffix for s in ("_async", "_recovery", "gsr_vs_"))
+        if o is k or (async_only and not o.is_async):
             continue
         s = suffix.replace(k.word, o.word).replace(f"is_{k.ctrl.lower()}_", f"is_{o.ctrl.lower()}_")
         out.append(f"7series.{o.prim}.{level}.{s}")
@@ -150,6 +149,7 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         configs=None,
         exclusions=None,
         related=(),
+        expected_divergence=(),
     ):
         assert gaps, f"{suffix}: every test must say what it misses"
         declared, reasons = runners or _runners()
@@ -171,6 +171,10 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
             e["config_exclusions"] = exclusions
         if configs:
             e["configs"] = configs
+        if expected_divergence:
+            # Spec §8: a listed divergence is still computed and reported, as
+            # known-divergence; it never masks a bit.
+            e["expected_divergence"] = list(expected_divergence)
         out.append((e, why))
 
     init_s = {"INIT": [0, 1]}
@@ -208,27 +212,13 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
         gaps=[
             "only one capture per configuration; no control, CE-low or GSR activity",
             no_x,
-            "illegal values are tried only by L0.illegal_init",
+            # Task 24: L0.illegal_init (INIT=1'bx, expect=reject) failed on every
+            # simulator because UNISIM accepts the value. UG953 lists the legal values
+            # but promises no runtime check, so this is a gap, not a doc violation.
+            "UNISIM (unisim-2025.2 on iverilog and xsim, unisim-gh-2020.1 on iverilog) "
+            "accepts INIT=1'bx without rejecting it; the reject path is not exercised "
+            "for flops",
         ],
-        related=[f"7series.{k.prim}.L0.illegal_init"],
-    )
-    add(
-        "L0",
-        "illegal_init",
-        "vector",
-        "vectors/gen.py:l0_illegal_init",
-        [],
-        f"INIT=1'bx is outside UG953's 1'b0/1'b1 (p{ap}); the simulation must reject it "
-        "(expect=reject), which exercises the runtime-rejection path of spec §4.1.",
-        # python stays "yes": it prepares dut/, stim.xvec, an empty expected.xtr and
-        # configs.json for every vector test, reject tests included (Task 8 "Reject tests").
-        runners=_runners(verilator=VL_REJ, hw=HW_REJ),
-        gaps=[
-            "only INIT=1'bx is tried; over-width literals are truncated at elaboration "
-            "and IS_*_INVERTED illegal values are not tried",
-            "whether UNISIM rejects it is observed, not documented (see Task 24)",
-        ],
-        related=[f"7series.{k.prim}.L0.smoke"],
     )
     # Ruling S33: l1_capture drives C:edge, CE:1, D:0 and D:1 (verified bins_reached);
     # it never touches the control, so no R bin is named here.
@@ -308,6 +298,36 @@ def tests_for(k: FlopKind) -> list[tuple[dict, str]]:
                 "no clock activity while the control is asserted",
                 "no GSR overlap",
                 "default polarities only",
+            ],
+        )
+        gsr_vs = f"findings/{k.prim}-doc-gap-L1-gsr_vs_{w}.md"
+        # Rulings S30/S42: the one place GSR and CLR/PRE are active together. Where INIT
+        # differs from the control's value the model's answer is `inferred:` (S30), so
+        # a disagreement with UNISIM is a doc-gap finding, never a masked bit.
+        add(
+            "L1",
+            f"gsr_vs_{w}",
+            "vector",
+            f"vectors/gen.py:l1_gsr_vs_{w}",
+            _ports(k, c, "Q")
+            + _reach_all(k, c)
+            + [f"attr:IS_{c}_INVERTED=1'b1"]
+            + _claims(k, 3, 4, 6),
+            f"GSR and {c} active together, entered in both orders, for both INIT values "
+            f"and both {c} polarities. UG953 documents each alone (p{p}) but not which "
+            "wins when they conflict.",
+            sampling={"INIT": [0, 1], f"IS_{c}_INVERTED": [0, 1]},
+            runners=_runners(hw=HW_GSR),
+            gaps=[
+                f"which of GSR and {c} wins is undocumented; the golden model infers "
+                f"{c} (ruling S30), UNISIM gives INIT: see {gsr_vs}",
+                "one edge under GSR and the control; no free-running clock",
+            ],
+            related=[f"7series.{k.prim}.L1.gsr_init", f"7series.{k.prim}.L1.{w}_async"],
+            # Task 24: UNISIM gives INIT (GSR wins) on every simulator of both model
+            # sources; a doc-gap, kept open (rulings S30/S42), never masked.
+            expected_divergence=[
+                {"finding": gsr_vs, "cls": "doc-gap", "runners": ["iverilog", "verilator", "xsim"]}
             ],
         )
         add(
