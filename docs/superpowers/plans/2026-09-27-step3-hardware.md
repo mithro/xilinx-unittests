@@ -3024,10 +3024,13 @@ Then make `tools/xut/runners/xsim.py` use them instead of its own copies (its st
 
 ```python
 def run_script(cd: Path, timeout_s: int) -> int:
-    """``bash xsim.sh > run.log 2>&1`` in ``cd``, in its own process group; its exit code."""
-    return run_in_group(
-        ["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w"
-    )
+    """``bash xsim.sh > run.log 2>&1`` in ``cd``, in its own process group, inside a
+    host-wide ``vivado_slot()`` (PR #10: the xsim runner and the verilatorize equivalence
+    oracle stay bounded); its exit code."""
+    with vivado_slot():
+        return run_in_group(
+            ["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w"
+        )
 
 
 def xsim_version(scratch: Path) -> str:
@@ -3035,7 +3038,7 @@ def xsim_version(scratch: Path) -> str:
     return cached_version("xsim", lambda: _probe_xsim_version(scratch))
 ```
 
-where `_probe_xsim_version` is the old body of `xsim_version` without its `_VERSION`/`_VERSION_LOCK` cache (both are deleted), and `from xut.scope import cached_version, run_in_group` joins the imports.
+where `_probe_xsim_version` is the old body of `xsim_version` without its `_VERSION`/`_VERSION_LOCK` cache (both are deleted), and `from xut.scope import cached_version, run_in_group` joins the imports. PR #10's `from xut.slots import vivado_slot` stays: the rewrite keeps the slot around the xsim invocation, exactly as PR #10 has it.
 
 - [ ] **Step 3: Write the testbench** — `tools/xut/hdl/hw/xut_hw_tb.sv`:
 
@@ -3252,6 +3255,29 @@ def test_hw_sim_jobs_are_capped_by_the_budget(monkeypatch):
     assert hwsim.max_sim_jobs("xsim") == 4  # min((100g - 16G) // 16G = 5, 4 slots)
     monkeypatch.setenv("XUT_VIVADO_SLOTS", "8")
     assert hwsim.max_sim_jobs("xsim") == 5
+
+
+def test_the_xsim_runner_script_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
+    """The rewritten `run_script` keeps PR #10's host-wide slot around xsim."""
+    from contextlib import contextmanager
+
+    from xut.runners import xsim
+
+    held = []
+
+    @contextmanager
+    def slot():
+        held.append(True)
+        yield
+        held.pop()
+
+    def fake_group(argv, *, cwd, log, timeout_s, mode="a"):
+        assert held, "xsim.sh ran outside a vivado_slot()"
+        return 0
+
+    monkeypatch.setattr(xsim, "vivado_slot", slot)
+    monkeypatch.setattr(xsim, "run_in_group", fake_group)
+    assert xsim.run_script(tmp_path, 10) == 0
 
 
 def test_hw_sim_xsim_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
@@ -3961,7 +3987,7 @@ uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cac
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
-git add tools/xut/hw/plan.py tools/xut/hw/hwsim.py tools/xut/cli.py tools/tests/test_hw_plan.py tools/tests/test_hw_rtl.py
+git add tools/xut/hw/plan.py tools/xut/hw/hwsim.py tools/xut/runners/sim.py tools/xut/cli.py tools/tests/test_hw_plan.py tools/tests/test_hw_rtl.py
 git commit -m "hw: the shared planner, sim_case and xut hw sim; FDRE's golden trace reproduced in simulation" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
