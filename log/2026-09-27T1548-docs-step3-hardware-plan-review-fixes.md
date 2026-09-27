@@ -1,4 +1,4 @@
-# 2026-09-28: step 3 plan — review fixes and spec rev 3.6
+# 2026-09-27: step 3 plan — review fixes and spec rev 3.6
 
 This session addressed the review ("ready after fixes") and orchestrator ruling S49.
 
