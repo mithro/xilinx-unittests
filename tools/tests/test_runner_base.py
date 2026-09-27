@@ -635,9 +635,14 @@ def test_keyboard_interrupt_cancels_and_writes_partial_summary(ctx, monkeypatch)
             return super().run(case, ctx)
 
     monkeypatch.setitem(RUNNERS, "fake", Interrupting)
+    from xut import container
+
+    killed: list[bool] = []
+    monkeypatch.setattr(container, "kill_live", lambda: killed.append(True) or [])
     cases = [dataclasses.replace(_sv_case(), id=f"7series.TOYFF.L1.{x}") for x in "abc"]
     with pytest.raises(KeyboardInterrupt):
         run_tests(cases, ["fake"], ctx)
+    assert killed == [True]  # S48a M-1: the running containers are killed, not awaited
     assert ran == ["7series.TOYFF.L1.a", "7series.TOYFF.L1.b"]  # c was cancelled
     summary = json.loads((ctx.root / "build/rtl/summary-unisim-test.json").read_text())
     assert summary["interrupted"] is True

@@ -19,9 +19,16 @@ them; the cap makes the kernel OOM-kill inside the container instead. `run` chec
 `docker inspect`'s `State.OOMKilled` after every run and appends
 `xut-container: oom-killed at memory cap <m>` to the log when it is set (the kernel may kill
 a child, not the main process, so the exit code alone does not tell), then removes the
-container itself (no `--rm`: the check needs the stopped container).
+container itself (no `--rm`: the check needs the stopped container), on every path.
+
+Every container is labelled `xut.owner=<pid>` and `xut.session=<uuid>` and runs its
+command under an in-container `timeout`, so a container orphaned by a killed xut ends on
+its own; `xut doctor --sweep-containers` (`sweep_orphans`) removes the containers of
+owners that are gone. On a KeyboardInterrupt the job pools call `kill_live` (S48a).
+`NativeExecutor` is uncapped: see its docstring.
 """
 
+import contextlib
 import os
 import re
 import subprocess
@@ -42,6 +49,16 @@ _KILL_TIMEOUT_S = 30
 
 #: How long `docker inspect` / `docker rm -f` may take after a run.
 _CLEANUP_TIMEOUT_S = 60
+
+#: The in-container `timeout` is the run's `timeout_s` plus this, so the host-side timeout
+#: (a `RunTimeout`) always fires first and the guest one only ends orphans (S48a M-2).
+_GUEST_GRACE_S = 30
+
+#: This xut process's session, labelled on its containers (`xut.session`).
+SESSION = uuid.uuid4().hex
+#: The containers this process is running now (`kill_live`).
+_LIVE: set[str] = set()
+_LIVE_LOCK = threading.Lock()
 
 #: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`, and
 #: its accepted range (S48a: docker reads 0 as "no limit"; below 6m it refuses to start).
@@ -137,7 +154,11 @@ def _append(log: Path) -> TextIO:
 
 
 class NativeExecutor:
-    """Tools on the host PATH (selected by `executor_for` when XUT_NATIVE=1)."""
+    """Tools on the host PATH (selected by `executor_for` when XUT_NATIVE=1).
+
+    NOT memory-capped (S48a M-6): nothing limits what a native run may allocate. The
+    caller must run xut inside a capped scope, e.g. `systemd-run --user --scope
+    -p MemoryMax=16G -p MemorySwapMax=0 -- uv run xut ...`."""
 
     def guest(self, path: Path) -> str:
         return str(path)
@@ -193,13 +214,26 @@ class DockerExecutor:
                 return m.guest if str(rel) == "." else f"{m.guest}/{rel}"
         raise ValueError(f"{p} is not visible in the container (mount it first)")
 
-    def argv(self, argv: list[str], cwd: Path, name: str, env: dict[str, str] | None) -> list[str]:
-        """The full `docker run` command line for `argv`."""
+    def argv(
+        self,
+        argv: list[str],
+        cwd: Path,
+        name: str,
+        env: dict[str, str] | None,
+        timeout_s: int | None = None,
+    ) -> list[str]:
+        """The full `docker run` command line for `argv`; with `timeout_s`, `argv` runs
+        under `timeout -k 10 <timeout_s + 30>` in the container, so a container orphaned by
+        a killed xut still ends (the host-side timeout, at `timeout_s`, fires first)."""
         out = [
             "docker",
             "run",
             "--name",
             name,
+            "--label",
+            f"xut.owner={os.getpid()}",
+            "--label",
+            f"xut.session={SESSION}",
             "--network=none",
             "--pull=never",
             f"--memory={self.memory}",
@@ -215,7 +249,10 @@ class DockerExecutor:
             out += ["-v", f"{m.host}:{m.guest}{':ro' if m.ro else ''}"]
         for k, v in (env or {}).items():
             out += ["-e", f"{k}={v}"]
-        out += ["-w", self.guest(cwd), self.image, *argv]
+        guard = []
+        if timeout_s is not None:
+            guard = ["timeout", "-k", "10", str(timeout_s + _GUEST_GRACE_S)]
+        out += ["-w", self.guest(cwd), self.image, *guard, *argv]
         return out
 
     def run(
@@ -227,10 +264,12 @@ class DockerExecutor:
         env: dict[str, str] | None = None,
     ) -> int:
         name = f"xut-{uuid.uuid4().hex[:12]}"
-        full = self.argv(argv, Path(cwd), name, env)
+        full = self.argv(argv, Path(cwd), name, env, timeout_s)
         with _append(log) as f:
             f.write(f"$ {' '.join(argv)}   [container {self.image} {name}]\n")
             f.flush()
+            with _LIVE_LOCK:
+                _LIVE.add(name)
             try:
                 p = subprocess.run(full, stdout=f, stderr=subprocess.STDOUT, timeout=timeout_s)
             except subprocess.TimeoutExpired as e:
@@ -255,9 +294,9 @@ class DockerExecutor:
         return p.returncode
 
     def _finish(self, name: str, f: TextIO) -> None:
-        """Append the OOM line to `f` if container `name` was OOM-killed, then remove it.
-        A failure of either step is logged, never raised: it must not mask the run's own
-        result or exception."""
+        """Append the OOM line to `f` if container `name` was OOM-killed, then remove it,
+        even when the check is interrupted (S48a M-1). A failure of either step is logged,
+        never raised: it must not mask the run's own result or exception."""
         try:
             q = subprocess.run(
                 ["docker", "inspect", "-f", "{{.State.OOMKilled}}", name],
@@ -269,18 +308,75 @@ class DockerExecutor:
                 f.write(oom_line(self.memory) + "\n")
         except (OSError, subprocess.SubprocessError) as e:
             f.write(f"xut-container: docker inspect {name} failed: {e}\n")
-        try:
-            r = subprocess.run(
-                ["docker", "rm", "-f", name],
-                capture_output=True,
-                text=True,
-                timeout=_CLEANUP_TIMEOUT_S,
+        finally:
+            try:
+                r = subprocess.run(
+                    ["docker", "rm", "-f", name],
+                    capture_output=True,
+                    text=True,
+                    timeout=_CLEANUP_TIMEOUT_S,
+                )
+                err = (r.stderr or "").strip()
+                if r.returncode != 0 and "No such container" not in err:
+                    f.write(f"xut-container: docker rm -f {name} failed: {err}\n")
+            except (OSError, subprocess.SubprocessError) as e:
+                f.write(f"xut-container: docker rm -f {name} failed: {e}\n")
+            finally:
+                with _LIVE_LOCK:
+                    _LIVE.discard(name)
+                f.flush()
+
+
+def kill_live() -> list[str]:
+    """`docker kill` every container this process is running (S48a M-1: on a
+    KeyboardInterrupt, the pools call this rather than wait for their runs). Each run's
+    own cleanup then removes its container. Failures are ignored: best effort."""
+    with _LIVE_LOCK:
+        names = sorted(_LIVE)
+    for name in names:
+        # best effort: the in-container timeout still ends a container this cannot kill
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["docker", "kill", name], capture_output=True, text=True, timeout=_KILL_TIMEOUT_S
             )
-            if r.returncode != 0 and "No such container" not in (r.stderr or ""):
-                f.write(f"xut-container: docker rm -f {name} failed: {(r.stderr or '').strip()}\n")
-        except (OSError, subprocess.SubprocessError) as e:
-            f.write(f"xut-container: docker rm -f {name} failed: {e}\n")
-        f.flush()
+    return names
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # another user's live process
+    return True
+
+
+def sweep_orphans() -> list[str]:
+    """Remove every xut-labelled container (running or stopped) whose `xut.owner` process
+    is gone (`xut doctor --sweep-containers`, S48a M-2); the removed container IDs. A
+    container with an unreadable owner label is left alone."""
+    fmt = '{{.ID}}\t{{.Label "xut.owner"}}'
+    p = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "label=xut.owner", "--format", fmt],
+        capture_output=True,
+        text=True,
+        timeout=_CLEANUP_TIMEOUT_S,
+    )
+    if p.returncode != 0:
+        raise ContainerError(f"docker ps failed (exit {p.returncode}): {p.stderr.strip()}")
+    removed = []
+    for line in p.stdout.splitlines():
+        cid, _, owner = line.partition("\t")
+        if not owner.strip().isdigit() or _pid_alive(int(owner)):
+            continue
+        r = subprocess.run(
+            ["docker", "rm", "-f", cid], capture_output=True, text=True, timeout=_CLEANUP_TIMEOUT_S
+        )
+        if r.returncode != 0:
+            raise ContainerError(f"docker rm -f {cid} failed: {r.stderr.strip()}")
+        removed.append(cid)
+    return removed
 
 
 class _HasModelSrc(Protocol):

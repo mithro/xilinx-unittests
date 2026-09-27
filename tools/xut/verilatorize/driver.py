@@ -589,16 +589,25 @@ def _check_all(
             subject = checked(man, m, files)
             work = out_dir / "equiv" / m / config_dir(config_key(cfg))
             futs[pool.submit(check_model, subject, ms, work, cfg, lib=out_dir)] = m
-        for fut in as_completed(futs):
-            r = fut.result()  # check_model returns an error result, it never raises
-            e = man.models[futs[fut]]
-            e.equiv[r.config], e.equiv_oracle[r.config] = r.status, r.oracle
-            e.equiv_reason[r.config] = r.reason
-            e.equiv_tools[r.config] = tools
-            done += 1
-            progress(
-                f"progress: equiv done={done} total={total} elapsed_s={time.monotonic() - t0:.0f}"
-            )
+        try:
+            for fut in as_completed(futs):
+                r = fut.result()  # check_model returns an error result, it never raises
+                e = man.models[futs[fut]]
+                e.equiv[r.config], e.equiv_oracle[r.config] = r.status, r.oracle
+                e.equiv_reason[r.config] = r.reason
+                e.equiv_tools[r.config] = tools
+                done += 1
+                progress(
+                    f"progress: equiv done={done} total={total} "
+                    f"elapsed_s={time.monotonic() - t0:.0f}"
+                )
+        except KeyboardInterrupt:
+            # S48a M-1: cancel the queue and kill the running containers, not wait for them
+            pool.shutdown(wait=False, cancel_futures=True)
+            from xut import container
+
+            container.kill_live()
+            raise
 
 
 # ---- on demand, for the runners (Task 15) --------------------------------------------------

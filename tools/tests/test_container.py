@@ -45,8 +45,8 @@ def test_docker_argv_maps_paths(tmp_path, monkeypatch):
     assert f"{root}:/work" in argv
     assert "/opt/m:/models/m:ro" in argv
     assert argv[argv.index("-w") + 1] == "/work/build/x"
-    assert argv[-2:] == ["iverilog", "-V"]
-    assert argv[-3] == SIM_IMAGE
+    # the in-container timeout (S48a M-2): an orphaned container still ends
+    assert argv[argv.index(SIM_IMAGE) + 1 :] == ["timeout", "-k", "10", "35", "iverilog", "-V"]
     assert f"{os.getuid()}:{os.getgid()}" in argv
     assert "iverilog -V" in (tmp_path / "l.log").read_text()
 
@@ -656,3 +656,117 @@ def test_memory_budget_refuses_a_malformed_value(monkeypatch, bad):
     monkeypatch.setenv("XUT_MEMORY_BUDGET", bad)
     with pytest.raises(XutError, match="XUT_MEMORY_BUDGET"):
         container.max_jobs()
+
+
+# --- S48a M-1/M-2: labels, in-container timeout, cleanup on interrupt, orphan sweep ------
+
+
+def test_docker_argv_labels_every_container(tmp_path):
+    argv = DockerExecutor(root=tmp_path).argv(["true"], tmp_path, "n", None)
+    assert f"xut.owner={os.getpid()}" in argv
+    assert f"xut.session={container.SESSION}" in argv
+    assert argv[argv.index(f"xut.owner={os.getpid()}") - 1] == "--label"
+    assert argv.index("--label") < argv.index(SIM_IMAGE)
+    assert argv[-2:] == [SIM_IMAGE, "true"]  # no timeout_s: no in-container timeout
+
+
+def test_docker_argv_in_container_timeout_outlasts_the_host_timeout(tmp_path):
+    argv = DockerExecutor(root=tmp_path).argv(["x"], tmp_path, "n", None, timeout_s=600)
+    assert argv[-5:] == ["timeout", "-k", "10", "630", "x"]
+
+
+def test_docker_interrupted_inspect_still_removes_the_container(tmp_path, monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:2] == ["docker", "inspect"]:
+            raise KeyboardInterrupt
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(KeyboardInterrupt):
+        DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+    assert calls[-1] == ["docker", "rm", "-f", _name(calls)]
+    assert _name(calls) not in container._LIVE
+
+
+def test_docker_live_names_are_tracked_while_running(tmp_path, monkeypatch):
+    seen: list[set[str]] = []
+
+    def fake_run(argv, **kw):
+        if argv[:2] == ["docker", "run"]:
+            seen.append(set(container._LIVE))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(container, "_LIVE", set())
+    DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=tmp_path / "l", timeout_s=5)
+    assert len(seen) == 1 and len(seen[0]) == 1 and next(iter(seen[0])).startswith("xut-")
+    assert not container._LIVE
+
+
+def test_kill_live_kills_every_running_container(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[-1] == "xut-b":
+            raise subprocess.TimeoutExpired(argv, 30)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(container, "_LIVE", {"xut-a", "xut-b"})
+    assert sorted(container.kill_live()) == ["xut-a", "xut-b"]
+    assert sorted(calls) == [["docker", "kill", "xut-a"], ["docker", "kill", "xut-b"]]
+    monkeypatch.setattr(container, "_LIVE", set())
+    calls.clear()
+    assert container.kill_live() == [] and calls == []
+
+
+def _dead_pid() -> int:
+    p = subprocess.Popen(["true"])
+    p.wait()
+    return p.pid
+
+
+def test_sweep_orphans_removes_containers_of_dead_owners_only(monkeypatch):
+    dead = _dead_pid()
+    calls: list[list[str]] = []
+    listing = f"c1\t{dead}\nc2\t{os.getpid()}\nc3\tnot-a-pid\n"
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        if argv[:2] == ["docker", "ps"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=listing, stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert container.sweep_orphans() == ["c1"]
+    ps = calls[0]
+    assert ps[:3] == ["docker", "ps", "-a"] and "label=xut.owner" in ps
+    assert calls[1:] == [["docker", "rm", "-f", "c1"]]
+
+
+def test_sweep_orphans_docker_failure_is_an_error(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 1, stdout="", stderr="no daemon"),
+    )
+    with pytest.raises(container.ContainerError, match="no daemon"):
+        container.sweep_orphans()
+
+
+def test_doctor_sweep_containers(monkeypatch):
+    from click.testing import CliRunner
+
+    from xut.cli import main
+
+    monkeypatch.setattr(container, "sweep_orphans", lambda: ["c1", "c9"])
+    r = CliRunner().invoke(main, ["doctor", "--sweep-containers"])
+    assert r.exit_code == 0, r.output
+    assert "removed 2 orphaned xut container(s): c1, c9" in r.output
+    monkeypatch.setattr(container, "sweep_orphans", lambda: [])
+    r = CliRunner().invoke(main, ["doctor", "--sweep-containers"])
+    assert "no orphaned xut containers" in r.output

@@ -605,3 +605,23 @@ def test_cli_jobs_defaults_stay_within_the_limit(monkeypatch):
     limit = min(os.cpu_count() or 1, 24, max_jobs()[0])
     for path, opt in _jobs_options():
         assert 1 <= opt.default <= limit, (path, opt.default)
+
+
+def test_run_scripts_interrupt_kills_the_live_containers(tmp_path, monkeypatch):
+    from xut import container
+
+    work, scripts = _pool_work(tmp_path, 3)
+    killed: list[bool] = []
+    monkeypatch.setattr(container, "kill_live", lambda: killed.append(True) or [])
+
+    class Interrupting(_PoolEx):
+        def run(self, argv, cwd, log, timeout_s, env=None):
+            if argv[1] == scripts[1]:
+                raise KeyboardInterrupt
+            return super().run(argv, cwd, log, timeout_s, env)
+
+    ex = Interrupting(dict.fromkeys(scripts, "ok"), delay=0)
+    with pytest.raises(KeyboardInterrupt):
+        portability._run_scripts(ex, work, scripts, jobs=1, progress=lambda _: None)
+    assert killed == [True]
+    assert ex.started == [scripts[0]]  # the queued scripts were cancelled

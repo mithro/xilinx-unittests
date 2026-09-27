@@ -457,11 +457,30 @@ def _run_scripts(
         target=_progress_loop, args=(done, total, stop, t1, progress), daemon=True
     )
     poller.start()
+    halt = threading.Event()
+
+    def job(script: str) -> None:
+        if halt.is_set():  # interrupted: never start another container
+            return
+        try:
+            _run_one(exe, work, script, lock)
+        except KeyboardInterrupt:
+            halt.set()
+            raise
+
     pool = ThreadPoolExecutor(max_workers=max(1, jobs))
     try:
-        futures = [pool.submit(_run_one, exe, work, s, lock) for s in scripts]
+        futures = [pool.submit(job, s) for s in scripts]
         for fut in futures:
             fut.result()
+    except KeyboardInterrupt:
+        # S48a M-1: cancel the queue, then kill the running containers, not wait for them
+        halt.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        from xut import container
+
+        container.kill_live()
+        raise
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
         stop.set()
