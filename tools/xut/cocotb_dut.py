@@ -23,6 +23,15 @@ here).
 Every ``sample(label)`` records every output port in the trace; ``close()`` writes it
 through ``xut.formats.xtr`` (never hand-formatted), so labels, ports and provenance
 follow the shared name grammar or raise.
+
+**No z stimulus** (ruling S38, PR #10 must-fix 6). A z value written through ``XutDut``
+(``set``, ``edge``, ``gsr``) raises ``ZStimulusError``. Under the ``verilator`` and
+``iverilog-vz`` runners (``XUT_NO_Z=1``: their UNISIM models may carry the z-compare
+rewrite, exact only with every input driven) ``XutDut`` also reads ``in_vec`` and ``clk``
+back after every operation and at every sample, so a z written to the handle directly is
+refused too (a 4-state simulator shows it; Verilator's 2-state values cannot). Either way
+the reason goes to ``Z_MARK`` next to the trace, which the runner reports as an ``error``
+(``xut.runners.sim.cocotb_check``), never a fail or a pass.
 """
 
 from __future__ import annotations
@@ -42,6 +51,12 @@ SETTLE_PS = 120_000
 GAP_PS = 1_000
 #: The map format ``XutDut`` reads (xut.wrap.MAP_FORMAT).
 MAP_FORMAT = "xut-map 1"
+#: Written next to the trace when a z stimulus is refused (xut.runners.sim.Z_MARK).
+Z_MARK = "xut_z_stimulus.txt"
+
+
+class ZStimulusError(RuntimeError):
+    """A z value driven into the DUT (module docstring)."""
 
 
 class XutDut:
@@ -73,6 +88,7 @@ class XutDut:
         self.clocks: list[str] = [p for p, (v, _) in self._ports.items() if v == "clk"]
         self.out_ports: list[str] = [p for p, (v, _) in self._ports.items() if v == "out"]
         self._shadow = {"clk": 0, "in": 0}
+        self.no_z = os.environ.get("XUT_NO_Z") == "1"
         self.trace = xtr.Trace(
             header
             if header is not None
@@ -102,9 +118,26 @@ class XutDut:
         handle = self.dut.clk if vec == "clk" else self.dut.in_vec
         handle.value = self._shadow[vec]
 
+    def _refuse_z(self, what: str) -> ZStimulusError:
+        """Record (``Z_MARK``) and return the error for a z stimulus."""
+        why = f"{self.prim}: {what} drives z (ruling S38: every input must be driven)"
+        self.trace_path.with_name(Z_MARK).write_text(why + "\n")
+        return ZStimulusError(why)
+
+    def _check_no_z(self) -> None:
+        """Under ``XUT_NO_Z``, refuse a z read back on ``in_vec`` or ``clk``."""
+        if not self.no_z:
+            return
+        for vec, handle in (("in_vec", self.dut.in_vec), ("clk", self.dut.clk)):
+            text = str(handle.value).lower()
+            if "z" in text:
+                raise self._refuse_z(f"{vec} = {text}")
+
     def _merged(self, shadow: int, port: str, value: int) -> int:
         """``shadow`` with ``port``'s bits set to ``value`` (checked, nothing mutated)."""
         _, bits = self._ports[port]
+        if "z" in str(value).lower() and not isinstance(value, int):
+            raise self._refuse_z(f"{port}={value!r}")
         if isinstance(value, bool) or not isinstance(value, int):
             raise TypeError(f"{port}={value!r}: drive an int (x/z inputs are sv-test territory)")
         if not 0 <= value < (1 << len(bits)):
@@ -114,6 +147,7 @@ class XutDut:
         return shadow
 
     async def _gap(self) -> None:
+        self._check_no_z()
         await Timer(self.gap_ps, "ps")
 
     async def settle(self) -> None:
@@ -136,6 +170,8 @@ class XutDut:
         vec, bits = self._port(port, ("clk", "in"))
         if len(bits) != 1:
             raise ValueError(f"{port} is {len(bits)} bits wide: edge() needs a one-bit port")
+        if "z" in str(rising).lower() and not isinstance(rising, int):
+            raise self._refuse_z(f"{port}={rising!r}")
         self._shadow[vec] = self._merged(self._shadow[vec], port, int(rising))
         self._write(vec)
         await self._gap()
@@ -148,6 +184,8 @@ class XutDut:
 
     async def gsr(self, value: int) -> None:
         """Drive glbl's GSR (``glbl.GSR_int``, instantiated in ``xut_cocotb_top``)."""
+        if "z" in str(value).lower() and not isinstance(value, int):
+            raise self._refuse_z(f"GSR={value!r}")
         self.dut.glbl.GSR_int.value = int(value)
         await self._gap()
 
@@ -168,6 +206,7 @@ class XutDut:
     def sample(self, label: str, prov: dict[str, str | tuple[str, ...]] | None = None) -> dict:
         """Record every output port as sample ``label`` (with optional per-port
         provenance, a model ``Out.prov``); returns the recorded values."""
+        self._check_no_z()
         values = {p: self.get(p) for p in self.out_ports}
         tokens = {p: xtr.prov_token(v) for p, v in (prov or {}).items()}
         self.trace.add(label, values, tokens or None)
