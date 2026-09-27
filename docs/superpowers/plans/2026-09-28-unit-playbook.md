@@ -1927,7 +1927,7 @@ Model decisions (the Review Focus 1 items a reviewer checks):
 - **GSR on a LUT** (decision D6): UG953 names none. While GSR is asserted the table is taken to hold, tagged `inferred:UG953_names_no_GSR_effect_on_a_LUT;...`, and no claim is credited (S44). `L1.gsr_transparent` compares that inference with UNISIM.
 - **CFGLUT5 bit order** (decision D5): O6 = INIT[{I4..I0}] as in the LUT5 table (p501); O5 = INIT[{I3..I0}], the lower half, as LUT6_2's O5 is (p509); a shift moves CDI into INIT[0] and INIT[31] drives CDO. Each carries its own `inferred:` reason. Where the loaded contents are all 0 or all 1 the order cannot matter, and the bit is `doc:348`.
 - **CFGLUT5 order-free knowledge** (ruling S53, correctness review M1): the model never decides "order-independent" from `contents`, which is computed under the inferred order (INIT=1 plus 31 one-shifts, or INIT=7fffffff plus one, looks all ones only under that order). It tracks `known`, the uniform value the contents hold whatever the order: set at power-on for a uniform INIT; kept by a documented shift of the same value; lost by any other shift, a shift under GSR, or a GSR pulse whose "keep" and "reload INIT" readings could differ; and re-established by 32 equal documented shifts in a row, which replace every bit in any order. A bit is `doc:348` only while `known` is set.
-- **CFGLUT5 claims** (rulings S52, S53): a claim is credited only while `known` is set and no GSR inference applies: C1/C2 on such a read; C3 (and C7 when inverted) on a CE-High active edge after which `known` holds; C4 on a CE-Low active edge; C5 on a CDO read once 32 shifts have passed; C6 at power-on for a uniform INIT (the all-zeroes default included). Every other read is exercised, tagged `inferred:`, and credits nothing. **Every claim has a pure configuration** (all samples order-free): `L1.edge_polarity` credits C1–C7 and both `IS_CLK_INVERTED` bins, and `L1.default_init` C1/C2/C6; so `coverage.uncovered` stays empty whatever order UNISIM shows, unless a documented bit fails. None moves to `gaps`.
+- **CFGLUT5 claims** (rulings S52, S53, S55): a claim is credited only while `known` is set and no GSR inference applies, and (S55, correctness re-review M6) only on an event whose documented outcome depends on the claimed rule: C1/C2 on such a read; C3 (and C7 when inverted) on the CE-High active edge that sets `known` to a **new** value (shifting the value the contents already hold changes nothing a never-shifting model would not show); C4 on a CE-Low active edge whose CDI **differs** from `known` (with an equal CDI, a CE-ignoring model shows the same bits); C5 on a CDO read after a 32-shift run that **flipped** `known` (a stuck CDO would still show the old value); C6 at power-on for a uniform INIT (the all-zeroes default included). Every other read is exercised, tagged `inferred:`, and credits nothing. **Every claim has a pure configuration** (all samples order-free): `L1.edge_polarity` credits C1–C7 and both `IS_CLK_INVERTED` bins, and `L1.default_init` C1/C2/C6; so `coverage.uncovered` stays empty whatever order UNISIM shows, unless a documented bit fails. None moves to `gaps`.
 - **CFGLUT5 under GSR** (decision D6): UG953 names no GSR effect. The loaded function is taken to be kept and CE shifts to continue. Every output whose value depends on that inference (GSR asserted, or a GSR pulse that met contents different from INIT, until 32 later documented shifts have replaced every bit) carries `inferred:UG953_names_no_GSR_effect_on_CFGLUT5;...` and credits nothing.
 
 - [ ] **Step 1: Write the failing tests** `tests/7series/clb/_shared/luts/test_luts_models.py`:
@@ -2209,7 +2209,48 @@ def test_cfglut5_32_equal_shifts_make_any_contents_known_uniform():
     assert m.known == 1 and "CFGLUT5.C3" in m.claims_hit
     assert {o.bits for o in m.outputs().values()} == {"1"}
     assert provs(m) == {"doc:348"}
-    assert {"CFGLUT5.C1", "CFGLUT5.C2", "CFGLUT5.C5"} <= m.claims_hit
+    assert {"CFGLUT5.C1", "CFGLUT5.C2"} <= m.claims_hit
+    # no C5: CDO's old value was not known, so a stuck CDO might agree (ruling S55)
+    assert "CFGLUT5.C5" not in m.claims_hit
+
+
+def test_cfglut5_same_value_shift_credits_no_c3_or_c7():
+    """S55: shifting the value the contents already hold changes nothing observable."""
+    for inverted in (0, 1):
+        m = cfg(ONES, IS_CLK_INVERTED=f"1'b{inverted}")
+        m.claims_hit.clear()
+        shift(m, [1] * 40)
+        assert m.known == 1 and m.shifts == 40
+        assert not {"CFGLUT5.C3", "CFGLUT5.C7"} & m.claims_hit
+
+
+def test_cfglut5_ce_low_edge_with_cdi_equal_to_known_credits_no_c4():
+    m = cfg(ONES)
+    m.claims_hit.clear()
+    m.set_input("CE", 0)
+    m.set_input("CDI", 1)  # equal to the contents: ignoring CE would show nothing
+    edge(m, True)
+    assert "CFGLUT5.C4" not in m.claims_hit
+    m.set_input("CDI", 0)  # opposite: ignoring CE would flip a documented bit
+    edge(m, False)
+    edge(m, True)
+    assert m.claims_hit == {"CFGLUT5.C4"}
+
+
+def test_cfglut5_32_same_value_shifts_credit_no_c5():
+    m = cfg(0)
+    shift(m, [0] * 32)
+    m.outputs()
+    assert m.known == 0 and "CFGLUT5.C5" not in m.claims_hit
+
+
+def test_cfglut5_c3_c5_credit_on_the_flip_to_the_opposite_uniform_value():
+    m = cfg(0)
+    shift(m, [1] * 31)
+    assert m.claims_hit == {"CFGLUT5.C6"}  # still order-dependent: nothing yet
+    shift(m, [1])
+    m.outputs()
+    assert {"CFGLUT5.C3", "CFGLUT5.C5"} <= m.claims_hit
 
 
 def test_cfglut5_an_opposite_bit_loses_known_uniform():
@@ -2375,6 +2416,12 @@ Provenance (AGENTS.md §8, spec §3):
   last 32 documented shifts all carried one value. Only then is a CFGLUT5 bit ``doc:348``
   and a CFGLUT5 claim credited; the contents computed under the inferred order are never
   used to decide that (ruling S53, correctness review M1).
+- Ruling S55 (the general form of S32): a claim credits only on an event whose observable
+  outcome depends on the claimed rule, i.e. a model that breaks the rule would show a
+  different documented bit there. So C3/C7 credit only on the edge that sets ``known`` to a
+  new value (a shift that changes nothing observable proves nothing), C4 only on a CE-Low
+  edge whose CDI differs from ``known``, and C5 only on a CDO read after a 32-shift run
+  flipped ``known`` from one uniform value to the other.
 """
 
 from __future__ import annotations
@@ -2524,8 +2571,12 @@ class CfgLut5(_Powered):
         self.shifts = 0  # documented shifts since power-on (none under GSR)
         #: the uniform value the contents hold whatever the shift order, or None
         self.known: int | None = None
-        #: (value, count) of the latest run of equal documented shifts
+        #: (value, count) of the latest run of equal documented shifts, and the ``known``
+        #: value when that run started
         self._run: tuple[int | None, int] = (None, 0)
+        self._run_from: int | None = None
+        #: CDO now shows a bit a 32-shift run carried in over the opposite uniform value
+        self._cascaded = False
         self._untouched = True  # no shift at all since power-on
         #: the contents depend on the GSR inference until 32 later documented shifts
         #: have replaced every bit (-1: never; else the shift count at that moment)
@@ -2554,6 +2605,8 @@ class CfgLut5(_Powered):
     def _lose_order_free_state(self) -> None:
         self.known = None
         self._run = (None, 0)
+        self._run_from = None
+        self._cascaded = False
 
     # -- Model API ---------------------------------------------------------------------
     def power_on(self) -> None:
@@ -2583,7 +2636,8 @@ class CfgLut5(_Powered):
         if rising == bool(self.inv_clk):
             return  # not the active edge
         if not self.pin["CE"]:
-            self._credit(4)  # CE Low: the edge leaves INIT unchanged
+            if self.known is not None and self.pin["CDI"] != self.known:
+                self._credit(4)  # CE Low held back a shift that would have shown (S55)
             return
         cdi = self.pin["CDI"]
         self.contents = ((self.contents << 1) | cdi) & ((1 << self.WIDTH) - 1)
@@ -2593,21 +2647,30 @@ class CfgLut5(_Powered):
             self._lose_order_free_state()
             return
         self.shifts += 1
+        before = self.known
         value, count = self._run
+        if value != cdi:
+            self._run_from = before  # a new run starts from this order-free state
         self._run = (cdi, count + 1 if value == cdi else 1)
         if self.known is not None and cdi != self.known:
             self.known = None
+            self._cascaded = False
         if self._run[1] >= self.WIDTH:
             self.known = cdi  # 32 equal shifts replace every bit, whatever the order
-        self._credit(3)
-        if self.inv_clk:
-            self._credit(7)
+        if self.known is not None and before != self.known:
+            # the shift that made the new uniform value certain: a model that did not
+            # shift, or shifted on the wrong edge, shows the old contents here (S55)
+            self._credit(3)
+            if self.inv_clk:
+                self._credit(7)
+            if self._run_from is not None and self._run_from != cdi:
+                self._cascaded = True  # CDO flipped from the old uniform value
 
     def outputs(self) -> dict[str, Out]:
         self._require_power("outputs")
-        # C5 is the cascade: once 32 shifts have passed, CDO carries a bit that came in on
-        # CDI (32 bits per LUT); before that it shows a bit of the loaded INIT.
-        cascade = 5 if self.shifts >= self.WIDTH else None
+        # C5 is the cascade: CDO now carries a bit that came in on CDI (32 bits per LUT) and
+        # differs from what the loaded contents showed, so a stuck CDO would fail (S55).
+        cascade = 5 if self._cascaded else None
         return {
             "CDO": self._read(self.WIDTH - 1, _SHIFT, cascade),
             "O5": self._read(self._address(4), _O5_ORDER, 2),
@@ -2765,7 +2828,7 @@ class CFGLUT5(CfgLut5):
 MODEL = CFGLUT5
 ```
 
-- [ ] **Step 4: Run the tests and lint** (Task A2, Step 3). Expected: `93 passed`, no skips; ruff clean.
+- [ ] **Step 4: Run the tests and lint** (Task A2, Step 3). Expected: `97 passed`, no skips; ruff clean. Four tests pin ruling S55's deciding events: a same-value shift credits no C3/C7, a CE-Low edge with CDI equal to the contents credits no C4, 32 same-value shifts credit no C5, and the flip to the opposite uniform value credits C3 and C5.
 
 - [ ] **Step 5: Commit** the models with the file their tests import (the top part of `luts_recipes.py`):
 
@@ -2793,14 +2856,14 @@ The recipes, by test. A configuration is read with an exhaustive `sweep` (power-
 
 | Test | Primitives | Configurations | What it pins |
 |---|---|---|---|
-| `L0.smoke` | all | default (INIT unset), all ones, one seeded random; CFGLUT5: both `IS_CLK_INVERTED` values set explicitly, plus one reload bit | elaboration, defaults vs UNISIM defaults |
+| `L0.smoke` | all | default (INIT unset), all ones, one seeded random; CFGLUT5: both `IS_CLK_INVERTED` values set explicitly, plus one reload bit | elaboration, defaults vs UNISIM defaults; no C3 (one shifted bit never sets a new known value, ruling S55) |
 | `L0.illegal_init` | all | INIT with every digit `x` | the runtime reject path (kept only if the simulators reject it: Task A6) |
 | `L1.default_init` | all | INIT unset (pure) | the zero default (C2/C3/C6; CFGLUT5 also C1/C2) |
 | `L1.projections` | all | INIT with O = I<j>, and its complement, for every input | the logic table's input order (CFGLUT5: the inferred order) |
 | `L1.gsr_transparent` | LUT1–LUT6, LUT6_2 | one random INIT; GSR pulsed while inputs move | the D6 inference, `hw` unsupported |
 | `L1.o5_lower_half` | LUT6_2 | lower half = I0 projection with upper half = complement; lower 0 / upper 1; random | O5 ignores I5 (C2) |
 | `L1.doc_example` | LUT6_2 | 64'hFFFFFFFFFFFFFFFE | UG953's OR example (C4) |
-| `L1.edge_polarity` | CFGLUT5 | both `IS_CLK_INVERTED` values × all zeros / all ones (all pure): sweep; the **inactive** edge alone with CE High and the opposite CDI, then sweep and CDO; the active edge with CE Low; 32 opposite shifts with no read between; sweep | C1–C7 and both `IS_CLK_INVERTED` bins, order-free; a simulator that shifts on both edges or ignores `IS_CLK_INVERTED` fails a documented bit |
+| `L1.edge_polarity` | CFGLUT5 | both `IS_CLK_INVERTED` values × all zeros / all ones (all pure): sweep; the **inactive** edge alone with CE High and the opposite CDI, then sweep and CDO; the active edge with CE Low and the opposite CDI (ruling S55: a CE-ignoring simulator would shift it in); 32 opposite shifts with no read between; sweep | C1–C7 and both `IS_CLK_INVERTED` bins, order-free; a simulator that shifts on both edges, ignores `IS_CLK_INVERTED`, ignores CE, never shifts or has a stuck CDO fails a documented bit |
 | `L1.ce_low_holds` | CFGLUT5 | random, I0 projection, all ones (pure); 8 CE-Low cycles with CDI toggling | C4 |
 | `L1.reconfigure` | CFGLUT5 | zero → random, ones → I2 projection, random → random, ones → zero (pure); a 32-bit reload between sweeps | C3, C5; the inferred order |
 | `L1.cdo_cascade` | CFGLUT5 | random data; all ones then 32 zeros and 32 ones; 64 shifts with CDO sampled after each, then a sweep | C5; the inferred CDO bit |
@@ -3104,7 +3167,8 @@ def l1_edge_polarity(ctx: GenContext, k: LutKind) -> Gen:
     change (a simulator that shifts on both edges, or ignores IS_CLK_INVERTED, fails a
     documented bit here); take the active edge with CE Low (C4); shift the opposite value
     in 32 times with no read in between, then sweep: the whole function has flipped,
-    whatever the shift direction (C3, C5, C7 when inverted)."""
+    whatever the shift direction (C3, C5, C7 when inverted). The CE-Low active edge sees
+    the opposite CDI, so a simulator that ignores CE would flip a documented bit (S55)."""
     for inverted in (0, 1):
         for init in (0, ones(k)):
             bit = init & 1
@@ -3122,7 +3186,8 @@ def l1_edge_polarity(ctx: GenContext, k: LutKind) -> Gen:
                 f.b.set(CE=0)
                 f.sweep()
                 f.b.edge("CLK", False)  # the active edge, CE Low: holds
-            else:  # rising is active: take it with CE Low, then the inactive fall
+            else:  # rising is active: take it with CE Low (opposite CDI), then the fall
+                f.b.set(CDI=1 - bit)  # so a CE-ignoring simulator would shift (S55)
                 f.b.edge("CLK", True)
                 f.b.set(CE=1, CDI=1 - bit)
                 f.b.edge("CLK", False)
@@ -3314,6 +3379,7 @@ from luts_recipes import BIN, KINDS, RANDOM_INITS, LutKind, generators, lit, one
 
 from xut import unitkit
 from xut.unitkit import CO_HW, CO_PY, CO_XS, HW_GSR, HW_REJ, SV_HW, SV_PY, VL_REJ, X_VL, Reason
+from xut_models.base import Out
 
 if TYPE_CHECKING:
     from xut.catalog.model import CatalogEntry
@@ -3449,8 +3515,7 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         "smoke",
         "vector",
         "vectors/gen.py:l0_smoke",
-        [*base, "attr:INIT", *table, *default, *shift_bins, *clk_attrs,
-         *(_claims(k, 3) if k.reconfig else [])],
+        [*base, "attr:INIT", *table, *default, *shift_bins, *clk_attrs,],
         "Elaborates with the default INIT and two sampled ones and reads every address: the "
         "minimum any toolchain must get right. The default configuration sets no attribute, "
         "so the model's documented default meets the simulators' own.",
@@ -3859,6 +3924,109 @@ def render(prim: str) -> dict[str, str]:
     return files
 
 
+# --- mutants (ruling S55) ------------------------------------------------------------------
+# One model variant per credited claim, breaking exactly that claim's rule; the unit's
+# guard asserts each fails a documented bit in a configuration that credits the claim.
+
+
+def _address_flipped(base: type) -> type:
+    """Logic table read at the neighbouring address: the input order is wrong (C1)."""
+
+    class AddressFlipped(base):
+        def _address(self, n: int) -> int:
+            return super()._address(n) ^ 1
+
+    return AddressFlipped
+
+
+def _default_ones(base: type) -> type:
+    """An unset INIT reads as all ones, not the documented zero (the default claim)."""
+
+    class DefaultOnes(base):
+        def __init__(self, attrs: dict) -> None:
+            super().__init__(attrs)
+            if not self.explicit_init:
+                self.init = (1 << (1 << self.N)) - 1
+
+    return DefaultOnes
+
+
+def _output_replaced(port: str, value: Callable[[object], int]) -> Callable[[type], type]:
+    """``port`` shows ``value(model)`` instead of the documented bit."""
+
+    def factory(base: type) -> type:
+        class Replaced(base):
+            def outputs(self) -> dict:
+                out = super().outputs()
+                return {**out, port: Out(str(value(self)), out[port].prov)}
+
+        Replaced.__name__ = f"{port}Replaced"
+        return Replaced
+
+    return factory
+
+
+def _clock_edge_with_ce(ce: int | None) -> Callable[[type], type]:
+    """CE forced to ``ce`` on every edge (0: never shifts; 1: ignores CE)."""
+
+    def factory(base: type) -> type:
+        class ForcedCe(base):
+            def clock_edge(self, port: str, rising: bool) -> None:
+                kept = self.pin["CE"]
+                self.pin["CE"] = ce
+                super().clock_edge(port, rising)
+                self.pin["CE"] = kept
+
+        return ForcedCe
+
+    return factory
+
+
+def _init_ignored(base: type) -> type:
+    """The start-up contents are all zeros whatever INIT says (C6)."""
+
+    class InitIgnored(base):
+        def power_on(self) -> None:
+            super().power_on()
+            self.contents = 0
+
+    return InitIgnored
+
+
+def _inversion_ignored(base: type) -> type:
+    """IS_CLK_INVERTED has no effect: the rising edge is always active (C7)."""
+
+    class InversionIgnored(base):
+        def __init__(self, attrs: dict) -> None:
+            super().__init__(attrs)
+            self.inv_clk = 0
+
+    return InversionIgnored
+
+
+def mutants(prim: str) -> dict[str, Callable[[type], type]]:
+    """{claim id: mutant factory} for ``prim``: every claim a vector test credits."""
+    if prim == "CFGLUT5":
+        return {
+            "CFGLUT5.C1": _output_replaced("O6", lambda m: 0),  # O6 ignores the contents
+            "CFGLUT5.C2": _output_replaced("O5", lambda m: 0),  # O5 ignores the contents
+            "CFGLUT5.C3": _clock_edge_with_ce(0),  # never shifts
+            "CFGLUT5.C4": _clock_edge_with_ce(1),  # ignores CE
+            "CFGLUT5.C5": _output_replaced("CDO", lambda m: (m.init >> 31) & 1),  # CDO stuck
+            "CFGLUT5.C6": _init_ignored,
+            "CFGLUT5.C7": _inversion_ignored,
+        }
+    if prim == "LUT6_2":
+        upper = _output_replaced("O5", lambda m: (m.init >> (32 + m._address(5))) & 1)
+        return {
+            "LUT6_2.C1": _output_replaced("O6", lambda m: (m.init >> (m._address(6) ^ 1)) & 1),
+            "LUT6_2.C2": upper,  # O5 reads the upper 32 bits
+            "LUT6_2.C3": _default_ones,
+            "LUT6_2.C4": upper,  # the p509 example's 5-input OR on O5 breaks with it
+        }
+    return {f"{prim}.C1": _address_flipped, f"{prim}.C2": _default_ones}
+
+
 UNIT = unitkit.Unit(
     name="luts",
     family=FAMILY,
@@ -3867,6 +4035,7 @@ UNIT = unitkit.Unit(
     prims=tuple(KINDS),
     render=render,
     generators=generators,
+    mutants=mutants,
 )
 
 
@@ -3884,7 +4053,9 @@ if __name__ == "__main__":
     main(sys.argv[1:])
 ```
 
-- [ ] **Step 3: Write the guards** `tests/7series/clb/_shared/luts/test_luts_tests.py`: `unitkit`'s set, plus the unit's own checks (CFGLUT5 never declares Verilator; the both-edges and wrong-edge mutants fail documented bits of `L1.edge_polarity`, ruling S53, correctness review M3):
+`luts_tests.mutants(prim)` is the unit's mutant table for `UnitGuards`' failing-mutant guard (ruling S55), one factory per claim a vector test credits: LUTn C1 reads the neighbouring address (a bit-order mutant), C2 reads an unset INIT as all ones; LUT6_2 C1 likewise on O6, C2 and C4 read O5 from the upper 32 bits, C3 is the all-ones default; CFGLUT5 C1/C2 pin O6/O5 to 0, C3 never shifts (CE forced Low), C4 ignores CE (CE forced High), C5 holds CDO at INIT[31], C6 ignores INIT, C7 ignores `IS_CLK_INVERTED`.
+
+- [ ] **Step 3: Write the guards** `tests/7series/clb/_shared/luts/test_luts_tests.py`: `unitkit`'s set (the failing-mutant guard included), plus the unit's own checks (CFGLUT5 never declares Verilator; the both-edges and wrong-edge mutants fail documented bits of `L1.edge_polarity`, ruling S53, correctness review M3; the reversed INIT order, a second bit-order mutant, fails a C1-crediting configuration of every LUTn and LUT6_2, ruling S55):
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -3897,7 +4068,7 @@ from luts_recipes import KINDS, generators
 from luts_tests import UNIT
 from luts_tests import tests_for as _tests_for  # aliased: pytest would collect "tests_for"
 
-from xut.unitkit import UnitGuards
+from xut.unitkit import UnitGuards, mutant_fails
 from xut_models.registry import get
 
 
@@ -3960,11 +4131,30 @@ def test_edge_mutants_fail_documented_bits(mutant):
 
 def test_the_golden_model_agrees_with_itself():
     assert _edge_polarity_mismatches(_CFGLUT5) == 0
+
+
+def _init_reversed(base: type) -> type:
+    """INIT read end to end, bit 2^n - 1 - a for address a: the other bit order (C1)."""
+
+    class InitReversed(base):
+        def _address(self, n: int) -> int:
+            return super()._address(n) ^ ((1 << n) - 1)
+
+    return InitReversed
+
+
+@pytest.mark.parametrize("prim", [p for p in KINDS if not KINDS[p].reconfig])
+def test_the_reversed_init_order_fails_a_c1_crediting_configuration(prim):
+    """Ruling S55, the LUT INIT bit-order mutants: the unit's C1 mutant (neighbouring
+    addresses swapped) is in UnitGuards; the reversed order must be caught as well."""
+    mutant = _init_reversed(get("7series", prim))
+    vector = [c for c in TestLutsUnit()._cases(prim) if c.style == "vector"]
+    assert any(mutant_fails(c, UNIT.root, f"{prim}.C1", mutant) for c in vector)
 ```
 
 - [ ] **Step 4: Generate and check** (Task A3, Steps 2–3). Expected:
 - `luts_tests.py` prints `wrote 6 files under tests/7series/clb/<PRIM>` for LUT1–LUT6 and LUT6_2, and `wrote 4 files` for CFGLUT5 (its sv testbenches are Task B4's hand-written ones). The `test.yaml` files hold LUT1 9 tests, LUT2 9, LUT3–LUT6 10 each, LUT6_2 12 and CFGLUT5 18 (88). The sv wrappers name `luts_x_tb.svh`/`luts_gsr_tb.svh`, which Task B4 adds: the Task A4 run needs them, the generator does not.
-- `pytest tests/7series/clb/_shared/luts`: `145 passed` (93 model tests; 48 `UnitGuards` cases, six guards × eight primitives; four unit checks). The reach and purity guards replay all 706 vector configurations in about 30 s.
+- `pytest tests/7series/clb/_shared/luts`: `164 passed` (97 model tests; 56 `UnitGuards` cases, seven guards × eight primitives; eleven unit checks). The reach, purity and mutant guards replay all 706 vector configurations (once, cached) in about 25 s.
 - `xut lint`: no errors. Expected warnings: `portability-agreement` for the 7 `L1.sv_x_inputs` and 7 `L0.illegal_init` tests of LUT1–LUT6/LUT6_2 that declare `verilator: "unsupported"` for an x stimulus or an x attribute (decision D12). CFGLUT5's declarations match its `no` row and raise none.
 - `xut run 'unit:luts' --runner python`: `exit=0`; 64 vector tests `pass`, 24 sv/cocotb tests `skip` (`SV_PY`, `CO_PY`). `L1.gsr_transparent` and `L1.gsr_after_reconfig` stimuli are `hw_renderable no` ("glbl GSR on hardware needs the GSR-immune harness …"); every other vector stimulus is `hw_renderable yes`.
 
@@ -4538,7 +4728,7 @@ async def cfglut5_random(dut: object) -> None:
 
 ### Task B7: The luts PR (Task A7)
 
-Title "luts: LUT1-LUT6, LUT6_2 and CFGLUT5". The body also states: the D5/D6 inferences, rulings S52/S53's effect on CFGLUT5's claims (known-uniform tracking, the pure `L1.edge_polarity`), the two open CFGLUT5 `doc-gap` findings; the CFGLUT5 Verilator declaration and the S29(2) TODO; that every vector test declares `hw: "yes"` except the two GSR tests and the reject tests, pending Task B8.
+Title "luts: LUT1-LUT6, LUT6_2 and CFGLUT5". The body also states: the D5/D6 inferences, rulings S52/S53/S55's effect on CFGLUT5's claims (known-uniform tracking, the pure `L1.edge_polarity`, credit only on deciding events, a failing mutant per claim), the two open CFGLUT5 `doc-gap` findings; the CFGLUT5 Verilator declaration and the S29(2) TODO; that every vector test declares `hw: "yes"` except the two GSR tests and the reject tests, pending Task B8.
 
 ---
 
