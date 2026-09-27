@@ -127,7 +127,7 @@ def test_scope_argv():
     assert argv[:4] == ["systemd-run", "--user", "--scope", "--slice=vivado.slice"]
     assert argv[4].startswith("--unit=xut-flops-run-")
     assert argv[5:] == [
-        "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "--", "uv", "run", "xut", "run",
+        "--expand-environment=no", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "--", "uv", "run", "xut", "run",
     ]  # fmt: skip
     with pytest.raises(XutError, match="--name"):
         heavy.scope_argv("a b", "8G", ["true"])

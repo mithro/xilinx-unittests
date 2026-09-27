@@ -57,3 +57,33 @@ peaks are far below the caps:
   working meanwhile.
 - A possible follow-up is `xut heavy --status`, showing who holds how many
   tokens.
+
+## Fix round 1 (correctness review of PR #18)
+
+- **[must-fix] `--vivado N` (ruling).** It reserves N × 16G inside the 96G.
+  The scope gets `XUT_HEAVY=1` and `XUT_HEAVY_VIVADO=N`.
+  `xut.heavy.vivado_reserved()` refuses (fails closed) when the caller is not
+  under `xut heavy` or reserved 0. Step 3's `scoped_run` must call it before
+  starting its own 16G scope. §10.1 now says a Vivado/xsim run is covered by
+  the caller's `--mem` when it runs in the caller's scope, and by `--vivado`
+  when it runs in its own 16G scope.
+- **Nits:**
+  - Order: the claim is now "a gate holder is never overtaken"; waiters on
+    the gate are not FIFO.
+  - The parallelism check also covers `-j`, `-jN` and `bash -c`/`sh -c`
+    scripts. It is documented as best effort, and `--containers` is the
+    caller's declaration.
+  - Nested `xut heavy` is refused.
+  - A missing `$XDG_RUNTIME_DIR` is an error, not a fallback directory.
+  - §10.1 notes that containers can outlive a killed command until swept.
+  - §10.1 notes that the old-style flock can wait a long time.
+- **Also:** `--expand-environment=no` on the scope. systemd 257 warned that it
+  will expand `$VAR` in scope command lines in the future, which would change
+  commands such as `bash -c 'echo $HOME'`.
+- **Tests:** `pytest tools/tests/test_heavy.py tools/tests/test_unitkit.py
+  tools/tests/test_cli.py`: 65 passed, 3 runs out of 3.
+- **End to end with real systemd-run:**
+  - `--vivado 1` took 5 tokens, and the scope saw `XUT_HEAVY=1` and
+    `XUT_HEAVY_VIVADO=1`;
+  - a nested `xut heavy` inside it was refused (exit 1);
+  - `bash -c 'echo HOME=$HOME'` printed the real home.
