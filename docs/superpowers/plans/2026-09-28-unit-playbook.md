@@ -74,7 +74,7 @@ Expected: `prereqs OK FDRE` and both paths listed. `ImportError: cannot import n
 - **What runs in the container.** `models/xut_models/**`, `<unit>_recipes.py` and `<unit>_cocotb.py` are imported by cocotb inside the simulator container, where only the standard library, `xut_models`, `xut.formats` and `xut.cocotb_dut` exist. So: models import only the standard library and `xut_models`; the recipes import `xut` only for type checking; the session imports `xut.cocotb_dut` (it must, to drive the DUT) and nothing else from `xut`. `<unit>_tests.py` and the guards run on the host and use `xut.unitkit` freely.
 - **Never weaken a test to hide a divergence** (AGENTS.md §9, spec §8). A disagreement is classified and recorded as a finding; an `expected_divergence` never masks it (it is reported as `known-divergence`); an expected bit is never turned into `-`; a check is never deleted.
 - **Long runs** follow the global progress rule: run in the background with the log in `.cache/`, watch it with a Monitor that reads the latest `progress: done=N total=M elapsed_s=E` line, compute the rate as N ÷ E and the remaining time as (M − N) ÷ rate, and report the remaining time and the finish clock-time at the cadence the estimate gives (under 10 minutes: every 60 s; under 4 hours: every 5 minutes; longer: every 15 minutes). Tighten the cadence if a later estimate drops below a threshold.
-- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (167 tests passing, through `xut.unitkit`'s guards, the failing-mutant guard included), P1's own tests and the non-container suite on a copy of `main` (1699 passed with P1 alone; 1866 with P1 and the luts unit), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
+- **Code in this plan is `ruff format`-clean at line length 100** and passes `ruff check` with the repository's rules once Task P1's `tests/**/test_*.py` ANN exemption is in. Every Part B module was extracted and run while the plan was written: the models, the recipes and the metadata generator against the step-2 infra (plus P1), the unit's pytest files (167 tests passing, through `xut.unitkit`'s guards, the failing-mutant guard included), P1's own tests and the non-container suite on a copy of `main` (1701 passed with P1 alone; 1868 with P1 and the luts unit), the cocotb session against a stand-in `XutDut`, and the sv testbenches on Icarus against UNISIM 2025.2 in a 1G-capped container (every documented check passing; only pass/fail was read, never an undocumented checkpoint's value, per the clean-room rule). The formatter wins if a later ruff version disagrees.
 - **Worktrees** live under `../xilinx-unittests-worktrees/<branch-with-dashes>`. **One PR per branch, always.**
 
 ### Branches and PRs
@@ -183,7 +183,7 @@ Everything here affects every unit after flops, so it lands once, before the fan
 - Produces:
   - `xut.golden.attr_bins(attributes, attrs) -> set[str]`, `xut.golden.coverage_reach(entry, vec, reach) -> set[str]`
   - `xut.runners.python.replay_config(entry, model_cls, vec, m) -> tuple[Trace, set[str]]`
-  - `xut.unitkit`: `Reason`, `Declared`, `ALL_FLOWS`, `SV_PY`, `SV_HW`, `X_VL`, `CO_PY`, `CO_XS`, `CO_HW`, `VL_REJ`, `HW_REJ`, `HW_GSR`, `HW_PAD`; `runners(**over)`, `claims(prim, *ns)`, `class_bins(entry, port, *events)`, `entry(family, prim, level, name, style, source, exercises, *, gaps, sampling, declared, flows, configs, related)`, `dump_test_yaml(doc, generator)`, `cell`, `run_block(prim)`, `render_readme(...)`; `ConfigReach(cfg, bins, pure)`, `vector_reach(case, root)`, `mutant_fails(case, root, claim, mutant, *, every=False) -> bool | None`, `Mutant(factory, event=False)`; `Unit(name, family, root, group_dir, prims, render, generators, mutants=lambda prim: {}, pure=True)`, `UnitGuards`
+  - `xut.unitkit`: `Reason`, `Declared`, `ALL_FLOWS`, `SV_PY`, `SV_HW`, `X_VL`, `CO_PY`, `CO_XS`, `CO_HW`, `VL_REJ`, `HW_REJ`, `HW_GSR`, `HW_PAD`; `runners(**over)`, `claims(prim, *ns)`, `class_bins(catalog_entry, port, *events)`, `entry(family, prim, level, name, style, source, exercises, *, gaps, sampling, declared, flows, configs, related)`, `dump_test_yaml(doc, generator)`, `cell`, `run_block(prim)`, `render_readme(...)`; `ConfigReach(cfg, bins, pure)`, `vector_reach(case, root)`, `cases(root, family, prim)`, `doc_mismatches(case, root, model) -> int`, `mutant_fails(case, root, claim, mutant, *, every=False) -> bool | None` (both compare per-bit `doc:` tags through one helper), `Mutant(factory, event=False)`; `Unit(name, family, root, group_dir, prims, render, generators, mutants=lambda prim: {}, pure=True)`, `UnitGuards`
 
 - [ ] **Step 1: Worktree**
 
@@ -389,6 +389,26 @@ def test_an_event_mutant_must_fail_every_crediting_configuration(toy):
     assert unitkit.Mutant(ToyDff).event is False  # a read claim unless marked
 
 
+def test_doc_mismatches_counts_documented_bits_over_a_vector_test(toy):
+    from test_golden import ToyDff
+
+    class NoCapture(ToyDff):
+        def clock_edge(self, port, rising):
+            pass
+
+    case = next(c for c in discover(FIX) if c.id == "7series.TOYFF.L1.capture")
+    assert unitkit.doc_mismatches(case, FIX, ToyDff) == 0
+    # init0 keeps Q=0 where D=1 was captured, init1 keeps Q=1 where D=0 was
+    assert unitkit.doc_mismatches(case, FIX, NoCapture) > 0
+
+
+def test_cases_selects_one_primitive():
+    ids = {c.id for c in unitkit.cases(FIX, "7series", "TOYFF")}
+    assert "7series.TOYFF.L1.capture" in ids
+    assert all(".TOYFF." in i for i in ids)
+    assert unitkit.cases(FIX, "7series", "NOSUCH") == []
+
+
 def test_doc_mismatch_ignores_inferred_bits():
     from xut.formats.xtr import Trace
 
@@ -585,18 +605,24 @@ never copies this code, or the flops unit's.
 - ``vector_reach``: what each configuration of a vector test reaches, through the python
   runner's own generation (``generate``, the ``xut run`` seed) and replay
   (``replay_config``), and whether every sampled bit is documented (``pure``).
-- ``mutant_fails``: whether a model variant that breaks one claimed rule fails a
-  documented bit in some configuration that credits that claim (ruling S55).
+- ``doc_mismatches``: how many documented bits a model variant gets wrong over a vector
+  test; ``mutant_fails``: whether a variant that breaks one claimed rule fails a
+  documented bit in some configuration that credits that claim, or with ``every`` in each
+  one (rulings S55, S55a). Both compare per-bit provenance tags.
+- ``cases``: a primitive's discovered test cases.
 - ``UnitGuards``: drift of every rendered file, presence, schema and reasons, generators,
-  reach, bins accounted (``xut.lint.gap_bin``), pure crediting (rulings S44, S52) and one
-  failing mutant per credited claim (ruling S55).
+  reach, bins accounted (``xut.lint.gap_bin``), pure crediting (rulings S44, S52) and a
+  failing mutant per declared claim (ruling S55): in one crediting configuration of a
+  read claim, in every one of an event claim (``Mutant(event=True)``, ruling S55a).
+  Only tests that declare the claim in ``exercises`` are checked, because status credits
+  only declared bins.
 """
 
 from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -654,12 +680,12 @@ def claims(prim: str, *ns: int) -> list[str]:
     return [f"claim:{prim}.C{n}" for n in ns]
 
 
-def class_bins(entry: CatalogEntry, port: str, *events: str) -> list[str]:
+def class_bins(catalog_entry: CatalogEntry, port: str, *events: str) -> list[str]:
     """``port:<P>`` and the named class bins of one port (all of them when none is
     named), from ``xut.status.port_class_bins``."""
     from xut.status import port_class_bins
 
-    p = next(p for p in entry.ports if p["name"] == port)
+    p = next(p for p in catalog_entry.ports if p["name"] == port)
     by_event = {b.rsplit(":", 1)[1]: b for b in port_class_bins(p)}
     return [f"port:{port}", *(by_event[e] for e in events or by_event)]
 
@@ -826,14 +852,14 @@ def _replay_all(case: TestCase, root: Path) -> list[_Replayed]:
     from xut_models import registry
 
     ctx = RunContext(root, "rtl", ModelSource("golden", root))
-    ent = catalog_model.load_entry(case.family, case.prim, root)
+    catalog_entry = catalog_model.load_entry(case.family, case.prim, root)
     model_cls = registry.get(case.family, case.prim)
     out = []
     for vec, spec in generate(case, ctx):
         if vec.expect == "reject":
             continue
         m = build_map(spec)
-        trace, bins = replay_config(ent, model_cls, vec, m)
+        trace, bins = replay_config(catalog_entry, model_cls, vec, m)
         out.append(
             _Replayed(ConfigReach(vec.cfg, frozenset(bins), _documented(trace.prov)), vec, m, trace)
         )
@@ -847,8 +873,9 @@ def vector_reach(case: TestCase, root: Path) -> list[ConfigReach]:
     return [r.reach for r in _replay_all(case, root)]
 
 
-def _doc_mismatch(want: Trace, got: Trace) -> bool:
-    """``got`` differs from ``want`` on a bit ``want`` documents (``doc:``)."""
+def _doc_diffs(want: Trace, got: Trace) -> Iterator[tuple[str, str, int]]:
+    """(sample, port, bit) of every bit ``want`` documents (``doc:``, per-bit tags, LSB
+    first) on which ``got`` differs."""
     for label, ports in want.samples.items():
         for port, bits in ports.items():
             tags = want.prov[label][port].split(",")
@@ -857,8 +884,24 @@ def _doc_mismatch(want: Trace, got: Trace) -> bool:
             ):
                 tag = tags[i] if len(tags) > 1 else tags[0]
                 if tag.startswith("doc:") and w != g:
-                    return True
-    return False
+                    yield label, port, i
+
+
+def _doc_mismatch(want: Trace, got: Trace) -> bool:
+    """``got`` differs from ``want`` on a bit ``want`` documents."""
+    return next(_doc_diffs(want, got), None) is not None
+
+
+def doc_mismatches(case: TestCase, root: Path, model: type[Model]) -> int:
+    """How many documented bits ``model`` gets wrong over every configuration of vector
+    test ``case``, generated and replayed as ``vector_reach`` does (0 for the golden
+    model itself)."""
+    from xut.golden import replay
+
+    return sum(
+        sum(1 for _ in _doc_diffs(r.trace, replay(model, r.vec, r.m)[0]))
+        for r in _replayed(root, case)
+    )
 
 
 def mutant_fails(
@@ -927,7 +970,7 @@ class UnitGuards:
         return yaml.safe_load((self.unit.group_dir / prim / "test.yaml").read_text())
 
     def _cases(self, prim: str) -> list[TestCase]:
-        return [c for c in _discovered(self.unit.root) if c.prim == prim]
+        return cases(self.unit.root, self.unit.family, prim)
 
     # guards -------------------------------------------------------------------------
     def test_committed_files_are_current(self, prim: str) -> None:
@@ -970,11 +1013,11 @@ class UnitGuards:
         from xut.lint import gap_bin
         from xut.status import coverage_bins
 
-        cases = self._cases(prim)
-        named = {b for c in cases for b in c.exercises}
-        gaps = {gap_bin(g) for c in cases for g in c.gaps}
-        ent = catalog_model.load_entry(self.unit.family, prim, self.unit.root)
-        missing = [b for b in coverage_bins(ent) if b not in named | gaps]
+        prim_cases = self._cases(prim)
+        named = {b for c in prim_cases for b in c.exercises}
+        gaps = {gap_bin(g) for c in prim_cases for g in c.gaps}
+        catalog_entry = catalog_model.load_entry(self.unit.family, prim, self.unit.root)
+        missing = [b for b in coverage_bins(catalog_entry) if b not in named | gaps]
         assert not missing, missing
 
     def test_every_exercised_bin_has_a_pure_configuration(self, prim: str) -> None:
@@ -1033,6 +1076,11 @@ class UnitGuards:
 @functools.cache
 def _discovered(root: Path) -> tuple[TestCase, ...]:
     return tuple(discover(root))
+
+
+def cases(root: Path, family: str, prim: str) -> list[TestCase]:
+    """Every discovered test case of ``prim`` (discovery is cached per ``root``)."""
+    return [c for c in _discovered(root) if c.family == family and c.prim == prim]
 
 
 @functools.cache
@@ -1174,7 +1222,7 @@ uv run ruff format --check tools > .cache/p1-ruff.log 2>&1; uv run ruff check to
 uv run xut lint --branch > .cache/p1-lint.log 2>&1; cat .cache/p1-lint.log
 ```
 
-Expected: the focused tests pass; the suite passes (the summary line at the end of `.cache/p1-pytest.log`); ruff clean; lint 0 errors. (Checked while writing this plan on a copy of `main`: the non-container suite gives `1699 passed, 5 skipped`, including `test_family_literal_lives_only_in_work_units_yaml`, which is why `unitkit` takes the family as a parameter and never spells it.)
+Expected: the focused tests pass; the suite passes (the summary line at the end of `.cache/p1-pytest.log`); ruff clean; lint 0 errors. (Checked while writing this plan on a copy of `main`: the non-container suite gives `1701 passed, 5 skipped`, including `test_family_literal_lives_only_in_work_units_yaml`, which is why `unitkit` takes the family as a parameter and never spells it.)
 
 - [ ] **Step 5: Commit, log, PR**
 
