@@ -751,3 +751,16 @@ def test_missing_python_run_is_a_named_xut_error(ctx):
     (d / "configs.json").write_text('{"not": "a list"}')
     with pytest.raises(NoPythonRun, match="not a list of configuration names"):
         load_generated(ctx, _case())
+
+
+def test_python_runner_records_a_non_enumerated_attribute_bin(ctx, toy, monkeypatch):
+    """bins_reached names attr:<A> for an explicitly set non-enumerated attribute, as
+    coverage_bins does (unit playbook Task P1)."""
+    open_init = {**TOY_ENTRY.attributes[0], "allowed": []}  # INIT: not enumerated
+    entry = dataclasses.replace(TOY_ENTRY, attributes=[open_init])
+    monkeypatch.setattr("xut.catalog.model.load_entry", lambda family, name, root: entry)
+    res = PythonRunner().run(_case(), ctx)
+    assert res.status == "pass", res.reason
+    data = _result(workdir(ctx, "python", _case().id))
+    assert "attr:INIT" in data["bins_reached"]
+    assert all("attr:INIT" in c["bins_reached"] for c in data["configs"])

@@ -28,11 +28,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar
 
+from xut.catalog import model as catalog_model
+from xut.catalog.model import CatalogEntry
 from xut.errors import XutError
 from xut.formats import xtr, xvec
 from xut.formats.common import is_cfg
 from xut.formats.xvec import Vec
-from xut.golden import InvalidStimulus, polarity_bins, replay
+from xut.golden import InvalidStimulus, coverage_reach, replay
 from xut.runners.base import (
     ConfigResult,
     RunContext,
@@ -46,9 +48,9 @@ from xut.runners.base import (
 from xut.stimgen import GenContext
 from xut.testspec import TestCase
 from xut.validate import mark, validate
-from xut.wrap import DutSpec, spec_from_catalog, write_dut
+from xut.wrap import DutMap, DutSpec, spec_from_catalog, write_dut
 from xut_models import registry
-from xut_models.base import ModelContractError, ModelUnsupported
+from xut_models.base import Model, ModelContractError, ModelUnsupported
 
 
 class SourceError(XutError, ValueError):
@@ -147,12 +149,22 @@ def generate(case: TestCase, ctx: RunContext) -> list[tuple[Vec, DutSpec]]:
     return out
 
 
-def _polarity_context(case: TestCase, ctx: RunContext) -> tuple[dict[str, str], dict]:
-    """The catalog's declared port ``active`` levels and attribute defaults, for naming
-    async/gate bins ``assert``/``release`` (``xut.golden.polarity_bins``). Without a
-    declared level the bins stay ``rise``/``fall``."""
-    from xut.catalog import model as catalog_model
+def replay_config(
+    entry: CatalogEntry, model_cls: type[Model], vec: Vec, m: DutMap
+) -> tuple[xtr.Trace, set[str]]:
+    """The golden replay of one configuration and the coverage bins it reached, named as
+    ``xut.status.coverage_bins`` names them (``xut.golden.coverage_reach``). The one path
+    the python runner and ``xut.unitkit.vector_reach`` share."""
+    trace, reach = replay(model_cls, vec, m)
+    return trace, coverage_reach(entry, vec, reach)
 
+
+def _polarity_context(case: TestCase, ctx: RunContext) -> tuple[dict[str, str], dict]:
+    """The catalog's declared port ``active`` levels and attribute defaults.
+
+    Unused here since ``replay_config``: kept only because the flops unit's reach guard
+    imports it; the flops migration to ``xut.unitkit`` (a follow-up of the unit playbook,
+    Task P1) removes that import, and then this function."""
     entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
     active = {p["name"]: p["active"] for p in entry.ports if p.get("active")}
     return active, {a["name"]: a["default"] for a in entry.attributes}
@@ -166,9 +178,8 @@ class PythonRunner(Runner):
     def __init__(self) -> None:
         self._gen: dict[str, tuple[Vec, DutSpec]] = {}
         self._bins: set[str] = set()
-        #: port -> declared active level, and attribute defaults (catalog; polarity_bins)
-        self._active: dict[str, str] = {}
-        self._defaults: dict[str, object] = {}
+        #: the catalog entry (overrides applied) that names the bins (replay_config)
+        self._entry: CatalogEntry | None = None
         self._seed: int | None = None
         self._deadline = float("inf")
         self._limit_s = 0
@@ -193,7 +204,7 @@ class PythonRunner(Runner):
             raise SourceError(f"{case.id}: bad configuration names {bad} / duplicates {dups}")
         self._gen = {v.cfg: (v, s) for v, s in gen}
         self._bins = set()
-        self._active, self._defaults = _polarity_context(case, ctx)
+        self._entry = catalog_model.load_entry(case.family, case.prim, ctx.root)
         d = workdir(ctx, self.name, case.id)
         (d / "configs.json").write_text(json.dumps(names, indent=1) + "\n")
         return names
@@ -236,9 +247,12 @@ class PythonRunner(Runner):
                     model_cls = registry.get(case.family, case.prim)
                 except LookupError as e:
                     return ConfigResult(cfg, "skip", f"no golden model: {e}", stim_sha)
+                entry = self._entry
+                if entry is None:
+                    raise XutError(f"{case.id}: run_config before configs")
                 try:
-                    trace, reach = _watchdog(
-                        lambda: replay(model_cls, vec, m),
+                    trace, bins = _watchdog(
+                        lambda: replay_config(entry, model_cls, vec, m),
                         self._deadline,
                         f"golden model ({cfg})",
                         self._limit_s,
@@ -252,9 +266,6 @@ class PythonRunner(Runner):
                 if not trace.samples:  # validate refuses this; zero evidence never passes
                     return ConfigResult(cfg, "error", "golden replay has no samples", stim_sha)
                 trace.header["flow"] = ctx.flow
-                bins = reach.bins()
-                if self._active:
-                    bins = polarity_bins(bins, self._active, {**self._defaults, **vec.attrs})
                 self._bins |= bins
             xtr.dump(trace, cfgdir / "expected.xtr")
             shutil.copyfile(cfgdir / "expected.xtr", cfgdir / "trace.xtr")
