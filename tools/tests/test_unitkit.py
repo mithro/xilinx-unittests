@@ -71,7 +71,7 @@ def test_render_readme_has_every_template_section(tmp_path):
         "## How to run",
     ):
         assert section in text
-    assert 'flock "$XDG_RUNTIME_DIR/xut-heavy.lock"' in text
+    assert "uv run xut heavy --mem 8G --containers 16 --name run-toyff -- \\\n" in text
 
 
 def test_vector_reach_replays_like_the_python_runner(toy):

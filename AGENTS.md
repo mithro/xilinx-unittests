@@ -243,12 +243,13 @@ smoke simulation whose memory grows without bound. Its container peaked at
   Vivado and xsim:
 
   ```bash
-  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" \
-    systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
-    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
+  uv run xut heavy --mem <cap> --containers <jobs> --name <what> -- \
+    <command> > <log> 2>&1
   ```
 
-  The job then lives outside your own cgroup, and an OOM kill stays inside it.
+  `xut heavy` waits for admission (below), then runs `<command>` as
+  `systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-<epoch>
+  -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command>`. The job then lives outside your own cgroup, and an OOM kill stays inside it.
   `vivado.slice` is the host's shared slice for all heavy FPGA-tool jobs, not
   only Vivado. It is capped at 300G in total and shared with other projects.
   This project's share is 100G.
@@ -269,35 +270,58 @@ smoke simulation whose memory grows without bound. Its container peaked at
   because containers are uncapped. Use `pytest -n` at most 8.
   Never use `-n auto` locally: it means 88 workers. Run Vivado at most 4 at a
   time, each scope capped at 16G: that is 64G. The 4 slots
-  (`XUT_VIVADO_SLOTS`) are counted inside the one heavy command that holds the
-  lock below, so they are that command's jobs, not a second budget. The slots
-  are only a semaphore: xsim and Vivado run inside the calling command's own
-  scope, so that scope's cap must cover them (four 16G jobs need at least a
-  64G scope; with less, an OOM kill is a retryable result). These are
-  conservative starting values, not yet measured for our
-  Vivado runs: measure the first runs with the scope's `memory.peak` and
-  adjust.
+  (`XUT_VIVADO_SLOTS`) are host-wide and are not a second budget. They are
+  only a semaphore: xsim and Vivado run inside the calling command's own
+  scope, so that scope's cap must cover the ones it runs. Four Vivado
+  synthesis jobs need 16G each, so a 64G scope; with less, an OOM kill is a
+  retryable result. xsim simulations are far smaller: a unit run with four
+  xsim at once peaked at 1.4G for the whole scope (see the table below).
+  Measure new kinds of runs with the scope's `memory.peak` (`journalctl --user`
+  prints it when the scope ends) and adjust.
 - **These limits override plans and briefs.** Any `--jobs`, `-j` or `-n`
   value in a plan or task brief is capped by this section. For example, the
   step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
   until PR C is merged, and the budget formula above after it (16 in a 32G
   scope).
-- **One heavy command at a time** (rulings S53, S57). Every heavy command
-  (`xut run`, `xut portability`, `xut verilatorize --check`, `xut hw sim`,
-  `xut hw build`, a direct Vivado or xsim run, and `pytest` with `-n` above
-  1) takes the lock before its scope, so two agents never run heavy jobs at
-  once and each command's own budget (scope cap + jobs × container cap ≤ 96G)
-  is the whole project's use:
+- **Admission by memory budget** (rulings S53, S57; replaces the single
+  mutex). Every heavy command (`xut run`, `xut portability`,
+  `xut verilatorize --check`, `xut hw sim`, `xut hw build`, a direct Vivado or
+  xsim run, and `pytest` with `-n` above 1) runs through `xut heavy`, which
+  admits it only while **the sum of the budgets of every running heavy
+  command, each scope cap + jobs × container cap, is at most 96G**:
 
   ```bash
-  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
-    --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
-    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
+  uv run xut heavy --mem 8G --containers 16 --name flops-run -- \
+    uv run xut run unit:flops --jobs 16 > <log> 2>&1
   ```
 
-  The lock is a per-user lock under `$XDG_RUNTIME_DIR`, shared by every
-  session of this user on the host. `flock` waits while another session holds
-  it.
+  - `--mem` is the scope's `MemoryMax`; `--containers` is the most containers
+    the command runs at once: its `--jobs`, or pytest's `-n`. `xut heavy`
+    refuses a `--jobs`/`-n` in the command above `--containers`, `-n auto`,
+    and a budget over 96G.
+  - The budget is 24 tokens of 4G (`flock`s under
+    `$XDG_RUNTIME_DIR/xut-heavy.d/`, per user, shared by every session). A
+    command waits until it holds all the tokens it needs. The first command
+    in the queue is admitted first, so a large command is never starved.
+    The tokens are held until the command exits.
+  - The old `flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run ...` form
+    still works: `xut heavy` holds that lock shared, so an old-style command
+    waits for every admitted command and then runs alone, with the whole
+    budget. Use `xut heavy` for every new command.
+  - Declare what the command needs, not the most it may use: the smaller the
+    budget, the sooner it runs beside the others. Measured `memory.peak` of
+    the scopes (containers not included; each is capped separately):
+
+    | Command | Scope peak | Suggested `--mem` |
+    |---|---|---|
+    | `xut run` of a whole unit, all runners, `--jobs 16` | 1.4G | 8G |
+    | full `pytest -n 8` | 2.5G | 8G |
+    | targeted `pytest -n 2..4` | 0.2–0.7G | 4G |
+    | `xut crosscheck`, `xut lint`, `ruff` | 0.4G | 2G (or no scope) |
+
+    So a unit run (`--mem 8G --containers 16`, 72G) and a reviewer's
+    targeted pytest (`--mem 4G --containers 2`, 12G) run together. Vivado
+    synthesis (`xut hw build`) keeps 16G per Vivado.
 - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
 - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
