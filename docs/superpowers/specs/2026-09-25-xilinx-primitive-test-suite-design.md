@@ -1,6 +1,6 @@
 # Xilinx Primitive Test Suite — Design
 
-- Status: revision 3.5 (2026-09-28). Rev 2 incorporated the technical and
+- Status: revision 3.6 (2026-09-28). Rev 2 incorporated the technical and
   requirements/process reviews of rev 1. Rev 3 adds the findings of the step-2
   toolchain research: Verilator cannot compile stock UNISIM, openXC7 has moved
   to `openXC7/nextpnr`, and F4PGA/VPR and fasm2bels are stale.
@@ -44,6 +44,20 @@
   - how the equivalence oracle is chosen, hierarchy gating, and how the
     runner maps the equivalence status;
   - memory-capped smoke containers, and `oom` as a portability category.
+  Rev 3.6 records the step-3 hardware
+  decisions and ruling S49:
+  - §7.1: the harness program is loaded into the harness's BRAM over the UART
+    at run time; each slot powers up with its stimulus's `t=0` values and runs
+    once per programming; the protocol is host-driven; the harness streams raw
+    samples framed by build ID, slot and CRC, and the host writes the `.xtr`;
+    N, the constraints and the checked clock-latency budget; packing limits;
+  - §6: the post-flow DUT check for the `vivado` flow, and the `hw` fields of
+    `result.json`;
+  - §7.5: SRAM-only programming; a rig lock that is never deleted or broken,
+    only waited for, with recovery limited to killing our own verified holder;
+    a busy rig is a retryable harness error; DNA readback deferred;
+  - §5.6: N = 3 hardware repeats by default;
+  - §8: a failed post-flow DUT check is a `flow-mismatch`.
 - Owner: Tim 'mithro' Ansell
 - Repository: https://github.com/mithro/xilinx-unittests (Apache-2.0)
 
@@ -327,7 +341,7 @@ Each runner declares what it can observe:
 |---|---|---|
 | xsim, iverilog | yes | 4-state |
 | verilator | no | Each test runs **twice**, with `--x-assign unique --x-initial unique` and two recorded seeds. Any difference between the two runs is reported as `x-dependence`. |
-| hw | no | Only 0/1 is observable. The run repeats N times; any difference is reported as `nondeterminism`. |
+| hw | no | Only 0/1 is observable. The run repeats N times (default 3; each repeat reprograms the FPGA); any difference is reported as `nondeterminism`. |
 
 If a runner observes `x` where the expectation is a defined value, the test
 fails.
@@ -347,7 +361,11 @@ A *flow* turns HDL into something executable. A *runner* executes it.
 - A bitstream-derived netlist (§6.1) gives all P&R tools one like-for-like
   comparison point.
 - After every flow the cell type and attributes of the DUT are extracted and
-  compared with the configuration, which catches silent retargeting.
+  compared with the configuration, which catches silent retargeting. For the
+  `vivado` flow this runs after implementation: every DUT instance's
+  `REF_NAME` must be the primitive, and every attribute the configuration sets
+  must read back with its value. A mismatch fails the build as a
+  `flow-mismatch` (§8), and nothing from that bitstream is run as a result.
 - `INIT_FILE` and other file-based attributes are tested explicitly per flow.
   The simulation working directory is pinned.
 
@@ -557,31 +575,57 @@ grow memory without bound in a Verilator `--timing` smoke simulation.
 
 - tool versions and the container digest;
 - model source, seeds, and the stimulus and bitstream hashes;
-- for `hw`: board DNA, serial number and site;
+- for `hw`: the rig, site and board serial number (the USB serial of the
+  board's JTAG/UART bridge), the build IDs and bitstream hashes, the repeat
+  count, the self-test and post-flow DUT-check outcomes. Board DNA is recorded
+  once the rigs' JTAG tool can read it without programming (§7.5);
 - duration, and one of `pass | fail | error | skip` with a reason.
 
 ## 7. Hardware harness (fpgas.online)
 
 ### 7.1 Stepped fabric harness (default)
 
-- **Stimulus.** Timed events are compiled into a BRAM image of harness
-  operations: set in_vec bits, pulse a clock, sample.
-- **Sequencer.** It runs on a conservative system clock.
-  - The DUT clock is a harness flip-flop routed through a BUFG.
-  - Correctness holds by construction: there are at least N system cycles
-    between an in_vec change, the next DUT edge, and the next capture.
-    N is chosen to cover worst-case skew.
-  - Vivado gets generated-clock and max-delay constraints; the open flows rely
-    on the margin alone.
+- **Stimulus.** Timed events are compiled into an image of harness operations
+  (set a 16-bit chunk of the next in_vec, commit it, set one DUT clock, wait,
+  sample, end). Only the order of events is rendered (§5.1, ruling S8′). The
+  image is loaded into the harness's BRAM over the UART at run time, so a
+  bitstream depends only on the DUTs it holds, never on a stimulus.
+- **Sequencer.** It runs on the board's oscillator through one BUFG (no MMCM:
+  clock-management primitives are themselves under test).
+  - The DUT clock is a harness flip-flop routed through a BUFG, one per DUT
+    clock; every in_vec bit is a harness flip-flop. Nothing combinational sits
+    between the harness and a DUT pin.
+  - Correctness holds by construction: the harness itself (not the program)
+    waits N system cycles after every in_vec change and every DUT clock edge,
+    so an in_vec change, the next DUT edge and the next capture are always at
+    least N cycles apart. N = 16 at 100 MHz.
+  - Vivado gets a generated clock per DUT clock flip-flop and
+    `set_max_delay -datapath_only` of (N − 2) periods into and out of the DUT.
+    The remaining 2 periods cover clock-to-Q plus the DUT clock's latency
+    (flip-flop → BUFG → global tree), which the build measures and fails above
+    that budget. A constraint that matches no object fails the build. The open
+    flows rely on the margin alone.
+- **Power-on state.** Each DUT slot's in_vec register powers up with the
+  stimulus's `t=0` values (flip-flop INIT), and its clocks power up low, so the
+  DUT sees its initial inputs through the configuration's GSR, as in
+  simulation. A slot runs once per programming; every repeat reprograms.
 - **Async events.** Async and gate events are separated from edges as §5.1
   requires.
-- **Multi-DUT packing.** One bitstream holds many configurations, selected by a
-  harness register. This keeps the number of builds manageable.
+- **Multi-DUT packing.** One bitstream holds many configurations (slots),
+  selected by a harness register, up to the device's global-clock budget
+  (28 DUT clocks on a 7-series part) and 64 slots. Identical slot sets share a
+  cached bitstream.
 - **Self-test.** Every bitstream contains a known-good passthrough and a
-  counter channel. The harness runs them first, so a toolchain-under-test bug
-  in the harness itself is reported as `harness-error`, not as a DUT failure.
-- **UART dumper.** It streams `.xtr` with a header carrying the build ID,
-  the configuration and a CRC.
+  counter channel. The harness runs them first after every programming, so a
+  toolchain-under-test bug in the harness itself (including its BUFGs and
+  BRAM) is reported as `harness-error`, not as a DUT failure.
+- **Protocol and UART dumper.** The host drives the harness: identify, load a
+  slot's program (CRC-checked), run. A run streams raw `out_vec` samples
+  framed by a header line carrying the build ID and the slot (the
+  configuration, via the build manifest) and an end line with the sample
+  count, a status and a CRC. The host checks the CRC and writes the `.xtr`
+  from the wrapper's map. A lost byte leaves the harness waiting; the host
+  times out and retries, and every retry reprograms the FPGA.
 
 ### 7.2 GSR-immune harness state
 
@@ -620,16 +664,34 @@ Each configuration primitive declares its oracle:
 
 ### 7.5 Board access
 
-- Access is SSH to the board's Raspberry Pi. Bitstreams go over via `scp`,
-  are loaded with `openFPGALoader -b arty`, and results come back over the UART
-  (`/dev/ttyUSB1`, 115200).
-- **Board lock.** A lock file on the Pi records the owner, the time and a TTL.
-  Locks past their TTL are broken.
+- Access is SSH to the board's Raspberry Pi, through the site's jump host, with
+  the rigs (hosts, UART device, lock path) listed in a committed config file
+  that holds no secrets. Bitstreams go over via `scp`, are loaded **into SRAM
+  only** with `openFPGALoader -b arty` (never a flash option, never openocd
+  `program`), and results come back over the UART (`/dev/ttyUSB1`, 115200, by
+  default; per rig when it differs).
+- **Board lock** (ruling S49). Programming and any reboot of a rig happen only
+  while holding the rig's `flock` lock. The holder writes an owner record
+  (owner, host, boot id, pid, process group, time, TTL) and runs under a
+  `timeout` of its TTL, so no holder of ours outlives it.
+  - The lock file is **never deleted, and a lock is never broken** by
+    unlinking or re-creating it.
+  - A held lock, including one whose owner record looks stale, is waited for
+    up to a configured bound. Then the rig is reported `busy`: the job is a
+    retryable harness error, not a result, and moves to the next rig.
+  - The only recovery allowed is killing a holder verified as our own: same
+    host and boot id, a live pid, our session label and owner, and past its
+    TTL.
 - **Transport errors** (SSH, UART CRC) are retried once. A board that fails
   the self-test is marked bad for the session.
 - **Adapter.** A minimal `BoardSession` adapter allows a later switch to the
   planned fpgas.online lease API.
-- **Preflight** (§15) checks SSH connectivity and keys.
+- **Board identity.** Results record the rig, site and board serial. Board DNA
+  is recorded once the rigs' JTAG tool can read it without programming; the
+  harness does not use the device's single DNA_PORT, which is a primitive
+  under test (§7.4).
+- **Preflight** (§15) checks SSH connectivity, keys, the Pi's tools and the
+  UART device.
 
 ## 8. Cross-checking and findings
 
@@ -644,7 +706,7 @@ classified:
 | `sim-divergence` | UNISIM simulators disagree |
 | `x-dependence` | The two Verilator X-seed runs disagree |
 | `transform-bug` | Icarus on transformed UNISIM ≠ Icarus on original UNISIM |
-| `flow-mismatch` | A flow's post-synth or post-route netlist ≠ RTL: a toolchain bug |
+| `flow-mismatch` | A flow's post-synth or post-route netlist ≠ RTL, or the post-flow DUT check (§6) finds a retargeted cell or attribute: a toolchain bug |
 | `silicon-mismatch` | Hardware ≠ reference |
 | `nondeterminism` | Repeated hardware runs disagree |
 | `harness-error` | The harness self-test failed |
