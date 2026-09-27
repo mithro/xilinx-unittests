@@ -600,6 +600,30 @@ def run_cmd(
         raise SystemExit(1)
 
 
+@main.command(
+    "heavy", context_settings={"ignore_unknown_options": True, "allow_interspersed_args": False}
+)
+@click.option("--mem", required=True, help="the scope's MemoryMax, e.g. 8G")
+@click.option(
+    "--containers",
+    type=click.IntRange(min=0),
+    required=True,
+    help="the most containers the command runs at once (its --jobs or pytest -n)",
+)
+@click.option("--name", default="job", show_default=True, help="scope unit: xut-<name>-<epoch>")
+@click.argument("command", nargs=-1, type=click.UNPROCESSED)
+def heavy_cmd(mem: str, containers: int, name: str, command: tuple[str, ...]) -> None:
+    """Run COMMAND (after --) as a heavy command (AGENTS.md §10.1): wait until its memory
+    (--mem plus --containers x the container cap) fits in the project's 96G budget beside
+    the heavy commands already running, then run it in a capped systemd scope. Exits with
+    the command's exit code."""
+    from xut import heavy
+
+    raise SystemExit(
+        heavy.run(mem, containers, name, command, log=lambda s: click.echo(s, err=True))
+    )
+
+
 @main.command("crosscheck")
 @click.argument("selectors", nargs=-1)
 @click.option(
