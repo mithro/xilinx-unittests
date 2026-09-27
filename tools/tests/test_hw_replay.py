@@ -48,8 +48,9 @@ def _flops_vector_cases():
 def test_every_renderable_flops_configuration(case, tmp_path):
     """Every flops vector configuration the hw runner would run (declared hw "yes"): the
     interpreted harness program reproduces the golden trace exactly, '-' bits included."""
-    if not declared(case, "hw")[0]:
-        pytest.skip(f"hw not declared for {case.id}")
+    hw, why = declared(case, "hw")
+    if not hw:
+        pytest.skip(f"hw not declared for {case.id}: {why}")
     from xut.modelsrc import resolve
 
     ctx = RunContext(repo_root(), "rtl", resolve("auto"))
