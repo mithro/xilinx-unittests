@@ -252,7 +252,7 @@ def test_render_refuses_what_the_rtl_cannot_print():
 @pytest.mark.parametrize("name", list(proto.MESSAGES))
 def test_parse_round_trips_every_message(name):
     values = {f: (1 if f != "bits" else "10") for f in proto.FIELDS}
-    fields = set(proto._FIELD.findall(proto.MESSAGES[name]))
+    fields = set(proto.PATTERNS[name].groupindex)
     values = {k: v for k, v in values.items() if k in fields}
     assert proto.parse(name, proto.render(name, **values)) == values
 
@@ -2908,39 +2908,6 @@ def test_scoped_run_runs_and_logs(tmp_path):
         timeout_s=60,
     )
     assert rc == 3 and "hello" in (tmp_path / "l.log").read_text()
-
-
-def test_hw_sim_jobs_are_capped_by_the_budget(monkeypatch):
-    from xut.hw import hwsim
-
-    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
-    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
-    assert hwsim.max_sim_jobs("xsim") == 6  # 100g // 16G
-    assert hwsim.max_sim_jobs("iverilog") == 25  # container.max_jobs(): 100g // 4g
-
-
-def test_hw_sim_xsim_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
-    """Every xsim run of `xut hw sim` takes one of PR #10's host-wide slots."""
-    from contextlib import contextmanager
-
-    from xut.hw import hwsim
-
-    held = []
-
-    @contextmanager
-    def slot():
-        held.append(True)
-        yield
-        held.pop()
-
-    def fake_run(argv, *, what, memory_max, cwd, log, timeout_s):
-        assert held, "xsim ran outside a vivado_slot()"
-        assert memory_max == hwsim.HW_SIM_MEMORY_MAX
-        return 0
-
-    monkeypatch.setattr(hwsim, "vivado_slot", slot)
-    monkeypatch.setattr(hwsim, "scoped_run", fake_run)
-    hwsim._xsim(tmp_path, ["a.sv"], 10)
 ```
 
 - [ ] **Step 2: Implement `tools/xut/scope.py`**
@@ -3271,6 +3238,39 @@ def test_rtl_matches_the_emulator_byte_for_byte(sim, tmp_path):
     toy_run = run_replies(session, progs)[2]
     assert toy_run.status == 0 and toy_run.samples[0] == "0"  # power-on Q = INIT = 0
     assert toy_run.samples[1] == "1"  # the first edge captured the power-on D = t0 = 1
+
+
+def test_hw_sim_jobs_are_capped_by_the_budget(monkeypatch):
+    from xut.hw import hwsim
+
+    monkeypatch.delenv("XUT_MEMORY_BUDGET", raising=False)
+    monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
+    assert hwsim.max_sim_jobs("xsim") == 6  # 100g // 16G
+    assert hwsim.max_sim_jobs("iverilog") == 25  # container.max_jobs(): 100g // 4g
+
+
+def test_hw_sim_xsim_runs_inside_a_vivado_slot(tmp_path, monkeypatch):
+    """Every xsim run of `xut hw sim` takes one of PR #10's host-wide slots."""
+    from contextlib import contextmanager
+
+    from xut.hw import hwsim
+
+    held = []
+
+    @contextmanager
+    def slot():
+        held.append(True)
+        yield
+        held.pop()
+
+    def fake_run(argv, *, what, memory_max, cwd, log, timeout_s):
+        assert held, "xsim ran outside a vivado_slot()"
+        assert memory_max == hwsim.HW_SIM_MEMORY_MAX
+        return 0
+
+    monkeypatch.setattr(hwsim, "vivado_slot", slot)
+    monkeypatch.setattr(hwsim, "scoped_run", fake_run)
+    hwsim._xsim(tmp_path, ["a.sv"], 10)
 ```
 
 The last three asserts also pin the power-on semantics on the RTL: the toy slot with INIT=0 and `t0` D=1 samples Q=0 before any edge, and Q=1 after the first edge, with no `set` in between.
@@ -5338,11 +5338,24 @@ def test_lock_runs_the_command_with_an_owner_record(tmp_path):
     assert (tmp_path / "fpga.lock").exists()  # never deleted
 
 
+def _wait_until(cond, what: str, timeout_s: float = 10.0) -> None:
+    """Poll ``cond`` (no fixed sleeps: a loaded host must not make these tests flaky)."""
+    deadline = time.monotonic() + timeout_s
+    while not cond():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out after {timeout_s}s waiting for {what}")
+        time.sleep(0.05)
+
+
+def _held(lock: Path) -> bool:
+    return subprocess.run(["flock", "-n", str(lock), "true"]).returncode != 0
+
+
 def _foreign_holder(tmp_path):
     lock = tmp_path / "fpga.lock"
     lock.touch()
     holder = subprocess.Popen(["flock", str(lock), "sleep", "30"])
-    threading.Event().wait(0.3)
+    _wait_until(lambda: _held(lock), "the foreign holder to take the lock")
     return lock, holder
 
 
@@ -5419,8 +5432,7 @@ def test_a_lock_script_that_started_after_the_record_survives(tmp_path):
         ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "25", "other@elsewhere:2", "--", "true"],
         start_new_session=True,
     )
-    try:
-        threading.Event().wait(0.5)
+    try:  # Popen returns after exec, so the waiter's /proc cmdline already names the lock
         _stale_own_record(tmp_path, waiter.pid, since=1)
         r = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "me@client:9", "--", "true"],
@@ -5484,7 +5496,15 @@ def test_only_our_own_stale_holder_is_killed(tmp_path):
         start_new_session=True,
     )
     try:
-        threading.Event().wait(2.5)  # past since + ttl, before timeout's KILL at ttl + 10
+        owner = tmp_path / "fpga.lock.owner"
+
+        def past_ttl() -> bool:  # and before timeout's KILL at ttl + 10 s
+            if not owner.is_file():
+                return False
+            f = dict(kv.split("=", 1) for kv in owner.read_text().split()[1:])
+            return time.time() > int(f["since"]) + int(f["ttl"])
+
+        _wait_until(past_ttl, "our holder's record to pass its TTL")
         inode = lock.stat().st_ino
         other = subprocess.run(
             ["sh", str(PI / "xut_lock.sh"), str(lock), "30", "1", "you@client:222", "--", "true"],
@@ -7087,12 +7107,100 @@ def _check_key(p: Probe, key: Path) -> tuple[bool, str]:
     return True, f"{key} ok"
 ```
 
-Add `Probe.mode(path) -> int` (`Path(path).stat().st_mode & 0o777`). In `run_checks`, replace the `fpgas.online` entry with `*_hw_checks(p)`. Update `tools/tests/test_doctor.py`:
-- a fake probe with a missing key gives `hw-key` false and no `hw` in `available_runners`, even with a passing rig;
-- a missing Vivado likewise leaves `hw` out, with "no Vivado" in the rig's detail;
-- a failing ssh command gives `hw:<rig>` false;
-- one passing rig, with the key and Vivado present, enables `hw`;
-- a broken `XUT_HW_CONFIG` file gives one failing `hw-rigs` check, an unwritable `.cache` gives a failing `hw-ssh-config` check, and doctor still does not raise.
+Add `Probe.mode(path) -> int` (`Path(path).stat().st_mode & 0o777`). In `run_checks`, replace the `fpgas.online` entry with `*_hw_checks(p)`. Add to `tools/tests/test_doctor.py` (its `FakeProbe` answers everything else):
+
+```python
+from pathlib import Path
+
+
+class HwProbe(FakeProbe):
+    """FakeProbe plus the key's mode and a canned ssh answer."""
+
+    def __init__(self, *, ssh_ok=True, **kw):
+        super().__init__(**kw)
+        self.ssh_ok = ssh_ok
+
+    def mode(self, path):
+        return Path(path).stat().st_mode & 0o777
+
+    def command_ok(self, cmd, timeout):
+        if cmd[0] == "ssh":
+            return (self.ssh_ok, "ssh: ok" if self.ssh_ok else "ssh: exit 255")
+        return super().command_ok(cmd, timeout)
+
+
+def _rigs(tmp_path, monkeypatch, key_mode=0o600):
+    """A one-rig config in XUT_HW_CONFIG, its key, and the ssh config kept in tmp_path."""
+    key = tmp_path / "key"
+    key.write_text("not a real key")
+    key.chmod(key_mode)
+    cfg = tmp_path / "rigs.yaml"
+    cfg.write_text(
+        "format: xut-rigs 1\n"
+        f"defaults: {{identity_file: {key}, jump: j, uart: /dev/ttyUSB1, baud: 115200,\n"
+        "  lock: /run/lock/fpga.lock, lock_ttl_s: 900, lock_wait_s: 600, site: s,\n"
+        "  board: arty_a7_35t}\n"
+        "jumps: {j: {host: 10.0.0.1}}\n"
+        "rigs: [{name: r1, host: 10.0.0.2}]\n"
+    )
+    monkeypatch.setenv("XUT_HW_CONFIG", str(cfg))
+    monkeypatch.setattr("xut.hw.rigs.write_ssh_config", lambda c, root: tmp_path / "ssh_config")
+    return key
+
+
+def _by(checks):
+    return {c.name: c for c in checks}
+
+
+def test_a_passing_rig_with_key_and_vivado_enables_hw(tmp_path, monkeypatch):
+    _rigs(tmp_path, monkeypatch)
+    checks = run_checks(HwProbe())
+    assert _by(checks)["hw:r1"].ok and "hw" in available_runners(checks)
+
+
+def test_a_missing_key_keeps_hw_off_even_with_a_passing_rig(tmp_path, monkeypatch):
+    key = _rigs(tmp_path, monkeypatch)
+    checks = run_checks(HwProbe(exists={str(key): False}))
+    by = _by(checks)
+    assert not by["hw-key"].ok and by["hw:r1"].ok and "hw" not in available_runners(checks)
+
+
+def test_a_group_readable_key_fails(tmp_path, monkeypatch):
+    _rigs(tmp_path, monkeypatch, key_mode=0o640)
+    assert not _by(run_checks(HwProbe()))["hw-key"].ok
+
+
+def test_no_vivado_keeps_hw_off(tmp_path, monkeypatch):
+    _rigs(tmp_path, monkeypatch)
+    checks = run_checks(HwProbe(exists={str(VIVADO_SETTINGS): False}))
+    assert "no Vivado" in _by(checks)["hw:r1"].detail and "hw" not in available_runners(checks)
+
+
+def test_a_failing_ssh_fails_the_rig(tmp_path, monkeypatch):
+    _rigs(tmp_path, monkeypatch)
+    checks = run_checks(HwProbe(ssh_ok=False))
+    assert not _by(checks)["hw:r1"].ok and "hw" not in available_runners(checks)
+
+
+def test_a_broken_rigs_config_is_one_failing_check(tmp_path, monkeypatch):
+    (tmp_path / "bad.yaml").write_text("format: nope\n")
+    monkeypatch.setenv("XUT_HW_CONFIG", str(tmp_path / "bad.yaml"))
+    by = _by(run_checks(HwProbe()))
+    assert not by["hw-rigs"].ok and not any(n.startswith("hw:") for n in by)
+
+
+def test_an_unwritable_cache_is_a_failing_check_not_a_crash(tmp_path, monkeypatch):
+    _rigs(tmp_path, monkeypatch)
+
+    def unwritable(cfg, root):
+        raise PermissionError("read-only .cache")
+
+    monkeypatch.setattr("xut.hw.rigs.write_ssh_config", unwritable)
+    by = _by(run_checks(HwProbe()))
+    assert not by["hw-ssh-config"].ok and "read-only" in by["hw-ssh-config"].detail
+```
+
+(`_hw_checks` imports `write_ssh_config` when it runs, so the monkeypatch takes effect.)
 
 (The command is `xut.hw.session.preflight_command`, the same one `xut hw rigs` runs: one tool list, `PI_TOOLS`, with `ps` for `xut_lock.sh`'s process groups, and the UART path quoted.)
 
@@ -7141,7 +7249,7 @@ git commit -m "hw: board pool (busy rigs, one transport retry, self-test first),
 
 **Files:**
 - Create: `tools/xut/runners/hw.py`, `tools/tests/test_runner_hw.py`
-- Modify: `tools/xut/runners/__init__.py` (register `hw`), `tools/xut/runners/base.py` (`Runner.flows`, `RunContext.hw_repeats`/`hw_rigs`, `python_dir` always at flow `rtl`), `tools/xut/run.py` (python runs at `rtl`; a runner must run the selected flow), `tools/xut/cli.py` (`xut run --flow vivado --hw-repeats N --hw-rig NAME`), `tools/xut/schemas/result.schema.json` (the `hw` object), `tools/xut/crosscheck.py` (`dut_check` → `flow-mismatch`), `tools/tests/test_run.py`, `tools/tests/test_crosscheck.py`
+- Modify: `tools/xut/runners/__init__.py` (register `hw`), `tools/xut/runners/base.py` (`Runner.flows`, `RunContext.hw_repeats`/`hw_rigs`, `python_dir` always at flow `rtl`), `tools/xut/run.py` (python runs at `rtl`; a runner must run the selected flow), `tools/xut/cli.py` (`xut run --flow vivado --hw-repeats N --hw-rig NAME`), `tools/xut/schemas/result.schema.json` (the `hw` object), `tools/xut/crosscheck.py` (`dut_check` → `flow-mismatch`), `tools/tests/test_runner_base.py`, `tools/tests/test_crosscheck.py`
 
 **Interfaces:**
 - Consumes: `plan_case` (Task 5b), `Builder`/`VivadoBuilder` (Task 6), `BoardPool`/`run_job` (Task 9b), `samples_to_trace` (Task 3), and the step-2 `Runner` template.
@@ -7408,7 +7516,21 @@ In `tools/xut/run.py` `run_tests`:
     rtl = dataclasses.replace(ctx, flow="rtl")  # the golden model runs flow rtl only
 ```
 
-and run every python pair with `rtl` (`_one(c, n, rtl if n == "python" else ctx)` in `job`). Add `import dataclasses`. Extend `tools/tests/test_run.py` with the error case and a check that an `rtl` run is unchanged.
+and run every python pair with `rtl` (`_one(c, n, rtl if n == "python" else ctx)` in `job`). Add `import dataclasses`. The flow-mismatch error case is `test_runner_hw.py`'s `test_run_tests_python_at_rtl_hw_at_vivado`. Add to `tools/tests/test_runner_base.py` (which holds the step-2 `run_tests` tests) the check that an `rtl` run is unchanged:
+
+```python
+def test_an_rtl_run_is_unchanged_by_the_flow_rule(tmp_path, toy):
+    from xut.run import run_tests
+    from xut.runners import RUNNERS
+
+    ctx = RunContext(tmp_path, "rtl", ModelSource("unisim-test", tmp_path / "ms"))
+    results = run_tests([_case()], ["python"], ctx)
+    assert [(r.runner, r.flow) for r in results] == [("python", "rtl")]
+    assert (tmp_path / "build/rtl/python/unisim-test" / _case().id / "result.json").is_file()
+    step2 = {"python", "xsim", "iverilog", "iverilog-vz", "verilator"}
+    assert all(RUNNERS[n].flows == frozenset({"rtl"}) for n in step2)
+    assert RUNNERS["hw"].flows == frozenset({"vivado"})
+```
 
 In `tools/xut/cli.py` `run_cmd`: `--flow` becomes `click.Choice(["rtl", "vivado"])`. The default runner list becomes `[r for r in RUNNERS if r != "iverilog-vz" and flow in RUNNERS[r].flows]` (flow `vivado`: `["hw"]`; python runs first regardless). Add
 
@@ -7443,7 +7565,22 @@ In `tools/xut/crosscheck.py` `classify`, in the `runner == "hw"` branch, add the
                 ...  # unchanged: the silicon-mismatch comparison over the configurations that ran
 ```
 
-Pin it in `tools/tests/test_crosscheck.py` with synthetic views, as the existing `harness-error` test does: a hw view with `dut_check = "fail"` **and** one configuration that ran with a mismatching trace gives both `flow-mismatch` and `silicon-mismatch`; the same with `selftest = "fail"` gives both `harness-error` and `silicon-mismatch`.
+Pin it in `tools/tests/test_crosscheck.py`, with its `T`/`EXP`/`V`/`views`/`classes` helpers. **Replace** `test_harness_error_suppresses_the_hw_comparison` (it asserts the masking this change removes) with:
+
+```python
+def test_harness_error_masks_nothing():
+    v = V("hw", T(Q1), flow="vivado", hw={"selftest": "fail", "repeats_differ": True, "repeats": 3})
+    fs = classify(TID, views(V("python", EXP(Q0)), v))
+    assert classes(fs) == ["harness-error", "nondeterminism", "silicon-mismatch"]
+
+
+def test_flow_mismatch_from_the_post_flow_dut_check_masks_nothing():
+    detail = "post-flow DUT check: slot 2: REF_NAME LUT1, configured TOYFF (retargeted)"
+    v = V("hw", T(Q1), flow="vivado", hw={"dut_check": "fail", "dut_check_detail": detail})
+    fs = classify(TID, views(V("python", EXP(Q0)), v))
+    assert classes(fs) == ["flow-mismatch", "silicon-mismatch"]
+    assert (fs[0].runners, fs[0].points) == (("hw",), (detail,))
+```
 
 In `tools/xut/schemas/result.schema.json`, replace the `hw` property:
 
@@ -7757,11 +7894,11 @@ Register it in `tools/xut/runners/__init__.py`: `from xut.runners.hw import HwRu
 - [ ] **Step 4: Run the tests, the whole fast suite, lint and commit**
 
 ```bash
-uv run pytest tools/tests/test_runner_hw.py tools/tests/test_run.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
+uv run pytest tools/tests/test_runner_hw.py tools/tests/test_runner_base.py tools/tests/test_crosscheck.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/crosscheck.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_run.py tools/tests/test_crosscheck.py
+git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/crosscheck.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_runner_base.py tools/tests/test_crosscheck.py
 git commit -m "runners: add the hw runner (flow vivado; self-test, repeats, silicon cross-check) and xut run --flow vivado" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -8196,15 +8333,17 @@ Expected in the best case: `exit=0`, with every test's matrix showing `hw` agree
 - [ ] **Step 8: Commit, then record status**
 
 ```bash
-git add tests/7series/register findings models catalog/7series/FD*.overrides.yaml && git commit -m "flops: hardware pilot findings and expected divergences" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tests/7series/register/FD{R,S,C,P}E tests/7series/register/_shared/flops \
+  models/xut_models/7series/fd{r,s,c,p}e.py models/xut_models/7series/_common/flops.py \
+  catalog/7series/FD{R,S,C,P}E.overrides.yaml && git add -- 'findings/FD*.md' && git commit -m "flops: hardware pilot findings and expected divergences" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-(Skip this commit if Step 7 changed nothing. If it changed any tree-hashed input, go back to Step 4 so every result carries the new tree hash.)
+These are exactly the flops unit's `owned_paths` (`xut.workunits`): nothing of another unit's is staged. `git add -- 'findings/FD*.md'` fails when Step 7 wrote no finding; then leave it out. (Skip this commit if Step 7 changed nothing. If it changed any tree-hashed input, go back to Step 4 so every result carries the new tree hash.)
 
 ```bash
 uv run xut status record --unit flops > .cache/status-flops.log 2>&1; cat .cache/status-flops.log
 git diff --stat status/7series > .cache/status-diff.log 2>&1; cat .cache/status-diff.log
-git add status/7series && git commit -m "flops: record the hardware results (flow vivado)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add status/7series/FD{R,S,C,P}E.yaml && git commit -m "flops: record the hardware results (flow vivado)" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 Expected in each `status/7series/FD*.yaml`:
@@ -8261,7 +8400,7 @@ The body summarises the silicon results and findings, and ends with the Claude C
   - any test built on a GSR pulse declares `hw: "unsupported"` with the §7.2 reason;
   - `CFGLUT5`'s `CLK` is a stepped clock like a flop's, so its shift tests are renderable.
 
-  Commit any change: `git add tests/7series/clb && git commit -m "luts: declare the hw runner for the vector tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`.
+  Commit any change: `git add tests/7series/clb/_shared/luts && git commit -m "luts: declare the hw runner for the vector tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`.
 - [ ] **Step 2: Prove it in simulation first**
 
 ```bash
