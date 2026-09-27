@@ -477,6 +477,22 @@ def vec_check_cmd(path: Path, map_path: Path) -> None:
     click.echo(f"x_inputs: {'yes' if r.x_inputs else 'no'}")
 
 
+@main.group("hw")
+def hw_grp() -> None:
+    """The hardware harness (spec §7)."""
+
+
+@hw_grp.command("gen-rtl")
+def hw_gen_rtl_cmd() -> None:
+    """Regenerate tools/xut/hdl/hw/xut_hw_msgs.vh from xut.hw.proto.MESSAGES."""
+    from xut.hw.proto import render_rom_vh
+
+    out = Path(__file__).resolve().parent / "hdl" / "hw" / "xut_hw_msgs.vh"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(render_rom_vh())
+    click.echo(f"wrote {out}")
+
+
 def _select_cases(root: Path, cases: list, selectors: tuple[str, ...]) -> list:
     """The cases ``selectors`` match (all of them when there are none), for ``xut run``
     and ``xut crosscheck``. A selector matching no test is an error (a typo must not pass
