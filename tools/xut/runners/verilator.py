@@ -538,6 +538,9 @@ def _gate_sv(
     insts = sv_instances(case, ctx, case.prim, seed, cfg_attrs(case, cfg), need_prim=prim_gated)
     for m in sorted({i.model for i in insts} - set(entries)):  # never: sv_models covers them
         entries[m] = ensure_model(ms, m, {}, root=ctx.root, log=log, check=False)
+        why = refused(entries[m], m)  # fail closed even on this should-not-happen path
+        if why is not None:
+            return _refusal(entries[m], why, verdicts)
     gated = [i for i in insts if entries[i.model].gated]
     if gated:
         _defines_guard(ctx, ", ".join(sorted({i.model for i in gated})))
