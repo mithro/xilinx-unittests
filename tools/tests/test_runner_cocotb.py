@@ -12,6 +12,7 @@ import dataclasses
 import importlib
 import importlib.util
 import json
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -25,6 +26,7 @@ from xut import schemas, stimgen, validate, wrap
 from xut.cli import main
 from xut.container import NativeExecutor
 from xut.formats import xtr
+from xut.modelsrc import ModelSource
 from xut.runners import RUNNERS
 from xut.runners.base import RunContext, seed_for, workdir
 from xut.runners.iverilog import IverilogRunner
@@ -563,8 +565,6 @@ def test_cocotb_simulator_stopping_early_is_error(ctx, toy_catalog):
 @pytest.mark.container
 def test_cocotb_import_failure_is_error(ctx, toy_catalog, tmp_path):
     """Without its shared directory the test module cannot import ToyDff: error."""
-    import shutil
-
     bare = tmp_path / "bare"  # TOYFF without tests/7series/register/_shared/toy
     shutil.copytree(REGISTER / "TOYFF", bare / "tests/7series/register/TOYFF")
     case = _one_cfg(_case(bare))
@@ -589,8 +589,6 @@ def test_cocotb_compile_failure_is_error(ctx, toy_catalog):
 def test_cli_python_iverilog_cocotb_on_the_toyff_fixture(tmp_path, toy_catalog, monkeypatch):
     """`xut run --runner python --runner iverilog --style cocotb --seed 7` on a copy of
     the fixture tree (TOYFF and its _shared/toy) rooted at tmp_path."""
-    import shutil
-
     work = tmp_path / "root"
     shutil.copytree(REGISTER, work / "tests/7series/register")
     ms = make_model_source(tmp_path / "ms")
@@ -675,3 +673,92 @@ def test_cocotb_command_sets_xut_no_z_for_the_verilator_runners(tmp_path):
     for runner, want in (("verilator", "1"), ("iverilog-vz", "1"), ("iverilog", "0")):
         _, env = cocotb_command(NativeExecutor(), "icarus", case, tmp_path, ctx, runner, 1)
         assert env["XUT_NO_Z"] == want
+
+
+# --- the time-0 barrier: a combinational model sees its inputs' first value --------------
+
+TOYCOMB_ENTRY = dataclasses.replace(
+    TOY_ENTRY,
+    name="TOYCOMB",
+    description="toy combinational model: regs updated by always @(inputs)",
+    model={"library": "unisims", "file": "TOYCOMB.v"},
+    ports=[
+        {"name": "O", "direction": "output", "width": 1, "cls": "data", "doc_function": "O"},
+        {"name": "P", "direction": "output", "width": 1, "cls": "data", "doc_function": "P"},
+        {"name": "C", "direction": "input", "width": 1, "cls": "clock", "doc_function": "C"},
+        {"name": "A", "direction": "input", "width": 1, "cls": "data", "doc_function": "A"},
+        {"name": "B", "direction": "input", "width": 1, "cls": "data", "doc_function": "B"},
+    ],
+    attributes=[],
+)
+
+#: Outputs held in regs that only an input event updates (as a behavioural LUT model's).
+TOYCOMB_MODEL = """\
+// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+module TOYCOMB (output wire O, output wire P, input wire C, input wire A, input wire B);
+  reg o, p;
+  always @(A or B) o = ~(A | B);
+  always @(C) p = ~C;
+  assign O = o;
+  assign P = p;
+endmodule
+"""
+
+TOYCOMB_YAML = """\
+# SPDX-License-Identifier: Apache-2.0
+primitive: TOYCOMB
+family: 7series
+work_unit: toy
+doc_refs: [{guide: UG953, version: "2026.1", section: TOYCOMB, page: 1}]
+tests:
+  - id: 7series.TOYCOMB.L2.cocotb_first_samples
+    level: L2
+    style: cocotb
+    source: cocotb/cocotb_toycomb.py
+    exercises: []
+    attr_sampling: {}
+    configs: [{cfg: default, attrs: {}}]
+    runners:
+      {python: "no", xsim: "unsupported", iverilog: "yes", verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {python: "cocotb", xsim: "fixture", hw: "fixture"}
+    flows: [rtl]
+    related: []
+    gaps: []
+"""
+
+
+def test_cocotb_top_drives_inputs_by_a_time0_nonblocking_update():
+    """No declaration initialiser on clk/in_vec (a time-0 value that no process sees as an
+    event): x until a time-0 non-blocking update, as xut_vector_tb.sv's barrier."""
+    text = wrap.render_cocotb_top(build_map(WIDE))
+    assert "  reg  [`XUT_NCLK-1:0] clk;\n" in text
+    assert "  reg  [`XUT_NIN-1:0]  in_vec;\n" in text
+    assert "clk <= {`XUT_NCLK{1'b0}};" in text and "in_vec <= {`XUT_NIN{1'b0}};" in text
+
+
+@pytest.mark.container
+@pytest.mark.parametrize("runner", ["iverilog", "verilator", "iverilog-vz"])
+def test_cocotb_first_samples_of_a_combinational_model_are_defined(work, monkeypatch, runner):
+    """luts harness-error: with the inputs initialised to 0 in their declaration, an
+    ``always @(inputs)`` model on Icarus never ran, and the session's idle writes of the
+    same 0 made no event, so the first samples were x. The session checks them itself."""
+    tdir = work / "tests/7series/register/TOYCOMB"
+    (tdir / "cocotb").mkdir(parents=True)
+    (tdir / "test.yaml").write_text(TOYCOMB_YAML)
+    shutil.copy(FIX / "cocotb/cocotb_toycomb.py", tdir / "cocotb/cocotb_toycomb.py")
+    src = work / "ms"
+    make_model_source(src)
+    (src / "unisims/TOYCOMB.v").write_text(TOYCOMB_MODEL)
+    ctx = RunContext(work, "rtl", ModelSource("toycomb-test", src))
+    monkeypatch.setattr("xut.catalog.model.load_entry", lambda f, n, r: TOYCOMB_ENTRY)
+    (case,) = discover(work)
+    res = RUNNERS[runner]().run(case, ctx)
+    d = workdir(ctx, runner, case.id)
+    assert res.status == "pass", (res.reason, (d / "run.log").read_text())
+    got = {k: (v["O"], v["P"]) for k, v in xtr.load(d / "trace.xtr").samples.items()}
+    assert got == {
+        "default/S0": ("1", "1"),
+        "default/S1": ("1", "1"),
+        "default/S2": ("0", "1"),
+    }
