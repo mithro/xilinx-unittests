@@ -54,14 +54,19 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from xut.catalog.unisim import HdlModule, HdlParam, parse_module
 from xut.errors import XutError
 from xut.modelsrc import ModelSource
+
+if TYPE_CHECKING:
+    from xut.container import Executor
+    from xut.verilatorize.driver import ModelEntry
 
 CATEGORIES = (
     "udp", "tri0-tri1", "real", "secureip", "strength", "deassign", "oom", "timeout", "other",
@@ -326,18 +331,18 @@ echo "{name}" >> ../../done.txt
 """
 
 
-def _scripts(ex: object, ms: ModelSource, root: Path, d: Path, key: str, model: str) -> dict:
+def _scripts(ex: Executor, ms: ModelSource, root: Path, d: Path, key: str, model: str) -> dict:
     from xut.runners.base import RunContext
     from xut.runners.verilator import verilator_argv
     from xut.verilatorize.driver import vz_dir
 
-    g = ex.guest  # type: ignore[attr-defined]
+    g = ex.guest
     glbl = g(ms.glbl)
     libs = [a for p in ms.search for a in ("-y", g(p))]
     ivl = ["iverilog", "-g2012", "-o", "sim.vvp", "-s", "xut_smoke", "-s", "glbl", *libs]
     ivl += ["-Y", ".v", "smoke.v", glbl]
     ctx = RunContext(root, "rtl", ms)
-    vl = verilator_argv(ex, ctx, vz_dir(ms, root), ["smoke.v", glbl], [])  # type: ignore[arg-type]
+    vl = verilator_argv(ex, ctx, vz_dir(ms, root), ["smoke.v", glbl], [])
     rel = f"{d.parent.name}/{d.name}"
     common = {"build_t": BUILD_TIMEOUT_S, "run_t": RUN_TIMEOUT_S, "timeout_mark": TIMEOUT_MARK}
     return {
@@ -362,40 +367,56 @@ def _scripts(ex: object, ms: ModelSource, root: Path, d: Path, key: str, model: 
     }
 
 
-def _gate(e: object | None) -> str | None:
+def _gate(e: ModelEntry | None) -> str | None:
     """The Verilator cell of a model that is not built (ruling S47), or None."""
     if e is None:
         return "no: verilatorize: no manifest entry"
-    if e.status == "unsupported":  # type: ignore[attr-defined]
-        return f"no: verilatorize: {_short(e.reason.splitlines()[0] if e.reason else 'refused')}"  # type: ignore[attr-defined]
-    if e.depends_on_unsupported:  # type: ignore[attr-defined]
-        return f"no: blocked by refused dependency {', '.join(e.depends_on_unsupported)}"  # type: ignore[attr-defined]
+    if e.status == "unsupported":
+        return f"no: verilatorize: {_short(e.reason.splitlines()[0] if e.reason else 'refused')}"
+    if e.depends_on_unsupported:
+        return f"no: blocked by refused dependency {', '.join(e.depends_on_unsupported)}"
     return None
 
 
-def _vz_cell(e: object | None) -> str:
+def _vz_cell(e: ModelEntry | None) -> str:
     if e is None:
         return "unsupported"
-    deps = e.depends_on_transformed  # type: ignore[attr-defined]
-    return e.status + (f" (gated: {', '.join(deps)})" if deps else "")  # type: ignore[attr-defined]
+    deps = e.depends_on_transformed
+    return e.status + (f" (gated: {', '.join(deps)})" if deps else "")
 
 
-def _equiv(e: object | None) -> tuple[str, str]:
-    """The equiv cell of a manifest entry, and the reason part naming a non-pass."""
-    if e is None or not e.gated:  # type: ignore[attr-defined]
+def _equiv(
+    e: ModelEntry | None, models: Mapping[str, ModelEntry], need: Iterable[str] = ("default",)
+) -> tuple[str, str]:
+    """The equiv cell of a manifest entry, and the reason part naming a non-pass. ``pass``
+    needs a pass for every configuration of ``need`` (the default and the generate
+    configurations, keyed canonically) and, for each, a pass of every transformed
+    descendant for the parameterisation it instantiates (``models``: the manifest's
+    entries; ruling S50): a descendant's ``fail``/``error`` is the cell, a missing verdict
+    anywhere is ``—``."""
+    from xut.verilatorize.driver import descendants_blocked
+
+    if e is None or not e.gated:
         return NONE, ""
-    if e.status == "unsupported" or e.depends_on_unsupported:  # type: ignore[attr-defined]
+    if e.status == "unsupported" or e.depends_on_unsupported:
         return "blocked", ""
-    verdicts = e.equiv  # type: ignore[attr-defined]
-    if not verdicts:
-        return NONE, "equiv: no verdict"
+    verdicts = e.equiv
     for bad in ("fail", "error"):
         keys = sorted(k for k, v in verdicts.items() if v == bad)
         if keys:
-            why = _short(e.equiv_reason.get(keys[0], "") or "see the manifest")  # type: ignore[attr-defined]
+            why = _short(e.equiv_reason.get(keys[0], "") or "see the manifest")
             return bad, f"equiv: {bad} [{keys[0]}] ({len(keys)} of {len(verdicts)}): {why}"
     if any(v != "pass" for v in verdicts.values()):
         return "error", "equiv: a verdict is neither pass, fail nor error"
+    missing = sorted(set(need) - set(verdicts))
+    if not verdicts or missing:
+        return NONE, f"equiv: no verdict for [{(missing or ['default'])[0]}]"
+    for key in sorted(verdicts):
+        got = descendants_blocked(e, key, models.get)
+        if got is not None:
+            status, why = got
+            cell = status if status in ("fail", "error") else NONE
+            return cell, f"equiv: {cell} via {_short(why)} (under [{key}])"
     return "pass", ""
 
 
@@ -422,7 +443,7 @@ def _progress_loop(done: Path, total: int, stop: threading.Event, t0: float, out
         out(f"progress: done={_done(done)} total={total} elapsed_s={time.monotonic() - t0:.0f}")
 
 
-def _run_one(exe: object, work: Path, script: str, lock: threading.Lock) -> None:
+def _run_one(exe: Executor, work: Path, script: str, lock: threading.Lock) -> None:
     """Run ``script`` (``<MODEL>/<config_dir>/<tool>.sh``) in its own container, then
     record what the script could not: an OOM kill, a host-side timeout or error."""
     from xut.container import OOM_MARK, RunTimeout
@@ -432,7 +453,7 @@ def _run_one(exe: object, work: Path, script: str, lock: threading.Lock) -> None
     notes: list[str] = []
     timed_out, rc = False, None
     try:
-        rc = exe.run(["bash", script], cwd=work, log=clog, timeout_s=JOB_TIMEOUT_S)  # type: ignore[attr-defined]
+        rc = exe.run(["bash", script], cwd=work, log=clog, timeout_s=JOB_TIMEOUT_S)
     except RunTimeout as e:
         timed_out = True
         notes.append(f"{TIMEOUT_MARK} (host: {e})")
@@ -463,7 +484,7 @@ def _run_one(exe: object, work: Path, script: str, lock: threading.Lock) -> None
 
 
 def _run_scripts(
-    exe: object, work: Path, scripts: list[str], jobs: int, progress: Callable[[str], None]
+    exe: Executor, work: Path, scripts: list[str], jobs: int, progress: Callable[[str], None]
 ) -> None:
     """Every smoke script (paths relative to ``work``), each in its own container, ``jobs``
     at a time, started in ``scripts`` order; ``progress: done=`` lines every ``POLL_S``."""
@@ -579,7 +600,11 @@ def run_smoke(
         f"{work}/<MODEL>/<config>/<tool>.log)"
     )
     _run_scripts(exe, work, [j for _, j in jobs_list], jobs, progress)
-    rows = [_row(p, dirs[p.model], man.models.get(p.model)) for p in plans]
+    need = {m: _needed(ms, m, e) for m, e in man.models.items() if e.gated and m in todo}
+    rows = [
+        _row(p, dirs[p.model], man.models.get(p.model), man.models, need.get(p.model, ()))
+        for p in plans
+    ]
     doc = {
         "model_source": ms.name,
         "generated": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime()),
@@ -600,8 +625,24 @@ def run_smoke(
     return rows
 
 
-def _row(p: _Plan, dirs: list[tuple[str, Path]], e: object | None) -> Row:
-    equiv, equiv_why = _equiv(e)
+def _needed(ms: ModelSource, model: str, e: ModelEntry) -> list[str]:
+    """The configuration keys a gated model needs a verdict for: the default and its generate
+    configurations, keyed as ``xut verilatorize --check`` keys them (``model_attrs``)."""
+    from xut.verilatorize.driver import model_attrs
+    from xut.verilatorize.equiv import config_key
+
+    keys = {"default", *(config_key(model_attrs(ms, model, c)) for c in e.generate_configs)}
+    return sorted(keys)
+
+
+def _row(
+    p: _Plan,
+    dirs: list[tuple[str, Path]],
+    e: ModelEntry | None,
+    models: Mapping[str, ModelEntry] | None = None,
+    need: Iterable[str] = ("default",),
+) -> Row:
+    equiv, equiv_why = _equiv(e, models or {}, need)
     vz = _vz_cell(e)
     trig = list(getattr(e, "triggers", []) or [])
     en = list(getattr(e, "enablers", []) or [])

@@ -6,7 +6,7 @@ No preprocessor defines are passed, so parameters declared only under
 dropped, as are the non-functional parameters in ``NON_FUNCTIONAL_PARAMS``.
 
 Any Error-severity parse/elaboration diagnostic raises ``ValueError``, except
-the narrow allowlist in ``_is_benign`` (things outside the module header that
+the narrow allowlist in ``is_benign`` (things outside the module header that
 slang cannot resolve when a model is compiled on its own).
 """
 
@@ -65,7 +65,7 @@ class HdlModule:
     params: list[HdlParam] = field(default_factory=list)
 
 
-def _is_benign(d: pyslang.Diagnostic) -> bool:
+def is_benign(d: pyslang.Diagnostic) -> bool:
     if d.code in _BENIGN_CODES:
         return True
     # The hierarchical reference to the simulator's global module (glbl.GSR,
@@ -106,7 +106,7 @@ def parse_module(path: Path, name: str) -> HdlModule:
         tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
         comp = pyslang.ast.Compilation()
         comp.addSyntaxTree(tree)
-        diags = [d for d in comp.getAllDiagnostics() if d.isError() and not _is_benign(d)]
+        diags = [d for d in comp.getAllDiagnostics() if d.isError() and not is_benign(d)]
     except FileNotFoundError:
         raise
     except Exception as e:

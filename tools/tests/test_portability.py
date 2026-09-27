@@ -259,12 +259,47 @@ def _entry(**kw) -> ModelEntry:
 def test_manifest_cells(entry, gate, vz, equiv):
     assert portability._gate(entry) == gate
     assert portability._vz_cell(entry) == vz
-    assert portability._equiv(entry)[0] == equiv
+    assert portability._equiv(entry, {})[0] == equiv
 
 
 def test_equiv_reason_names_the_first_failing_configuration():
     e = _entry(equiv={"default": "pass", "A=1": "fail"}, equiv_reason={"A=1": "2 mismatch(es)"})
-    assert portability._equiv(e)[1] == "equiv: fail [A=1] (1 of 2): 2 mismatch(es)"
+    assert portability._equiv(e, {})[1] == "equiv: fail [A=1] (1 of 2): 2 mismatch(es)"
+
+
+def test_equiv_needs_every_generate_configuration():
+    """PR #10 nit: a pass needs a verdict for the default and every generate
+    configuration, not only for those recorded (a --no-check manifest)."""
+    e = _entry(equiv={"default": "pass"})
+    assert portability._equiv(e, {}, ["default", "A=1"]) == (
+        "—",
+        "equiv: no verdict for [A=1]",
+    )
+    assert portability._equiv(e, {}, ["default"]) == ("pass", "")
+
+
+@pytest.mark.parametrize(
+    ("child", "cell"), [({"AREG=0": "error"}, "error"), ({"AREG=0": "fail"}, "fail"),
+                        ({}, "—"), ({"AREG=0": "pass"}, "pass")],
+)  # fmt: skip
+def test_equiv_folds_in_the_transformed_descendants(child, cell):
+    """Ruling S50: a parent's cell is a pass only when each transformed descendant passes
+    for the parameterisation the parent instantiates it with."""
+    dep = [{"model": "C", "attrs": {"AREG": "0"}, "key": "AREG=0"}]
+    parent = _entry(
+        status="unchanged",
+        depends_on_transformed=["C"],
+        equiv={"default": "pass"},
+        dep_configs={"default": dep},
+    )
+    models = {"C": _entry(equiv={"default": "pass", **child})}
+    got, why = portability._equiv(parent, models)
+    assert got == cell, why
+    if cell != "pass":
+        assert why.startswith("equiv: ") and "transformed descendant C [AREG=0]" in why
+    # never derived: no verdict, fail closed
+    parent.dep_configs.clear()
+    assert portability._equiv(parent, models)[0] == "—"
 
 
 def _write_result(root: Path, ms: str, rows: list[Row], glob: str | None = None) -> None:

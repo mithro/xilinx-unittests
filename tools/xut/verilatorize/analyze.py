@@ -30,7 +30,7 @@ from pathlib import Path
 import pyslang
 from pyslang import ast
 
-from xut.catalog.unisim import _is_benign
+from xut.catalog.unisim import is_benign
 from xut.errors import XutError
 
 _SK, _EK, _TK, _SY = ast.StatementKind, ast.ExpressionKind, ast.TimingControlKind, ast.SymbolKind
@@ -1506,7 +1506,7 @@ def _compile(
         raise TransformError(
             module, "procedural assign/deassign to a select or concatenation (or a net)"
         )
-    diags = [d for d in all_diags if d.isError() and not _is_benign(d)]
+    diags = [d for d in all_diags if d.isError() and not is_benign(d)]
     if diags:
         report = pyslang.DiagnosticEngine.reportAll(comp.sourceManager, diags)
         raise TransformError(module, f"pyslang errors with {overrides or 'defaults'}:\n{report}")

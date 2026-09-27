@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Which testbench nets can float z into an input of a primitive (Task 15 re-review N1,
-ruling S47.3).
+"""Which testbench nets and variables can carry z into an input of a primitive (Task 15
+re-review N1, ruling S47.3; PR #10 must-fix 6).
 
 The z-compare rewrite (ruling S38) is exact only when every input of the model is driven.
 ``sv_instances`` already refuses an input left open or tied to a z constant; this module
 refuses the rest of what is visible statically: an input connected to a net that nothing
-drives. It works on the elaborated design (pyslang), so a net bound by ``.*``, an implicit
-net, and a net reached through a submodule's ports are all seen.
+drives, or to a variable that is written z. It works on the elaborated design (pyslang), so
+a net bound by ``.*``, an implicit net, and a net reached through a submodule's ports are
+all seen.
 
 A net **can float** (be z at run time) when every one of its drivers can:
 
@@ -23,8 +24,14 @@ A net **can float** (be z at run time) when every one of its drivers can:
   procedural ``force``/``assign`` never do;
 * a call of a user function is not followed: it is reported as unverifiable (fail closed).
 
-Only nets matter: a variable nothing writes holds x, not z, and ``x === 1'bz`` is false
-in the original exactly as the rewritten constant is.
+A **variable can carry z** when *any* of its writes can (it holds whatever was written
+last, so one z write is enough): its initialiser, a procedural or continuous assignment
+whose right-hand side can be z (by the rules above, through other variables too), or an
+output port of a submodule whose net can float. A write that cannot be followed is
+reported as unverifiable (fail closed): a task or function output argument, or a system
+task that writes its argument (``$fscanf``, ``$sscanf``, ``$value$plusargs``,
+``$readmemh``/``$readmemb``, ``$fread``, ``$fgets``). A variable nothing writes holds x,
+not z, and ``x === 1'bz`` is false in the original exactly as the rewritten constant is.
 """
 
 from __future__ import annotations
@@ -42,6 +49,10 @@ _Z_GATES = frozenset(
 )  # fmt: skip
 _PASS = (_EK.ElementSelect, _EK.RangeSelect, _EK.MemberAccess)
 _LITERALS = (_EK.IntegerLiteral, _EK.UnbasedUnsizedIntegerLiteral)
+#: system tasks/functions that write (some of) their arguments
+_WRITING_SYSTEM = frozenset(
+    {"$fscanf", "$sscanf", "$value$plusargs", "$readmemh", "$readmemb", "$fread", "$fgets"}
+)
 
 
 def _has_z(value: object) -> bool:
@@ -87,6 +98,8 @@ class Nets:
         #: the net of an input port -> its instance's connection (None: left open)
         self.inputs: dict[str, object | None] = {}
         self.nets: dict[str, object] = {}
+        #: variable path -> its writes: ("expr", rhs) | ("port", internal) | ("z", why)
+        self.writes: dict[str, list[tuple[str, object]]] = {}
         self._memo: dict[str, list[str]] = {}
         tops = {i.hierarchicalPath for i in root.topInstances}  # type: ignore[attr-defined]
         root.visit(lambda o: self._collect(o, tops))  # type: ignore[attr-defined]
@@ -95,8 +108,25 @@ class Nets:
         for s in _refs(lhs):
             self.drivers.setdefault(s.hierarchicalPath, []).append(driver)
 
+    def _write(self, lhs: object, what: tuple[str, object]) -> None:
+        for s in _refs(lhs):
+            if isinstance(s, pyslang.ast.VariableSymbol):
+                self.writes.setdefault(s.hierarchicalPath, []).append(what)
+
     def _collect(self, o: object, tops: set[str]) -> bool:
         ast = pyslang.ast
+        if isinstance(o, ast.VariableSymbol) and o.initializer is not None:
+            self.writes.setdefault(o.hierarchicalPath, []).append(("expr", o.initializer))
+        elif isinstance(o, ast.AssignmentExpression):
+            if o.right.kind != _EK.EmptyArgument:  # port/argument outputs: handled below
+                self._write(o.left, ("expr", o.right))
+        elif isinstance(o, ast.CallExpression):
+            name = o.subroutineName
+            for a in o.arguments:
+                if a.kind == _EK.Assignment:  # an output/inout argument of a task/function
+                    self._write(a.left, ("z", f"output argument of {name} (not followed)"))
+                elif o.isSystemCall and name in _WRITING_SYSTEM:
+                    self._write(a, ("z", f"written by {name} (not followed)"))
         if isinstance(o, ast.NetSymbol):
             self.nets[o.hierarchicalPath] = o
             if o.initializer is not None:
@@ -123,8 +153,11 @@ class Nets:
                 elif e is not None and e.kind == _EK.Assignment:
                     if c.port.direction == ast.ArgumentDirection.Out and internal is not None:
                         self._add(e.left, ("port", internal))
+                        self._write(e.left, ("port", internal))
                     else:
-                        self._add(e.left, ("z", f"inout port {o.hierarchicalPath}.{c.port.name}"))
+                        why = ("z", f"inout port {o.hierarchicalPath}.{c.port.name}")
+                        self._add(e.left, why)
+                        self._write(e.left, why)
         return True
 
     def floats(self, e: object | None) -> list[str]:
@@ -138,6 +171,8 @@ class Nets:
             s = e.symbol  # type: ignore[attr-defined]
             if isinstance(s, pyslang.ast.NetSymbol):
                 return self.net(s.hierarchicalPath)
+            if isinstance(s, pyslang.ast.VariableSymbol):
+                return self.var(s.hierarchicalPath)
             if isinstance(s, pyslang.ast.ParameterSymbol) and _has_z(s.value):
                 return [f"parameter {s.name} holds z"]
             return []
@@ -195,4 +230,27 @@ class Nets:
             if not drivers:
                 why = [path]
         self._memo[path] = why
+        return why
+
+    def var(self, path: str) -> list[str]:
+        """Why variable ``path`` can hold z: any of its writes can (module docstring)."""
+        key = f"var:{path}"
+        if key in self._memo:
+            return self._memo[key]
+        self._memo[key] = []  # in progress: a write loop adds nothing new
+        why: list[str] = []
+        for kind, what in self.writes.get(path, []):
+            if kind == "z":
+                got = [str(what)]
+            elif kind == "port":
+                got = (
+                    self.net(what.hierarchicalPath)  # type: ignore[attr-defined]
+                    if isinstance(what, pyslang.ast.NetSymbol)
+                    else self.var(what.hierarchicalPath)  # type: ignore[attr-defined]
+                )
+            else:
+                got = self.floats(what)
+            why += [w for w in got if w not in why]
+        why = [f"variable {path} is written from {w}" if w != path else w for w in why]
+        self._memo[key] = why
         return why

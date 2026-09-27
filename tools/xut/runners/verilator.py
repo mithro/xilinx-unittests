@@ -113,6 +113,7 @@ from xut.catalog import model as catalog_model
 from xut.container import Executor, executor_for
 from xut.errors import XutError
 from xut.formats import xtr, xvec
+from xut.modelsrc import ModelSource
 from xut.runners.base import (
     ConfigResult,
     RunContext,
@@ -143,8 +144,12 @@ from xut.validate import validate
 from xut.verilatorize import zcmp
 from xut.verilatorize.driver import (
     ModelEntry,
+    descendants_blocked,
     ensure_model,
+    instance_attrs,
     model_attrs,
+    model_files,
+    model_instances,
     undriven_inputs,
     vz_dir,
 )
@@ -158,7 +163,8 @@ __all__ = [
     "blocked",
     "build_failure",
     "config_attrs",
-    "ensure_model",
+    "gate_config",
+    "sv_instances",
     "verilator_argv",
     "x_seeds",
 ]
@@ -203,24 +209,39 @@ def refused(e: ModelEntry, prim: str) -> str | None:
     return None
 
 
-def blocked(e: ModelEntry, prim: str, key: str) -> str | None:
-    """Why ``e`` blocks a Verilator result for configuration ``key`` (rulings S35.1, S45),
-    or None. Only an equivalence ``pass`` lets a gated model (transformed, or over a
-    transformed dependency) through."""
+def blocked(
+    e: ModelEntry,
+    prim: str,
+    key: str,
+    lookup: Callable[[str], ModelEntry | None] | None = None,
+) -> str | None:
+    """Why ``e`` blocks a Verilator result for configuration ``key`` (rulings S35.1, S45,
+    S50), or None. Only an equivalence ``pass`` lets a gated model (transformed, or over a
+    transformed dependency) through, and only when every transformed descendant also has a
+    ``pass`` for the parameterisation this configuration instantiates it with
+    (``driver.descendants_blocked``; ``lookup`` gives a descendant's entry, and without it a
+    model with transformed descendants is blocked: fail closed)."""
     why = refused(e, prim)
     if why is not None or not e.gated:
         return why
     status, why = e.equiv.get(key), e.equiv_reason.get(key, "")
-    if status == "pass":
-        return None
     if status == "fail":
         return (
             f"transform-bug: Icarus equivalence fail for {prim} {key} blocks Verilator "
             f"results (spec §6.2): {why or 'see the equivalence result.json'}"
         )
+    if status != "pass":
+        return (
+            f"equivalence check error for {prim} {key}: {why or status or 'no result'} blocks "
+            "Verilator results (spec §6.2)"
+        )
+    kid = descendants_blocked(e, key, lookup or (lambda _m: None))
+    if kid is None:
+        return None
+    kstatus, kwhy = kid
     return (
-        f"equivalence check error for {prim} {key}: {why or status or 'no result'} blocks "
-        "Verilator results (spec §6.2)"
+        f"{'transform-bug: ' if kstatus == 'fail' else ''}equivalence of {prim} {key} is "
+        f"blocked by its hierarchy: {kwhy}; blocks Verilator results (spec §6.2)"
     )
 
 
@@ -259,102 +280,125 @@ def _x_inputs(src: Path) -> bool:
 
 @dataclass(frozen=True)
 class SvInstance:
-    """One instance of the primitive in an elaborated sv testbench (rulings S38, S45)."""
+    """One instance of a UNISIM model in an elaborated sv testbench (rulings S38, S45, S50)."""
 
     path: str
-    attrs: dict[str, str]  # every non-local parameter, as a Verilog literal
+    attrs: dict[str, object]  # every non-local parameter, as a Verilog literal
     undriven: list[str]  # input ports with no connection
     zdriven: list[str]  # input ports connected to a constant holding a z bit
-    #: input ports connected to something that can float z: "<port> (net <path> has no
+    #: input ports connected to something that can carry z: "<port> (net <path> has no
     #: driver)", or another z source (``xut.runners.sv_nets``; Task 15 re-review N1)
     floating: list[str] = field(default_factory=list)
+    model: str = ""  # the model it instantiates
+    #: below another model's instance (its connections are the model's, not the testbench's)
+    nested: bool = False
 
 
-def _literal(kind: str, value: object) -> object:
-    """A pyslang ``ConstantValue`` as a value ``render_attr`` takes for a parameter of
-    ``kind``; a value with x/z bits stays a literal (refused later, fail closed)."""
-    v = value.value  # type: ignore[attr-defined]
-    if isinstance(v, float) or kind == "real":
-        return float(v)
-    if value.hasUnknown():  # type: ignore[attr-defined]
-        return str(value)
-    if kind == "string":
-        return '"' + str(value.convertToStr()).strip('"') + '"'  # type: ignore[attr-defined]
-    return int(v)
-
-
-def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[SvInstance]:
-    """Every instance of ``prim`` in the elaborated sv testbench of ``case``: its source is
-    preprocessed with the runner's include dirs (``hdl/``, ``case.shared_dirs``, the
-    testbench's directory) and defines, so an instance in an included ``.svh`` or named
-    through a macro (``FLOP_PRIM``) is found (review I1), and elaborated with glbl and the
-    primitive's hierarchy (originals) to read each instance's parameters and connections.
-    An input connected to a testbench net that can float z (a net with no driver, also
-    bound by ``.*``: ``xut.runners.sv_nets``) is listed in ``floating``. Raises
-    ``XutError`` (fail closed) when it does not elaborate cleanly or no instance of ``prim``
-    is found."""
-    from xut.catalog.unisim import _is_benign
-    from xut.verilatorize.driver import hierarchy, model_files, parsed
-
-    ms, source = ctx.model_source, case.test_dir / str(case.source)
+def _sv_bag(case: TestCase, ctx: RunContext, seed: int, attrs: dict | None) -> pyslang.Bag:
+    """The runner's preprocessor options for the sv testbench (include dirs, defines,
+    ``XUT_SEED``) and ``attrs`` as the top's parameter overrides (Verilator's ``-G``)."""
+    source = case.test_dir / str(case.source)
     pp = pyslang.parsing.PreprocessorOptions()
     pp.additionalIncludePaths = [str(d) for d in (HDL, *case.shared_dirs, source.parent)]
     pp.predefines = [
         *(k if v == "" else f"{k}={v}" for k, v in ctx.defines.items()),
         f"XUT_SEED={sv_seed_define(seed)}",
     ]
+    opts = pyslang.ast.CompilationOptions()
+    opts.paramOverrides = [f"{k}={param_value(k, v)}" for k, v in (attrs or {}).items()]
+    return pyslang.Bag([pp, opts])
+
+
+def sv_models(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[str]:
+    """``prim`` and every model of the model source the sv testbench instantiates
+    (preprocessed: includes and macros), with their hierarchies (syntax only)."""
+    from xut.verilatorize.driver import hierarchy
+
+    source = case.test_dir / str(case.source)
+    bag = _sv_bag(case, ctx, seed, None)
+    tree = pyslang.syntax.SyntaxTree.fromFile(str(source), pyslang.SourceManager(), bag)
+    names: set[str] = {prim}
+    todo = [tree.root]
+    while todo:
+        n = todo.pop()
+        if n.kind == _SX.HierarchyInstantiation:
+            names.add(n.type.valueText)
+        todo += [c for c in n if isinstance(c, pyslang.syntax.SyntaxNode)]
+    return hierarchy(ctx.model_source, sorted(names & set(model_files(ctx.model_source))))
+
+
+def sv_instances(
+    case: TestCase,
+    ctx: RunContext,
+    prim: str,
+    seed: int,
+    attrs: dict | None = None,
+    *,
+    need_prim: bool = True,
+) -> list[SvInstance]:
+    """Every instance of a UNISIM model of the model source in the elaborated sv testbench
+    of ``case`` (rulings S45, S50): its source is preprocessed with the runner's include dirs
+    (``hdl/``, ``case.shared_dirs``, the testbench's directory) and defines, so an instance
+    in an included ``.svh`` or named through a macro (``FLOP_PRIM``) is found (review I1),
+    and elaborated with glbl and the hierarchies of the models it instantiates (originals),
+    with ``attrs`` (the configuration's attributes) as the top's parameter overrides, the
+    values Verilator's ``-G`` receives, to read each instance's parameters and connections.
+    An input connected to a testbench net or variable that can carry z
+    (``xut.runners.sv_nets``) is listed in ``floating``. Raises ``XutError`` (fail closed)
+    when it does not elaborate cleanly, an attribute is not a parameter of the testbench's
+    top, or (``need_prim``) no instance of ``prim`` is found."""
+    from xut.catalog.unisim import is_benign
+
+    ms, source = ctx.model_source, case.test_dir / str(case.source)
     # the tops are found by elaboration (the testbench and glbl): pyslang keeps topModules
     # as string views, which Python temporaries do not outlive
-    bag = pyslang.Bag([pp])
+    bag = _sv_bag(case, ctx, seed, attrs)
     sm = pyslang.SourceManager()  # a fresh one: never a cached text of the file
+    files = model_files(ms)
     comp = pyslang.ast.Compilation(bag)
-    files = [source, ms.glbl, *(model_files(ms)[m] for m in hierarchy(ms, [prim]))]
-    for f in files:
+    paths = [source, ms.glbl, *(files[m] for m in sv_models(case, ctx, prim, seed))]
+    for f in paths:
         comp.addSyntaxTree(pyslang.syntax.SyntaxTree.fromFile(str(f), sm, bag))
-    models = {str(Path(f).resolve()) for f in files[1:]}
+    models = {str(Path(f).resolve()) for f in paths[1:]}
 
-    def benign(d: object) -> bool:
+    def benign(d: pyslang.Diagnostic) -> bool:
         # a model's benign diagnostics (e.g. an unknown secureip module inside UNISIM);
         # never the testbench's: an unknown module there fails closed
-        where = str(Path(sm.getFullPath(d.location.buffer)).resolve())  # type: ignore[attr-defined]
-        return _is_benign(d) and (d.code != pyslang.Diags.UnknownModule or where in models)  # type: ignore[attr-defined]
+        where = str(Path(sm.getFullPath(d.location.buffer)).resolve())
+        return is_benign(d) and (d.code != pyslang.Diags.UnknownModule or where in models)
 
     errors = [d for d in comp.getAllDiagnostics() if d.isError() and not benign(d)]
     if errors:
         report = pyslang.DiagnosticEngine.reportAll(sm, errors).strip().splitlines()
         raise XutError(
-            f"{source.name}: the testbench does not elaborate, so its {prim} instances cannot "
+            f"{source.name}: the testbench does not elaborate, so its UNISIM instances cannot "
             f"be checked (ruling S45, fail closed): {' | '.join(report[:2])}"
         )
-    kinds = {p.name: p.kind for p in parsed(ms, prim).params}
-    found: list[pyslang.ast.InstanceSymbol] = []
-
-    def visit(o: object) -> bool:
-        # below the testbench only: the model file's own module elaborates as a top too
-        if (
-            isinstance(o, pyslang.ast.InstanceSymbol)
-            and o.definition.name == prim
-            and o.hierarchicalPath.startswith(f"{source.stem}.")
-        ):
-            found.append(o)
-        return True
-
-    comp.getRoot().visit(visit)
-    nets = Nets(comp.getRoot())
-    if not found:
+    root = comp.getRoot()
+    top = next((t for t in root.topInstances if t.name == source.stem), None)
+    if top is None:
+        raise XutError(f"{source.name}: no top module {source.stem} (ruling S45, fail closed)")
+    unknown = sorted(set(attrs or {}) - {p.name for p in top.body.parameters})
+    if unknown:
+        raise XutError(
+            f"{source.name}: configuration attribute(s) {', '.join(unknown)} are not "
+            f"parameters of {source.stem}, so what Verilator's -G elaborates cannot be "
+            "checked (ruling S50, fail closed)"
+        )
+    found = model_instances(root, ms, source.stem)
+    if need_prim and not any(o.definition.name == prim for o in found):
         raise XutError(
             f"{source.name}: no instance of {prim} found in the elaborated testbench (ruling "
             "S45, fail closed): its parameterisations and connections cannot be checked"
         )
+    nets = Nets(root)
+    paths_of = {o.hierarchicalPath for o in found}
     out = []
     for inst in found:
-        attrs = {
-            p.name: _literal(kinds.get(p.name, "bits"), p.value)
-            for p in inst.body.parameters
-            if not p.isLocalParam
-        }
+        path, name = inst.hierarchicalPath, inst.definition.name
+        nested = any(path.startswith(f"{q}.") for q in paths_of)
         undriven, zdriven, floating = [], [], []
-        for c in inst.portConnections:
+        for c in () if nested else inst.portConnections:
             if c.port.direction != pyslang.ast.ArgumentDirection.In:
                 continue
             e = c.expression
@@ -372,10 +416,43 @@ def sv_instances(case: TestCase, ctx: RunContext, prim: str, seed: int) -> list[
                 )  # fmt: skip
         out.append(
             SvInstance(
-                inst.hierarchicalPath, attrs, sorted(undriven), sorted(zdriven), sorted(floating)
+                path,
+                instance_attrs(ms, name, inst),
+                sorted(undriven),
+                sorted(zdriven),
+                sorted(floating),
+                name,
+                nested,
             )
         )
     return out
+
+
+def _defines_guard(ctx: RunContext, what: str) -> None:
+    """Refuse (``XutError``) a run with defines over a gated model: the transform and the
+    equivalence check never see ``ctx.defines`` (PR #10 nit; fail closed until they do)."""
+    if ctx.defines:
+        raise XutError(
+            f"defines {', '.join(sorted(ctx.defines))} are set, but {what} is gated and its "
+            "transform and equivalence check ran without them: the Verilator result would "
+            "use code that was never analysed or proved (fail closed)"
+        )
+
+
+def _verdict(
+    ms: ModelSource, model: str, attrs: dict, ctx: RunContext, log: Callable[[str], None]
+) -> str | None:
+    """Ensure (check) ``model`` under ``attrs`` and each transformed descendant for the
+    parameterisation it is instantiated with (ruling S50): ``blocked``'s reason, or None."""
+    from xut.verilatorize.equiv import config_key  # equiv imports xut.runners: late
+
+    e = ensure_model(ms, model, attrs, root=ctx.root, log=log)
+    key = config_key(model_attrs(ms, model, attrs))
+    kids = {
+        d["model"]: ensure_model(ms, d["model"], d["attrs"], root=ctx.root, log=log)
+        for d in e.dep_configs.get(key, [])
+    }
+    return blocked(e, model, key, kids.get)
 
 
 def gate_config(
@@ -393,63 +470,98 @@ def gate_config(
 
     1. ``ensure_model(prim, check=False)`` transforms the primitive's hierarchy. Refused
        (``refused``): ``("skip", ...)`` for iverilog-vz (``verdicts=False``), ``("error",
-       ...)`` for Verilator. A model that is not gated needs nothing more.
-    2. The configuration's parameterisations: the vector stimulus's attributes (the
-       ``default`` configuration for ``expect=reject``), the cocotb ``configs`` entry, or,
-       for sv, those of every instance of the primitive in the elaborated testbench
-       (``sv_instances``, review I2; fail closed). Each is ensured (equivalence-checked);
-       with ``verdicts``, a non-pass verdict is an error (``blocked``).
-    3. The z-compare validity condition, every input driven (ruling S38), when the model's
+       ...)`` for Verilator.
+    2. vector/cocotb: a gated primitive is ensured (equivalence-checked) under the
+       configuration's parameterisation (the vector stimulus's attributes, the ``default``
+       configuration for ``expect=reject``, or the cocotb ``configs`` entry), and each
+       transformed descendant under the parameterisation that configuration instantiates it
+       with (ruling S50); with ``verdicts``, a non-pass is an error (``blocked``). sv: every
+       UNISIM model instance of the testbench, elaborated with the configuration's ``-G``
+       values (``sv_instances``; ruling S50), whatever model it is: each is refused like the
+       primitive, and each gated one is ensured and gated for its own parameterisation.
+       What cannot be determined is an error (fail closed), and so is a gated model under
+       ``ctx.defines`` (the transform never saw them).
+    3. The z-compare validity condition, every input driven (ruling S38), for a model whose
        ``effective_rewrites`` hold ``zcmp``: a wrapper input left unconnected (per bit,
        review M3), a stimulus driving z, or an sv instance input unconnected, tied to z or
-       connected to a net that can float z (Task 15 re-review N1) is an error."""
-    from xut.verilatorize.equiv import config_key  # equiv imports xut.runners: late
-
+       connected to a net or variable that can carry z is an error."""
     ms, prim = ctx.model_source, case.prim
     try:
         e = ensure_model(ms, prim, {}, root=ctx.root, log=log, check=False)
         why = refused(e, prim)
-        if why is not None and verdicts:
-            return ("error", why)
-        if why is not None:  # iverilog-vz: the brief's "model not transformed: <reason>"
-            return ("skip", e.reason if e.status == "unsupported" else why)
+        if why is not None:
+            return _refusal(e, why, verdicts)
+        if case.style == "sv":
+            return _gate_sv(case, cfg, ctx, seed, log, verdicts, e.gated)
         if not e.gated:
             return None
-        insts: list[SvInstance] = []
+        _defines_guard(ctx, prim)
         if case.style == "vector":
-            attrs_list = [{} if reject else config_attrs(case, cfg, ctx)[0]]
-        elif case.style == "cocotb":
-            attrs_list = [cfg_attrs(case, cfg)]
+            attrs = {} if reject else config_attrs(case, cfg, ctx)[0]
         else:
-            insts = sv_instances(case, ctx, prim, seed)
-            attrs_list = [i.attrs for i in insts]
-        for attrs in attrs_list:
-            e = ensure_model(ms, prim, attrs, root=ctx.root, log=log)
-            why = blocked(e, prim, config_key(model_attrs(ms, prim, attrs)))
-            if why is not None and verdicts:
-                return ("error", why)
+            attrs = cfg_attrs(case, cfg)
+        why = _verdict(ms, prim, attrs, ctx, log)
+        if why is not None and verdicts:
+            return ("error", why)
         if zcmp.REWRITE not in (e.effective_rewrites or e.rewrites):
             return None
-        why = _undriven(case, cfg, ctx, insts)
+        why = _undriven(case, cfg, ctx)
         return None if why is None else ("error", why)
     except XutError as err:
         return ("error", str(err))
 
 
-def _undriven(case: TestCase, cfg: str, ctx: RunContext, insts: list[SvInstance]) -> str | None:
-    """The every-input-driven check of ``gate_config`` step 3."""
+def _refusal(e: ModelEntry, why: str, verdicts: bool) -> tuple[str, str]:
+    if verdicts:
+        return ("error", why)
+    # iverilog-vz: the brief's "model not transformed: <reason>"
+    return ("skip", e.reason if e.status == "unsupported" else why)
+
+
+def _gate_sv(
+    case: TestCase,
+    cfg: str,
+    ctx: RunContext,
+    seed: int,
+    log: Callable[[str], None],
+    verdicts: bool,
+    prim_gated: bool,
+) -> tuple[str, str] | None:
+    """``gate_config`` steps 2-3 for an sv testbench: every model instance it elaborates."""
+    ms = ctx.model_source
+    entries: dict[str, ModelEntry] = {}
+    for m in sv_models(case, ctx, case.prim, seed):  # refused first: before elaborating
+        entries[m] = ensure_model(ms, m, {}, root=ctx.root, log=log, check=False)
+        why = refused(entries[m], m)
+        if why is not None:
+            return _refusal(entries[m], why, verdicts)
+    insts = sv_instances(case, ctx, case.prim, seed, cfg_attrs(case, cfg), need_prim=prim_gated)
+    for m in sorted({i.model for i in insts} - set(entries)):  # never: sv_models covers them
+        entries[m] = ensure_model(ms, m, {}, root=ctx.root, log=log, check=False)
+    gated = [i for i in insts if entries[i.model].gated]
+    if gated:
+        _defines_guard(ctx, ", ".join(sorted({i.model for i in gated})))
+    for i in gated:
+        why = _verdict(ms, i.model, i.attrs, ctx, log)
+        if why is not None and verdicts:
+            return ("error", f"{i.path}: {why}")
+    for i in insts:
+        me = entries[i.model]
+        if i.nested or zcmp.REWRITE not in (me.effective_rewrites or me.rewrites):
+            continue
+        if i.undriven or i.zdriven or i.floating:
+            what = ", ".join([*i.undriven, *(f"{p} (tied to z)" for p in i.zdriven), *i.floating])
+            return (
+                "error",
+                f"{i.path}: input port(s) {what} of {i.model} not driven by the testbench: "
+                "the z-compare rewrite (ruling S38) is valid only with every input driven",
+            )
+    return None
+
+
+def _undriven(case: TestCase, cfg: str, ctx: RunContext) -> str | None:
+    """The every-input-driven check of ``gate_config`` step 3 (vector and cocotb)."""
     ms, prim = ctx.model_source, case.prim
-    if case.style == "sv":
-        for i in insts:
-            if i.undriven or i.zdriven or i.floating:
-                what = ", ".join(
-                    [*i.undriven, *(f"{p} (tied to z)" for p in i.zdriven), *i.floating]
-                )
-                return (
-                    f"{i.path}: input port(s) {what} of {prim} not driven by the testbench: "
-                    "the z-compare rewrite (ruling S38) is valid only with every input driven"
-                )
-        return None
     if case.style == "vector":
         src = python_dir(ctx, case) / f"cfg-{cfg}"
         if not (src / "stim.xvec").is_file():
