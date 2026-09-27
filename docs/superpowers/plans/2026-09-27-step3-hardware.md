@@ -56,7 +56,7 @@ ls tests/7series/register/FDRE/test.yaml tests/7series/register/_shared/flops/fl
 cat .cache/step3-step0.log
 ```
 
-Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has not merged, stop and report: Tasks 1–11 need C (the shared simulator code), and Task 5's FDRE proof and Task 12 need E. If a name differs, adapt this plan's calls to the merged code (not the semantics), and note the mapping in the first log entry.
+Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has not merged, stop and report: Tasks 1–11 need C (the shared simulator code), and Task 5b's FDRE proof and Task 12 need E. If a name differs, adapt this plan's calls to the merged code (not the semantics), and note the mapping in the first log entry.
 
 ## Global Constraints
 
@@ -94,9 +94,9 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
 
 | Branch | Branched from | Worktree | Tasks | PR (base) |
 |---|---|---|---|---|
-| `infra/hw-harness` | `origin/main` | `infra-hw-harness` | 1–5 | **PR A** "infra: hw harness — program compiler, reference interpreter, harness RTL and simulation" (base `main`) |
+| `infra/hw-harness` | `origin/main` | `infra-hw-harness` | 1–4, 5a, 5b | **PR A** "infra: hw harness — program compiler, reference interpreter, harness RTL and simulation" (base `main`) |
 | `infra/hw-vivado` | `infra/hw-harness` | `infra-hw-vivado` | 6–7 | **PR B** "infra: hw Vivado flow — scoped builds, constraints, build IDs, bitstream cache" (base `infra/hw-harness` until A merges, then `main`) |
-| `infra/hw-runner` | `infra/hw-vivado` | `infra-hw-runner` | 8–11 | **PR C** "infra: hw runner — rigs, BoardSession, hw runner, doctor, LUT6 smoke" (base `infra/hw-vivado` until B merges, then `main`) |
+| `infra/hw-runner` | `infra/hw-vivado` | `infra-hw-runner` | 8, 9a, 9b, 10, 11 | **PR C** "infra: hw runner — rigs, BoardSession, hw runner, doctor, LUT6 smoke" (base `infra/hw-vivado` until B merges, then `main`) |
 | `unit/7series/flops` (a fresh branch; the step-2 one has merged) | `origin/main` after A–C merge | `unit-7series-flops` | 12 | **PR D** "flops: hardware pilot" (base `main`) |
 | `unit/7series/luts` | `origin/main` after A–C and the luts unit merge | `unit-7series-luts` | 13 (conditional) | **PR E** "luts: hardware pilot" (base `main`) |
 
@@ -118,7 +118,7 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
    - Every constraint in the generated `timing.tcl` goes through `xut_must`, so a constraint that matches no object stops the build (exit 4) instead of silently constraining nothing.
    - Timing must close (`WNS >= 0`, `WHS >= 0`) or the build is an error.
    - Every in_vec bit and every DUT clock is driven straight from a harness flip-flop (no logic in between), so nothing glitches, async CLR/PRE included.
-3. **Byte-exact reference.** The RTL harness's UART output equals `Harness.feed()` byte for byte on Icarus and on xsim (Task 5), including the error paths (`noload`, `used`, `badcrc`, `badcmd`). The message ROM is generated from `proto.MESSAGES` and pinned by a test.
+3. **Byte-exact reference.** The RTL harness's UART output equals `Harness.feed()` byte for byte on Icarus and on xsim (Task 5a), including the error paths (`noload`, `used`, `badcrc`, `badcmd`). The message ROM is generated from `proto.MESSAGES` and pinned by a test.
 4. **No silent skips and no masking** (spec §14, §8).
    - A configuration that is not hardware-renderable is a `skip` whose reason is the validator's `hw_reasons`.
    - A harness self-test failure is an `error` with `hw.selftest = "fail"` (crosscheck: `harness-error`), never a DUT `fail`.
@@ -141,8 +141,9 @@ tools/xut/hw/interp.py           DutSim, run_program, margin_violations, Harness
 tools/xut/hw/selftest.py         passthrough + counter channels: sims, programs, expected samples (stdlib)
 tools/xut/hw/replay.py           ModelDut (golden model as a DutSim), samples_to_trace, hw_replay
 tools/xut/hw/slots.py            SlotBuild, packing, xut_hw_slots.v / xut_hw_cfg.vh / timing.tcl generation
-tools/xut/hw/hwsim.py            the harness under Icarus / xsim; `xut hw sim`
-tools/xut/scope.py               scoped_run (systemd-run --user --scope), VivadoSlots semaphore
+tools/xut/hw/hwsim.py            the harness under Icarus / xsim (5a); `sim_case`, `xut hw sim` (5b)
+tools/xut/hw/plan.py             plan_case: a test's configurations compiled, settled or packed (5b)
+tools/xut/scope.py               scoped_run (systemd-run --user --scope), host-wide VivadoSlots (Task 5a)
 tools/xut/hw/vivado.py           build inputs, build key and ID, batch build, bitstream cache, VivadoBuilder
 tools/xut/hw/rigs.py             Rig / RigsConfig from hw/rigs.yaml, ssh_config rendering
 tools/xut/hw/session.py          Transport, SshTransport, HwJob, JobResult, BoardSession, SshBoardSession
@@ -3790,7 +3791,7 @@ git -c credential.helper= -c credential.helper='!gh auth git-credential' push ht
 gh pr create --base main --title "infra: hw harness — program compiler, reference interpreter, harness RTL and simulation" --body-file .cache/pr-a.md
 ```
 
-The PR body lists Tasks 1–5, the per-task review outcomes and Review Focus items 2, 3 and 5, and ends with the Claude Code line. Run the §13.4 review gate with sequential reviewers.
+The PR body lists Tasks 1–5b, the per-task review outcomes and Review Focus items 2, 3 and 5, and ends with the Claude Code line. Run the §13.4 review gate with sequential reviewers.
 
 ---
 
@@ -3816,7 +3817,7 @@ The PR body lists Tasks 1–5, the per-task review outcomes and Review Focus ite
   - `Bitstream(path, key, build_id, sha256, manifest)`, `BuildError`
   - `vivado_version(scratch) -> str`
   - `ensure_bitstream(slots, *, cache_root, vivado, sem, maxwords=MAXWORDS, margin=MARGIN, timeout_s=BUILD_TIMEOUT_S) -> Bitstream`
-  - `VivadoBuilder(root, cache_root=None)` with `version() -> str` and `ensure(slots) -> Bitstream`, plus the `Builder` Protocol (the same two methods), which Task 9's `FakeBuilder` also implements
+  - `VivadoBuilder(root, cache_root=None)` with `version() -> str` and `ensure(slots) -> Bitstream`, plus the `Builder` Protocol (the same two methods), which Task 9a's `FakeBuilder` also implements
 - CLI: `xut hw build SELECTORS... [--jobs N<=4]` builds (or finds in the cache) every bitstream the selected vector tests need, printing `progress:` lines.
 
 Rules:
@@ -3959,9 +3960,9 @@ def test_log_classification():
     assert "rc 1" in vivado.classify_log("ERROR: x\n", 1)
 ```
 
-Run both; expected: `No module named 'xut.scope'`.
+Run it; expected: `No module named 'xut.hw.vivado'`.
 
-- [ ] **Step 5: Implement `tools/xut/hw/vivado.py`**
+- [ ] **Step 4: Implement `tools/xut/hw/vivado.py`**
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -4395,7 +4396,7 @@ class VivadoBuilder:
         )
 ```
 
-- [ ] **Step 6: Add `xut hw build`** to `tools/xut/cli.py`:
+- [ ] **Step 5: Add `xut hw build`** to `tools/xut/cli.py`:
 
 ```python
 @hw_grp.command("build")
@@ -4443,13 +4444,13 @@ def hw_build_cmd(selectors: tuple[str, ...], model_source: str, jobs: int) -> No
     raise SystemExit(4 if failed else 0)
 ```
 
-- [ ] **Step 7: Run the unit tests, lint and commit**
+- [ ] **Step 6: Run the unit tests, lint and commit**
 
 ```bash
-uv run pytest tools/tests/test_scope.py tools/tests/test_hw_vivado.py -v -m "not vivado" > .cache/pytest.log 2>&1; cat .cache/pytest.log
+uv run pytest tools/tests/test_hw_vivado.py -v -m "not vivado" > .cache/pytest.log 2>&1; cat .cache/pytest.log
 uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/scope.py tools/xut/hw/vivado.py tools/xut/cli.py hw/boards tools/tests/test_scope.py tools/tests/test_hw_vivado.py
-git commit -m "hw: scoped Vivado batch build with generated constraints, deterministic build IDs and a bitstream cache" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/xut/hw/vivado.py tools/xut/cli.py hw/boards tools/tests/test_hw_vivado.py
+git commit -m "hw: Vivado batch build with generated constraints, post-flow DUT check, build IDs and a bitstream cache" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -5438,16 +5439,15 @@ Expected: all pass (the lock tests need `flock` and `timeout`, which are on this
 
 ---
 
-### Task 9: `BoardSession`, the fake transport, the board pool, and `xut doctor`
+### Task 9a: `BoardSession` and the fake transport
 
 **Files:**
-- Create: `tools/xut/hw/session.py`, `tools/xut/hw/pool.py`, `tools/xut/hw/fake.py`, `tools/tests/test_hw_session.py`, `tools/tests/test_hw_pool.py`
-- Modify: `tools/xut/doctor.py`, `tools/tests/test_doctor.py`, `tools/xut/cli.py` (`xut hw rigs`)
+- Create: `tools/xut/hw/session.py`, `tools/xut/hw/fake.py`, `tools/tests/test_hw_session.py`
 
 **Interfaces:**
 - Produces (`xut.hw.session`):
   - `PROGRAM_ARGV = ("openFPGALoader", "-b", "arty")`, `pi_dir()`, `PI_FILES`, `FETCH`
-  - errors: `TransportError` (retried once), `BoardBusy(TransportError)`, `BoardError` (the board is marked bad), `HarnessError`
+  - errors: `TransportError` (retried once), `BoardBusy` (the lock stayed held: the job moves to the next rig; ruling S49), `BoardError` (the board is marked bad), `HarnessError`
   - `Transport` (Protocol): `run(alias, command, log, timeout_s) -> int`, `put(alias, files, remote_dir, log, timeout_s) -> int`, `get(alias, remote_files, local_dir, log, timeout_s) -> int`
   - `SshTransport(ssh_config)`
   - `SlotRun(slot, program)`, `HwJob(job_id, bitstream, build_id, runs)`
@@ -5456,9 +5456,7 @@ Expected: all pass (the lock tests need `flock` and `timeout`, which are on this
   - `BoardSession` (Protocol): `rig`, `preflight(log) -> Preflight`, `run_job(job, workdir) -> JobResult`, `reboot(log) -> None`
   - `SshBoardSession(rig, transport, owner=None)`
   - `session_json(job, baud) -> dict`, `parse_session(job, resp) -> tuple[IdReply, dict[int, LoadReply], dict[int, RunReply]]`
-- Produces (`xut.hw.pool`): `BoardPool(sessions, lease_timeout_s=3600)` with `lease(avoid=())`, `mark_bad(name, why)`, `usable()` and `bad`; `NoBoard`; `JobOutcome(result, selftest, selftest_detail, attempts)`; `run_job(pool, job, workdir) -> JobOutcome`
 - Produces (`xut.hw.fake`): `FakeRig`, `FakeTransport(rigs, sim_factory=default_sim_factory)` (with `calls`, `programmings`), `FakeBuilder(cache_root)`, `default_sim_factory(slot: dict) -> DutSim`, `FlipSim`
-- CLI: `xut hw rigs` runs the preflight of every enabled rig and prints `ok`/`FAIL` with the details (`openFPGALoader` version, the UART device), plus each disabled rig with its reason.
 
 The adapter boundary (spec §7.5): everything above `BoardSession` (pool, runner) speaks jobs; everything below it is SSH, `scp` and the three Pi scripts. A later fpgas.online lease API replaces `SshBoardSession` without touching the runner.
 
@@ -5562,86 +5560,7 @@ def test_reboot_needs_a_configured_command_and_takes_the_lock(tmp_path):
     assert "xut_lock.sh /run/lock/fpga.lock" in cmd and cmd.endswith("-- sh -c 'sudo -n /sbin/reboot'")
 ```
 
-`tools/tests/test_hw_pool.py`:
-
-```python
-# SPDX-License-Identifier: Apache-2.0
-import pytest
-from test_hw_session import rig, selftest_job
-
-from xut.hw.fake import FakeRig, FakeTransport
-from xut.hw.pool import BoardPool, NoBoard, run_job
-from xut.hw.session import BoardBusy, SshBoardSession, TransportError
-
-
-def pool(rigs: dict[str, FakeRig]):
-    t = FakeTransport(rigs)
-    return BoardPool([SshBoardSession(rig(n), t) for n in rigs]), t
-
-
-def test_ok(tmp_path):
-    p, t = pool({"a": FakeRig()})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "pass" and out.attempts == ["attempt 1 on a: ok"]
-
-
-def test_one_transport_retry_then_pass(tmp_path):
-    p, _ = pool({"a": FakeRig(fail_transport=1)})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "pass" and len(out.attempts) == 2
-
-
-def test_two_transport_errors_raise(tmp_path):
-    p, _ = pool({"a": FakeRig(fail_transport=2)})
-    with pytest.raises(TransportError):
-        run_job(p, selftest_job(tmp_path), tmp_path / "w")
-
-
-def test_selftest_failure_moves_to_another_board_once(tmp_path):
-    p, _ = pool({"a": FakeRig(broken_selftest=True), "b": FakeRig()})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "pass" and "a" in p.bad and out.result.rig == "b"
-
-
-def test_selftest_failing_everywhere_is_reported_not_raised(tmp_path):
-    p, _ = pool({"a": FakeRig(broken_selftest=True), "b": FakeRig(broken_selftest=True)})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "fail" and "slot 0" in out.selftest_detail and set(p.bad) == {"a", "b"}
-
-
-def test_single_board_selftest_failure_is_reported(tmp_path):
-    p, _ = pool({"a": FakeRig(broken_selftest=True)})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "fail" and "no other board" in out.selftest_detail
-
-
-def test_board_error_marks_bad_and_moves(tmp_path):
-    p, _ = pool({"a": FakeRig(program_fails=True), "b": FakeRig()})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.result.rig == "b" and "a" in p.bad
-
-
-def test_a_busy_rig_moves_the_job_without_using_the_retry(tmp_path):
-    p, _ = pool({"a": FakeRig(busy=1), "b": FakeRig(fail_transport=1)})
-    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
-    assert out.selftest == "pass" and out.result.rig == "b" and "a" not in p.bad
-    assert [a.split(":")[1].strip() for a in out.attempts][:2] == ["busy", "transport error"]
-
-
-def test_every_rig_busy_is_a_busy_error(tmp_path):
-    p, _ = pool({"a": FakeRig(busy=1)})
-    with pytest.raises(BoardBusy, match="every usable rig is busy"):
-        run_job(p, selftest_job(tmp_path), tmp_path / "w")
-
-
-def test_no_usable_board(tmp_path):
-    p, _ = pool({"a": FakeRig()})
-    p.mark_bad("a", "test")
-    with pytest.raises(NoBoard):
-        run_job(p, selftest_job(tmp_path), tmp_path / "w")
-```
-
-Run both; expected: `No module named 'xut.hw.session'`.
+Run it; expected: `No module named 'xut.hw.session'`.
 
 - [ ] **Step 2: Implement `tools/xut/hw/session.py`**
 
@@ -5842,7 +5761,7 @@ class SshBoardSession:
     def preflight(self, log: Path) -> Preflight:
         q = shlex.quote
         cmd = (
-            "for t in openFPGALoader flock timeout python3; do command -v \"$t\" || "
+            "for t in openFPGALoader flock timeout python3 ps; do command -v \"$t\" || "
             "{ echo \"missing $t\"; exit 3; }; done; "
             f"test -c {q(self.rig.uart)} || {{ echo 'no UART {self.rig.uart}'; exit 4; }}; "
             "openFPGALoader --Version; echo XUT_PREFLIGHT_OK"
@@ -5870,6 +5789,7 @@ class SshBoardSession:
         try:
             self._ok(self.t.run(rig.alias, f"mkdir -p {q(rdir)}", log, 60), "mkdir")
             self._ok(self.t.put(rig.alias, sorted(stage.iterdir()), rdir, log, 600), "scp to the rig")
+            (stage / "top.bit").unlink()  # 2 MB per attempt adds up; the manifest has its sha256
             cmd = (
                 f"cd {q(rdir)} && sh ./xut_lock.sh {q(rig.lock)} {rig.lock_ttl_s} {rig.lock_wait_s} "
                 f"{q(self.owner)} -- sh ./xut_work.sh {q(rig.uart)} {rig.baud}"
@@ -5927,153 +5847,7 @@ class SshBoardSession:
             raise BoardError(f"{rig.name}: reboot failed (rc {rc}; see {log})")
 ```
 
-- [ ] **Step 3: Implement `tools/xut/hw/pool.py`**
-
-```python
-# SPDX-License-Identifier: Apache-2.0
-"""Boards for a run (spec §7.5): lease, retry once, self-test first, mark bad.
-
-``BoardPool`` gives each job one rig at a time (the threads of one ``xut run`` share
-it); the rig's own flock (``xut_lock.sh``) protects it from every other user.
-``run_job``:
-
-- a ``BoardBusy`` (the rig lock stayed held) moves the job to the next rig without using
-  the transport retry; when every usable rig was busy, ``BoardBusy`` is raised (a
-  retryable harness error, never a result; ruling S49);
-- a ``TransportError`` is retried once (spec §7.5, §14); a second one is raised;
-- a ``BoardError`` marks the board bad for the session and moves the job to another
-  board, once;
-- after every exchange the self-test slots are checked first. A failure marks the board
-  bad and moves the job once; a second failure (or no other board) is returned with
-  ``selftest="fail"`` (crosscheck: harness-error), never as a DUT result.
-"""
-
-from __future__ import annotations
-
-import threading
-import time
-from collections.abc import Collection, Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from xut.errors import XutError
-from xut.hw import selftest
-from xut.hw.session import BoardBusy, BoardError, BoardSession, HwJob, JobResult, TransportError
-
-
-class NoBoard(XutError, RuntimeError):
-    """No usable board is left for this job."""
-
-
-class BoardPool:
-    def __init__(self, sessions: Sequence[BoardSession], lease_timeout_s: float = 3600) -> None:
-        self._sessions = {s.rig.name: s for s in sessions}
-        self._free = list(self._sessions)
-        self.bad: dict[str, str] = {}
-        self.lease_timeout_s = lease_timeout_s
-        self._cv = threading.Condition()
-
-    def usable(self) -> list[str]:
-        return [n for n in self._sessions if n not in self.bad]
-
-    def mark_bad(self, name: str, why: str) -> None:
-        with self._cv:
-            self.bad[name] = why
-            self._cv.notify_all()
-
-    @contextmanager
-    def lease(self, avoid: Collection[str] = ()) -> Iterator[BoardSession]:
-        deadline = time.monotonic() + self.lease_timeout_s
-        with self._cv:
-            while True:
-                ok = [n for n in self._sessions if n not in self.bad and n not in avoid]
-                if not ok:
-                    raise NoBoard(f"no usable board (bad: {self.bad}; avoided: {sorted(avoid)})")
-                free = [n for n in self._free if n in ok]
-                if free:
-                    name = free[0]
-                    self._free.remove(name)
-                    break
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    raise NoBoard(f"no board became free within {self.lease_timeout_s}s")
-                self._cv.wait(timeout=min(left, 5.0))
-        try:
-            yield self._sessions[name]
-        finally:
-            with self._cv:
-                self._free.append(name)
-                self._cv.notify_all()
-
-
-@dataclass
-class JobOutcome:
-    result: JobResult
-    selftest: str  # pass | fail
-    selftest_detail: str | None
-    attempts: list[str] = field(default_factory=list)
-
-
-def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
-    attempts: list[str] = []
-    avoid: set[str] = set()
-    busy: list[str] = []
-    retried = moved = False
-    failed: tuple[JobResult, str] | None = None
-    n = 0
-    while True:
-        n += 1
-        try:
-            lease = pool.lease(avoid)
-            s = lease.__enter__()
-        except NoBoard:
-            if failed is not None:
-                return JobOutcome(failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts)
-            if busy:
-                raise BoardBusy(f"every usable rig is busy (retryable harness error): {'; '.join(busy)}") from None
-            raise
-        try:
-            rig = s.rig.name
-            try:
-                res = s.run_job(job, workdir / f"attempt-{n}")
-            except BoardBusy as e:  # ruling S49: move to the next rig; not a transport retry
-                attempts.append(f"attempt {n} on {rig}: busy: {e}")
-                busy.append(str(e))
-                avoid.add(rig)
-                continue
-            except TransportError as e:
-                attempts.append(f"attempt {n} on {rig}: transport error: {e}")
-                if retried:
-                    raise
-                retried = True
-                continue
-            except BoardError as e:
-                attempts.append(f"attempt {n} on {rig}: board error: {e}")
-                pool.mark_bad(rig, str(e))
-                if moved:
-                    raise
-                moved = True
-                avoid.add(rig)
-                continue
-        finally:
-            lease.__exit__(None, None, None)
-        bad = [selftest.check(slot, res.runs[slot]) for slot in (selftest.PASS_SLOT, selftest.COUNT_SLOT)]
-        detail = "; ".join(b for b in bad if b) or None
-        if detail is None:
-            attempts.append(f"attempt {n} on {rig}: ok")
-            return JobOutcome(res, "pass", None, attempts)
-        attempts.append(f"attempt {n} on {rig}: self-test failed: {detail}")
-        pool.mark_bad(rig, f"self-test failed: {detail}")
-        if moved:
-            return JobOutcome(res, "fail", detail, attempts)
-        moved, failed = True, (res, detail)
-        avoid.add(rig)
-```
-
-(Write the lease handling with a `with` block and a small inner function if that reads better; the rules are the docstring's.)
-
-- [ ] **Step 4: Implement `tools/xut/hw/fake.py`**
+- [ ] **Step 3: Implement `tools/xut/hw/fake.py`**
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -6266,33 +6040,298 @@ class FakeBuilder:
 
 The "corrupt" fault flips a byte in the middle of the last run reply. That breaks the reply's CRC, or its line syntax, and either way `parse_session` must turn it into a `TransportError`. Pin this with the parametrised test.
 
-- [ ] **Step 5: Doctor.** In `tools/xut/doctor.py`, replace the hard-coded `FPGAS_ONLINE_*` constants and `_check_fpgas_online` (the step-1 TODO: "read these from hw/boards/…") with checks driven by the rigs config:
+- [ ] **Step 4: Run the tests, lint and commit**
+
+```bash
+uv run pytest tools/tests/test_hw_session.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+git add tools/xut/hw/session.py tools/xut/hw/fake.py tools/tests/test_hw_session.py
+git commit -m "hw: BoardSession over SSH (SRAM programming under the rig lock) and the fake transport" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 9b: The board pool, `xut doctor` and `xut hw rigs`
+
+**Files:**
+- Create: `tools/xut/hw/pool.py`, `tools/tests/test_hw_pool.py`
+- Modify: `tools/xut/doctor.py`, `tools/tests/test_doctor.py`, `tools/xut/cli.py` (`xut hw rigs`)
+
+**Interfaces:**
+- Consumes: `xut.hw.session`, `xut.hw.fake` (Task 9a), `xut.hw.selftest.check` (Task 3).
+- Produces (`xut.hw.pool`): `BoardPool(sessions, lease_timeout_s=3600)` with `lease(avoid=())`, `mark_bad(name, why)`, `usable()` and `bad`; `NoBoard`; `JobOutcome(result, selftest, selftest_detail, attempts)`; `run_job(pool, job, workdir) -> JobOutcome`
+- CLI: `xut hw rigs` runs the preflight of every enabled rig and prints `ok`/`FAIL` with the details (`openFPGALoader` version, the UART device), plus each disabled rig with its reason.
+
+- [ ] **Step 1: Write the failing tests.** `tools/tests/test_hw_pool.py`:
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+import pytest
+from test_hw_session import rig, selftest_job
+
+from xut.hw.fake import FakeRig, FakeTransport
+from xut.hw.pool import BoardPool, NoBoard, run_job
+from xut.hw.session import BoardBusy, SshBoardSession, TransportError
+
+
+def pool(rigs: dict[str, FakeRig]):
+    t = FakeTransport(rigs)
+    return BoardPool([SshBoardSession(rig(n), t) for n in rigs]), t
+
+
+def test_ok(tmp_path):
+    p, t = pool({"a": FakeRig()})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "pass" and out.attempts == ["attempt 1 on a: ok"]
+
+
+def test_one_transport_retry_then_pass(tmp_path):
+    p, _ = pool({"a": FakeRig(fail_transport=1)})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "pass" and len(out.attempts) == 2
+
+
+def test_two_transport_errors_raise(tmp_path):
+    p, _ = pool({"a": FakeRig(fail_transport=2)})
+    with pytest.raises(TransportError):
+        run_job(p, selftest_job(tmp_path), tmp_path / "w")
+
+
+def test_selftest_failure_moves_to_another_board_once(tmp_path):
+    p, _ = pool({"a": FakeRig(broken_selftest=True), "b": FakeRig()})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "pass" and "a" in p.bad and out.result.rig == "b"
+
+
+def test_selftest_failing_everywhere_is_reported_not_raised(tmp_path):
+    p, _ = pool({"a": FakeRig(broken_selftest=True), "b": FakeRig(broken_selftest=True)})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "fail" and "slot 0" in out.selftest_detail and set(p.bad) == {"a", "b"}
+
+
+def test_single_board_selftest_failure_is_reported(tmp_path):
+    p, _ = pool({"a": FakeRig(broken_selftest=True)})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "fail" and "no other board" in out.selftest_detail
+
+
+def test_board_error_marks_bad_and_moves(tmp_path):
+    p, _ = pool({"a": FakeRig(program_fails=True), "b": FakeRig()})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.result.rig == "b" and "a" in p.bad
+
+
+def test_a_busy_rig_moves_the_job_without_using_the_retry(tmp_path):
+    p, _ = pool({"a": FakeRig(busy=1), "b": FakeRig(fail_transport=1)})
+    out = run_job(p, selftest_job(tmp_path), tmp_path / "w")
+    assert out.selftest == "pass" and out.result.rig == "b" and "a" not in p.bad
+    assert [a.split(":")[1].strip() for a in out.attempts][:2] == ["busy", "transport error"]
+
+
+def test_every_rig_busy_is_a_busy_error(tmp_path):
+    p, _ = pool({"a": FakeRig(busy=1)})
+    with pytest.raises(BoardBusy, match="every usable rig is busy"):
+        run_job(p, selftest_job(tmp_path), tmp_path / "w")
+
+
+def test_no_usable_board(tmp_path):
+    p, _ = pool({"a": FakeRig()})
+    p.mark_bad("a", "test")
+    with pytest.raises(NoBoard):
+        run_job(p, selftest_job(tmp_path), tmp_path / "w")
+```
+
+Run it; expected: `No module named 'xut.hw.pool'`.
+
+- [ ] **Step 2: Implement `tools/xut/hw/pool.py`**
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+"""Boards for a run (spec §7.5): lease, retry once, self-test first, mark bad.
+
+``BoardPool`` gives each job one rig at a time (the threads of one ``xut run`` share
+it); the rig's own flock (``xut_lock.sh``) protects it from every other user.
+``run_job``:
+
+- a ``BoardBusy`` (the rig lock stayed held) moves the job to the next rig without using
+  the transport retry; when every usable rig was busy, ``BoardBusy`` is raised (a
+  retryable harness error, never a result; ruling S49);
+- a ``TransportError`` is retried once (spec §7.5, §14); a second one is raised;
+- a ``BoardError`` marks the board bad for the session and moves the job to another
+  board, once;
+- after every exchange the self-test slots are checked first. A failure marks the board
+  bad and moves the job once; a second failure (or no other board) is returned with
+  ``selftest="fail"`` (crosscheck: harness-error), never as a DUT result.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Collection, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from xut.errors import XutError
+from xut.hw import selftest
+from xut.hw.session import BoardBusy, BoardError, BoardSession, HwJob, JobResult, TransportError
+
+
+class NoBoard(XutError, RuntimeError):
+    """No usable board is left for this job."""
+
+
+class BoardPool:
+    def __init__(self, sessions: Sequence[BoardSession], lease_timeout_s: float = 3600) -> None:
+        self._sessions = {s.rig.name: s for s in sessions}
+        self._free = list(self._sessions)
+        self.bad: dict[str, str] = {}
+        self.lease_timeout_s = lease_timeout_s
+        self._cv = threading.Condition()
+
+    def usable(self) -> list[str]:
+        return [n for n in self._sessions if n not in self.bad]
+
+    def mark_bad(self, name: str, why: str) -> None:
+        with self._cv:
+            self.bad[name] = why
+            self._cv.notify_all()
+
+    @contextmanager
+    def lease(self, avoid: Collection[str] = ()) -> Iterator[BoardSession]:
+        deadline = time.monotonic() + self.lease_timeout_s
+        with self._cv:
+            while True:
+                ok = [n for n in self._sessions if n not in self.bad and n not in avoid]
+                if not ok:
+                    raise NoBoard(f"no usable board (bad: {self.bad}; avoided: {sorted(avoid)})")
+                free = [n for n in self._free if n in ok]
+                if free:
+                    name = free[0]
+                    self._free.remove(name)
+                    break
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise NoBoard(f"no board became free within {self.lease_timeout_s}s")
+                self._cv.wait(timeout=min(left, 5.0))
+        try:
+            yield self._sessions[name]
+        finally:
+            with self._cv:
+                self._free.append(name)
+                self._cv.notify_all()
+
+
+@dataclass
+class JobOutcome:
+    result: JobResult
+    selftest: str  # pass | fail
+    selftest_detail: str | None
+    attempts: list[str] = field(default_factory=list)
+
+
+def run_job(pool: BoardPool, job: HwJob, workdir: Path) -> JobOutcome:
+    attempts: list[str] = []
+    avoid: set[str] = set()
+    busy: list[str] = []
+    retried = moved = False
+    failed: tuple[JobResult, str] | None = None
+    n = 0
+    while True:
+        n += 1
+        try:
+            lease = pool.lease(avoid)
+            s = lease.__enter__()
+        except NoBoard:
+            if failed is not None:
+                return JobOutcome(failed[0], "fail", f"{failed[1]} (no other board to retry on)", attempts)
+            if busy:
+                raise BoardBusy(f"every usable rig is busy (retryable harness error): {'; '.join(busy)}") from None
+            raise
+        try:
+            rig = s.rig.name
+            try:
+                res = s.run_job(job, workdir / f"attempt-{n}")
+            except BoardBusy as e:  # ruling S49: move to the next rig; not a transport retry
+                attempts.append(f"attempt {n} on {rig}: busy: {e}")
+                busy.append(str(e))
+                avoid.add(rig)
+                continue
+            except TransportError as e:
+                attempts.append(f"attempt {n} on {rig}: transport error: {e}")
+                if retried:
+                    raise
+                retried = True
+                continue
+            except BoardError as e:
+                attempts.append(f"attempt {n} on {rig}: board error: {e}")
+                pool.mark_bad(rig, str(e))
+                if moved:
+                    raise
+                moved = True
+                avoid.add(rig)
+                continue
+        finally:
+            lease.__exit__(None, None, None)
+        bad = [selftest.check(slot, res.runs[slot]) for slot in (selftest.PASS_SLOT, selftest.COUNT_SLOT)]
+        detail = "; ".join(b for b in bad if b) or None
+        if detail is None:
+            attempts.append(f"attempt {n} on {rig}: ok")
+            return JobOutcome(res, "pass", None, attempts)
+        attempts.append(f"attempt {n} on {rig}: self-test failed: {detail}")
+        pool.mark_bad(rig, f"self-test failed: {detail}")
+        if moved:
+            return JobOutcome(res, "fail", detail, attempts)
+        moved, failed = True, (res, detail)
+        avoid.add(rig)
+```
+
+(Write the lease handling with a `with` block and a small inner function if that reads better; the rules are the docstring's.)
+
+- [ ] **Step 3: Doctor.** In `tools/xut/doctor.py`, replace the hard-coded `FPGAS_ONLINE_*` constants and `_check_fpgas_online` (the step-1 TODO: "read these from hw/boards/…") with checks driven by the rigs config. Nothing here may raise out of `run_checks` (a file write included), and a passing rig enables `hw` only when the key check passed and Vivado is installed:
 
 ```python
 def _hw_checks(p: Probe) -> list[Check]:
-    """hw-rigs (the config loads), hw-key (the key exists, mode 0600 or stricter) and one
-    hw:<rig> check per enabled rig (ssh through the jump host, the Pi's tools, the UART
-    device). Any passing hw:<rig> enables the hw runner."""
-    from xut.hw.rigs import RigsError, config_path, load_rigs, write_ssh_config
+    """hw-rigs (the config loads), hw-key (each key exists, mode 0600 or stricter),
+    hw-ssh-config (the generated ssh config was written) and one hw:<rig> check per
+    enabled rig (ssh through the jump host, the Pi's tools, the UART device). A passing
+    hw:<rig> enables the hw runner only when every hw-key check passed and Vivado is
+    installed (no bitstream can be built without it)."""
+    from xut.hw.rigs import config_path, load_rigs, write_ssh_config
     from xut.paths import repo_root
 
-    root = repo_root()
     try:
+        root = repo_root()
         cfg = load_rigs(config_path(root))
-    except RigsError as e:
-        return [Check("hw-rigs", False, str(e))]
+    except Exception as e:  # noqa: BLE001 - doctor reports, never raises
+        return [Check("hw-rigs", False, f"{type(e).__name__}: {e}")]
     out = [Check("hw-rigs", True, f"{cfg.path}: {len(cfg.enabled())} enabled rig(s)")]
-    keys = sorted({r.identity_file for r in cfg.enabled()})
-    for k in keys:
-        out.append(_safe("hw-key", (), lambda k=k: _check_key(p, k)))
-    ssh = write_ssh_config(cfg, root)
+    keys = [
+        _safe("hw-key", (), lambda k=k: _check_key(p, k))
+        for k in sorted({r.identity_file for r in cfg.enabled()})
+    ]
+    out += keys
+    written: list[Path] = []
+
+    def write() -> tuple[bool, str]:
+        written.append(write_ssh_config(cfg, root))
+        return True, str(written[0])
+
+    out.append(_safe("hw-ssh-config", (), write))
+    if not written:
+        return out
+    vivado = p.exists(VIVADO_SETTINGS)
+    enables = ("hw",) if vivado and all(k.ok for k in keys) else ()
+    why = "" if enables else f" (hw unavailable: {'no Vivado' if not vivado else 'key check failed'})"
     for r in cfg.enabled():
         cmd = [
-            "ssh", "-F", str(ssh), r.alias,
-            "for t in openFPGALoader flock timeout python3; do command -v \"$t\" || exit 3; done; "
+            "ssh", "-F", str(written[0]), r.alias,
+            'for t in openFPGALoader flock timeout python3 ps; do command -v "$t" || exit 3; done; '
             f"test -c {r.uart}",
         ]
-        out.append(_safe(f"hw:{r.name}", ("hw",), lambda cmd=cmd: p.command_ok(cmd, timeout=30)))
+        c = _safe(f"hw:{r.name}", enables, lambda cmd=cmd: p.command_ok(cmd, timeout=30))
+        out.append(Check(c.name, c.ok, c.detail + why, c.enables))
     for r in cfg.rigs:
         if not r.enabled:
             out.append(Check(f"hw:{r.name}", False, f"disabled: {r.reason}"))
@@ -6302,17 +6341,22 @@ def _hw_checks(p: Probe) -> list[Check]:
 def _check_key(p: Probe, key: Path) -> tuple[bool, str]:
     if not p.exists(key):
         return False, f"{key} not found (the project key; see fpgas-online/fpgas.online-infra#124)"
-    mode = p.mode(key) & 0o077
-    return mode == 0, f"{key} " + ("ok" if mode == 0 else f"is group/world accessible ({oct(p.mode(key))})")
+    mode = p.mode(key)
+    if mode & 0o077:
+        return False, f"{key} is group/world accessible ({oct(mode)})"
+    return True, f"{key} ok"
 ```
 
 Add `Probe.mode(path) -> int` (`Path(path).stat().st_mode & 0o777`). In `run_checks`, replace the `fpgas.online` entry with `*_hw_checks(p)`. Update `tools/tests/test_doctor.py`:
-- a fake probe with a missing key gives `hw-key` false;
-- a failing ssh command gives `hw:<rig>` false and no `hw` in `available_runners`;
-- one passing rig enables `hw`;
-- a broken `XUT_HW_CONFIG` file gives one failing `hw-rigs` check, and doctor still does not raise.
+- a fake probe with a missing key gives `hw-key` false and no `hw` in `available_runners`, even with a passing rig;
+- a missing Vivado likewise leaves `hw` out, with "no Vivado" in the rig's detail;
+- a failing ssh command gives `hw:<rig>` false;
+- one passing rig, with the key and Vivado present, enables `hw`;
+- a broken `XUT_HW_CONFIG` file gives one failing `hw-rigs` check, an unwritable `.cache` gives a failing `hw-ssh-config` check, and doctor still does not raise.
 
-- [ ] **Step 6: Add `xut hw rigs`** to `tools/xut/cli.py`:
+(The Pi preflight's tool list includes `ps`, which `xut_lock.sh` uses for process groups.)
+
+- [ ] **Step 4: Add `xut hw rigs`** to `tools/xut/cli.py`:
 
 ```python
 @hw_grp.command("rigs")
@@ -6339,13 +6383,13 @@ def hw_rigs_cmd() -> None:
     raise SystemExit(1 if bad else 0)
 ```
 
-- [ ] **Step 7: Run the tests, lint and commit**
+- [ ] **Step 5: Run the tests, lint and commit**
 
 ```bash
-uv run pytest tools/tests/test_hw_session.py tools/tests/test_hw_pool.py tools/tests/test_doctor.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
-uv run ruff check tools > .cache/ruff.log 2>&1; uv run ruff format --check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/hw/session.py tools/xut/hw/pool.py tools/xut/hw/fake.py tools/xut/doctor.py tools/xut/cli.py tools/tests/test_hw_session.py tools/tests/test_hw_pool.py tools/tests/test_doctor.py
-git commit -m "hw: BoardSession over SSH (SRAM programming under the rig lock), fake transport, board pool, doctor and xut hw rigs" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+uv run pytest tools/tests/test_hw_pool.py tools/tests/test_doctor.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
+uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
+git add tools/xut/hw/pool.py tools/xut/doctor.py tools/xut/cli.py tools/tests/test_hw_pool.py tools/tests/test_doctor.py
+git commit -m "hw: board pool (busy rigs, one transport retry, self-test first), doctor rig checks and xut hw rigs" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
@@ -6357,7 +6401,7 @@ git commit -m "hw: BoardSession over SSH (SRAM programming under the rig lock), 
 - Modify: `tools/xut/runners/__init__.py` (register `hw`), `tools/xut/runners/base.py` (`Runner.flows`, `RunContext.hw_repeats`/`hw_rigs`, `python_dir` always at flow `rtl`), `tools/xut/run.py` (python runs at `rtl`; a runner must run the selected flow), `tools/xut/cli.py` (`xut run --flow vivado --hw-repeats N --hw-rig NAME`), `tools/xut/schemas/result.schema.json` (the `hw` object), `tools/xut/crosscheck.py` (`dut_check` → `flow-mismatch`), `tools/tests/test_run.py`, `tools/tests/test_crosscheck.py`
 
 **Interfaces:**
-- Consumes: `plan_case` (Task 5), `Builder`/`VivadoBuilder` (Task 6), `BoardPool`/`run_job` (Task 9), `samples_to_trace` (Task 3), and the step-2 `Runner` template.
+- Consumes: `plan_case` (Task 5b), `Builder`/`VivadoBuilder` (Task 6), `BoardPool`/`run_job` (Task 9b), `samples_to_trace` (Task 3), and the step-2 `Runner` template.
 - Produces:
   - `xut.runners.hw.HwRunner` (`name = "hw"`, `x_observable = False`, `styles = {"vector"}`, `flows = {"vivado"}`)
   - `HwBackend(builder, pool, preflight)`, `backend(root, rigs=()) -> HwBackend` (process-wide, one per rig selection; tests replace it)
@@ -6374,7 +6418,7 @@ How the runner plugs in (it is the xsim runner's shape; `Runner.run` does the re
 - `run_config`: the first call runs `_batch` for the whole test; each call then writes its configuration's `trace.xtr` (repeat 1), `trace-r<k>.xtr`, `mismatches.txt` and `run.log`, and returns its `ConfigResult`.
 - `finish`: sets `res.hw` and adds the `openFPGALoader` version to `res.tools`.
 
-- [ ] **Step 1: Write the failing tests** — `tools/tests/test_runner_hw.py`. They use the step-2 TOYFF fixture test (`toy` fixture: `ToyDff` is its golden model) with `hw` declared, and the fakes from Task 9:
+- [ ] **Step 1: Write the failing tests** — `tools/tests/test_runner_hw.py`. They use the step-2 TOYFF fixture test (`toy` fixture: `ToyDff` is its golden model) with `hw` declared, and the fakes from Task 9a:
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -7362,16 +7406,16 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 - **§7.5 board access.**
   - *SSH to the Pi, scp, `openFPGALoader -b arty`, UART `/dev/ttyUSB1` at 115200:* Tasks 8–9. The UART device is set per rig, with that default.
   - *Lock file with owner, time and TTL:* `xut_lock.sh` (Task 8), taken around programming and any reboot. Per ruling S49 (spec rev 3.6) the lock file is never deleted and a lock never broken: a held lock is waited for, then the rig is `busy` and the job moves on (`BoardBusy`, Task 9a); only a verified own holder may be killed.
-  - *Transport errors retried once; a self-test failure marks the board bad:* `run_job` (Task 9).
-  - *`BoardSession` adapter:* Task 9 (Protocol + SSH implementation + fake).
-  - *Preflight:* `xut doctor` hw checks and `xut hw rigs` (Task 9).
+  - *Transport errors retried once; a self-test failure marks the board bad:* `run_job` (Task 9b).
+  - *`BoardSession` adapter:* Task 9a (Protocol + SSH implementation + fake).
+  - *Preflight:* `xut doctor` hw checks and `xut hw rigs` (Task 9b).
 - **§5.6 hw runner capabilities:** `x_observable = False` (2-state; x/z expectations are skipped in the comparison). The run repeats N = 3 times; any difference is `nondeterminism` (Task 10).
 - **§6 flows and runners:** `hw` runs flow `vivado` ("bitstream on hw"). `runner_flows` already maps `hw` to non-`rtl` flows. `result.json` records the bitstream hashes, build IDs, serial, site and rig (DNA: ambiguity 6).
 - **§8 crosscheck:** `silicon-mismatch`, `nondeterminism` and `harness-error` come from the existing classifier, fed by the `hw` object. Task 10's tests pin all three with the fake board. `expected_divergence` never masks (Task 12).
 - **§11 status:** `xut status record` records `L*/hw/vivado` from `build/vivado/hw/unisim-2025.2/`, with the tree hash from `xut run` (Task 12).
 - **§13 process:** three stacked infra PRs, then unit PRs; owned paths only; small commits; the review gate; the two-agent limit; orchestrator-only rebases.
 - **§14 no silent skips; errors distinct from failures:** every configuration ends `pass`/`fail`/`error`/`skip`, with a reason for every non-pass (Tasks 5, 10).
-- **§15 preflight:** `xut doctor` gains the rigs, key and per-rig SSH/tool/UART checks (Task 9).
+- **§15 preflight:** `xut doctor` gains the rigs, key and per-rig SSH/tool/UART checks (Task 9b).
 - **§16 step 3:** the stepped harness on the Arty A7-35T, the Vivado flow and the `hw` runner, piloted on flops, with luts conditional (Task 13) or the LUT6 smoke design (Task 11).
 - **Placeholder scan.** No step says "TBD" or "similar to". Every code block is complete for its module. `<ts>` in log file names is the AGENTS.md pattern. The rigs' `user` is intentionally absent (it comes from #124), and the plan says how and where it is added. The p10/p12/p15 addresses are marked as inferred and are confirmed in Task 12, Step 2.
 - **Type consistency.** These names are used identically across tasks: `HwProgram(nin, nclk, noutw, t0, words, labels)`, `SlotBuild`, `TestPlan.members/slots/programs`, `session_steps`/`run_replies`, `HwJob(job_id, bitstream, build_id, runs)`, `SlotRun(slot, program)`, `JobResult.runs: dict[int, RunReply]`, `JobOutcome(result, selftest, selftest_detail, attempts)`, `Bitstream(path, key, build_id, sha256, manifest)`, `Builder.ensure/version`, `RunContext.hw_repeats/hw_rigs`, `proto.STATUS_CODE`.
