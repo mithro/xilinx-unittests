@@ -281,3 +281,17 @@ def test_a_hierarchy_that_does_not_elaborate_fails_closed(tmp_path, monkeypatch)
     f.write_text(f.read_text().replace(".D(D));", ".D(D), .NOPORT(C));"))
     with pytest.raises(XutError, match="does not elaborate, so the parameterisations"):
         ensure_model(ms, "VZDSP", {}, root=tmp_path, log=lambda _l: None)
+
+
+def test_model_attrs_key_a_bit_vector_by_its_value(tmp_path):
+    """A descendant's elaborated parameters come back as numbers: 5'b00000 and 0 are the
+    default configuration, and 5'b00011, 3 and 5'h03 are one key."""
+    ms = _source(tmp_path)
+    (ms.unisims / "VZW.v").write_text(
+        "module VZW #(parameter [4:0] IS_X = 5'b00000) (output O, input I);\n"
+        "  assign O = I;\nendmodule\n"
+    )
+    assert model_attrs(ms, "VZW", {"IS_X": 0}) == {}
+    assert model_attrs(ms, "VZW", {"IS_X": "5'b00000"}) == {}
+    keys = {config_key(model_attrs(ms, "VZW", {"IS_X": v})) for v in (3, "5'b00011", "5'h03")}
+    assert keys == {"IS_X=5'h03"}

@@ -190,7 +190,9 @@ def test_equivalence_refuses_an_undriven_input_or_a_z_stimulus(tmp_path, monkeyp
     # S is 2 bits wide: one driven bit leaves it undriven too (review M3)
     monkeypatch.setattr(zcmp, "connected", lambda m: {"C": 1, "D": 1, "S": 1})
     r = check_model(_subject(ms), ms, tmp_path / "a", {}, lib=lib)
-    assert r.status == "error" and "CE, CLR, R, S of VZZCMP left unconnected" in r.reason, r
+    assert (
+        r.status == "error" and "CE, CLR, R, S (1 of 2 bits) of VZZCMP left unconnected" in r.reason
+    ), r
     monkeypatch.undo()
     monkeypatch.setattr(zcmp, "drives_z", lambda vec: True)
     r = check_model(_subject(ms), ms, tmp_path / "b", {}, lib=lib)

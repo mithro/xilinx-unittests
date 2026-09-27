@@ -809,7 +809,7 @@ def model_attrs(ms: ModelSource, model: str, attrs: dict | None) -> dict[str, st
     rendered as the Verilog literal of its kind (``0`` and ``"1'b0"`` are one configuration
     of a 1-bit attribute), without those equal to the parameter's default (FDRE's
     ``INIT=1'b0`` is the ``default`` configuration: review M5)."""
-    from xut.wrap import WrapError, render_attr, spec_from_hdl
+    from xut.wrap import WrapError, literal_value, render_attr, spec_from_hdl
 
     if not attrs:
         return {}
@@ -817,11 +817,24 @@ def model_attrs(ms: ModelSource, model: str, attrs: dict | None) -> dict[str, st
     decl = {p.name: {"name": p.name, "kind": p.kind, "width": p.width} for p in mod.params}
     mine = {k: v for k, v in attrs.items() if k in decl}
     out = dict(spec_from_hdl(mod, "default", mine, raw_clock_out=True).attrs)
+
+    def canon(name: str, value: object) -> str:
+        # a bit vector by its value, one spelling per value (5'b00000 and 5'h00 are one
+        # configuration: a descendant's elaborated parameters come back as numbers)
+        lit = render_attr(decl[name], value, allow_x=True)
+        if decl[name]["kind"] == "bits":
+            try:
+                return render_attr(decl[name], literal_value(lit))
+            except WrapError:
+                return lit  # x/z digits: kept verbatim
+        return lit
+
     for p in mod.params:
         if p.name not in out:
             continue
+        out[p.name] = canon(p.name, out[p.name])
         try:
-            default = render_attr(decl[p.name], p.default, allow_x=True)
+            default = canon(p.name, p.default)
         except WrapError:
             continue  # a default that is not a plain literal: keep the attribute
         if default == out[p.name]:
