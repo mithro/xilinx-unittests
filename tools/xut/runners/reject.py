@@ -15,7 +15,8 @@ path or a docker error must not look like a rejection):
   acceptance");
 - any ``XUT_ERROR`` in the run (the testbench itself gave up) -> ``error``;
 - any infrastructure diagnostic (``INFRA``: unknown module, missing include/file,
-  docker, permissions, a failed xsim link) -> ``error``;
+  docker, permissions, a failed xsim link, an OOM kill at the container's memory cap)
+  -> ``error``;
 - compile/elaboration rejection: the build failed and an evidence line exists ->
   ``pass``;
 - runtime rejection: the simulator exited cleanly (rc 0, e.g. via ``$finish``) without
@@ -38,6 +39,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from xut.container import OOM_MARK
 from xut.formats import xtr
 from xut.runners.base import ConfigResult, sha256_file
 
@@ -45,7 +47,9 @@ INFRA = re.compile(
     r"Unknown module type|Include file .* not found|Unable to open|No such file|docker:"
     r"|permission denied|cannot find"
     # xsim: an unresolved module (VRFC 10-2063), a missing file, a failed link
-    r"|Module <[^>]*> not found|cannot open (include )?file|Failed to link the design",
+    r"|Module <[^>]*> not found|cannot open (include )?file|Failed to link the design"
+    # the container was OOM-killed at its memory cap (Ruling S48a M-3)
+    rf"|{re.escape(OOM_MARK)}",
     re.IGNORECASE,
 )
 DIAGNOSTIC = re.compile(
