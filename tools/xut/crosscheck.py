@@ -204,6 +204,21 @@ def gather(root: Path, test_id: str) -> dict[str, dict[tuple[str, str], View]]:
     return dict(out)
 
 
+def transform_bug(root: Path, ms: str, test_id: str, flow: str) -> list[str]:
+    """The points where ``test_id``'s iverilog-vz trace differs from its iverilog trace on
+    ``flow`` against ``ms`` (a ``transform-bug``, spec §6.2); empty when they agree or
+    either has no trace. ``xut status record`` refuses a Verilator pass over one."""
+    from xut.results import result_dir
+
+    views = [
+        _view(result_dir(Path(root), flow, r, ms, test_id), flow, r, ms, test_id)
+        for r in ("iverilog", "iverilog-vz")
+    ]
+    if not all(_has_trace(v) for v in views):
+        return []
+    return [str(m) for m in diff(*_pair(*views))]
+
+
 # --- classification ----------------------------------------------------------------------
 
 

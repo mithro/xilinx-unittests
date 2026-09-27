@@ -666,3 +666,24 @@ def test_tree_state_is_three_git_calls_and_cached_per_run(repo, monkeypatch):
 def test_tree_state_outside_git_is_none(tmp_path):
     st = tree_state(tmp_path, ["x"])
     assert (st.tree_hash, st.head, st.dirty) == (None, None, None)
+
+
+@pytest.mark.parametrize(("vz_q", "want"), [("1", "pass"), ("0", "error")])
+def test_a_transform_bug_blocks_the_recorded_verilator_pass(repo, vz_q, want):
+    """Spec §6.2 (PR #10 nit): an iverilog-vz trace that differs from iverilog's is a
+    transform-bug, which blocks the Verilator results: the pass is recorded as error."""
+    from xut.formats import xtr
+
+    _results(repo)
+    ce = TESTS[1]["id"]
+    _result(repo, ce, "iverilog-vz", "pass")
+    for runner, q in (("iverilog", "1"), ("iverilog-vz", vz_q)):
+        hdr = {"runner": runner, "flow": "rtl", "model": REFERENCE_MODEL_SOURCE,
+               "prim": "FDRE", "cfg": "a", "seed": "1"}  # fmt: skip
+        t = xtr.Trace(hdr)
+        t.add("a/S0", {"Q": q})
+        xtr.dump(t, repo / "build/rtl" / runner / REFERENCE_MODEL_SOURCE / ce / "trace.xtr")
+    warnings: list[str] = []
+    s = record(repo, "FDRE", warn=warnings.append)
+    assert s["results"]["L1/verilator/rtl"] == want
+    assert any("transform-bug" in w for w in warnings) == (want == "error")

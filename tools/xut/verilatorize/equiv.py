@@ -55,7 +55,9 @@ any other ``glbl.*`` raises ``TransformError``), with ``async_`` for an async/ga
 ``activity(2)``:
 
 1. ``_independent``: each trigger, three times: ``activity(2)``, assert, sample,
-   ``activity(2)``, deassert, sample, ``activity(1)``;
+   ``activity(2)``, deassert, sample, ``activity(1)``; then ``_walk``: each bit of a
+   multi-bit data trigger alone (walking one) and all but it (walking zero), so a forcing
+   condition on a partial value is reached;
 2. ``_coincident``: each non-clock trigger with each clock: assert together with a rising
    edge (``simultaneous``), sample, fall, sample, ``activity(1)``, deassert together with
    the next rising edge, sample, fall, sample. Rising edges only, as the brief specifies: a
@@ -349,6 +351,25 @@ def _pairs(s: _Stim) -> None:
             s.activity(1)
 
 
+def _walk(s: _Stim) -> None:
+    """Each multi-bit data trigger bit by bit (PR #10 nit): a walking one (only bit ``i``
+    set) and a walking zero (every bit but ``i``), each held for a sample and
+    ``activity(1)``, then back to 0. A forcing condition on a partial value, such as
+    ``R[0] & ~R[1]``, is reached, which the all-zeros/all-ones pulses never do."""
+    for t in s.trigs:
+        if t.kind != "data" or t.ones == 1:
+            continue
+        for i in range(t.ones.bit_length()):
+            for pat, v in (("one", 1 << i), ("zero", t.ones & ~(1 << i))):
+                s.tag = f"walk.{t.name}.{pat}{i}"
+                s.b.set(**{t.target: v})
+                s.sample("on")
+                s.activity(1)
+                s.b.set(**{t.target: 0})
+                s.sample("off")
+                s.activity(1)
+
+
 def _with_async(s: _Stim) -> None:
     for t in s.trigs:
         for q in s.asyncs:
@@ -383,7 +404,7 @@ def equiv_stimulus(an: Subject, m: DutMap, seed: int = 1) -> Vec:
     """The equivalence stimulus of ``an`` for wrapper map ``m`` (module docstring)."""
     s = _Stim(an, m, seed)
     s.activity(2)
-    phases = [_independent, _coincident, _pairs, _with_async]
+    phases = [_independent, _walk, _coincident, _pairs, _with_async]
     if "zcmp" in _rewrites(an) or an.model not in _lib_models(an):
         phases.append(_inputs)  # a z-compare rewrite, or a model gated by its hierarchy
     for phase in phases:
