@@ -295,3 +295,32 @@ def test_model_attrs_key_a_bit_vector_by_its_value(tmp_path):
     assert model_attrs(ms, "VZW", {"IS_X": "5'b00000"}) == {}
     keys = {config_key(model_attrs(ms, "VZW", {"IS_X": v})) for v in (3, "5'b00011", "5'h03")}
     assert keys == {"IS_X=5'h03"}
+
+
+def test_an_unchanged_intermediate_model_rekeys_the_parent(tmp_path, monkeypatch):
+    """Ruling S50a (re-review nit): TOP -> MID (unchanged) -> VZCHILD (transformed). An
+    edit of MID can change VZCHILD's parameterisation, so TOP's verdicts and dep_configs
+    are discarded when MID changes."""
+    ms = _source(tmp_path)
+    (ms.unisims / "VZMID.v").write_text(
+        "`timescale 1ps/1ps\n"
+        "module VZMID #(parameter [0:0] INIT = 1'b0) (output Q, input C, input CE, input D);\n"
+        "  VZCHILD #(.INIT(INIT)) u (.Q(Q), .C(C), .CE(CE), .D(D));\nendmodule\n"
+    )
+    (ms.unisims / "VZTOP.v").write_text(
+        "`timescale 1ps/1ps\n"
+        "module VZTOP (output Q, input C, input CE, input D);\n"
+        "  VZMID m (.Q(Q), .C(C), .CE(CE), .D(D));\nendmodule\n"
+    )
+    _fake_check(monkeypatch)
+    ensure_model(ms, "VZTOP", {}, root=tmp_path, log=lambda _l: None)
+    out = vz_dir(ms, tmp_path)
+    top = Manifest.load(out / "manifest.json").models["VZTOP"]
+    assert top.equiv == {"default": "pass"} and top.dep_configs["default"]
+    mid = ms.unisims / "VZMID.v"
+    mid.write_text(mid.read_text().replace(".INIT(INIT)", ".INIT(~INIT)"))
+    for name, value in (("_ENTRIES", {}), ("_TOOLS", {}), ("_CHECKED", set())):
+        monkeypatch.setattr(driver, name, value)
+    man = driver.verilatorize(ms, ["VZTOP"], progress=lambda _l: None, out_dir=out)
+    assert man.models["VZTOP"].equiv == {} and man.models["VZTOP"].dep_configs == {}
+    assert man.models["VZTOP"].deps_sha256 != top.deps_sha256

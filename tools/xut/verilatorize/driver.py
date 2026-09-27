@@ -493,8 +493,9 @@ def verilatorize(
 
 def _link(man: Manifest) -> None:
     """Record every entry's hierarchy facts (module docstring): ``depends_on_transformed``,
-    ``depends_on_unsupported``, ``effective_rewrites`` and ``deps_sha256``; a changed
-    ``deps_sha256`` discards the entry's verdicts."""
+    ``depends_on_unsupported``, ``effective_rewrites`` and ``deps_sha256`` (the keys of
+    every model of its hierarchy, transitively); a changed ``deps_sha256`` discards the
+    entry's verdicts and ``dep_configs``."""
     for e in man.models.values():
         seen: set[str] = set()
         todo = list(e.instantiates)
@@ -508,7 +509,9 @@ def _link(man: Manifest) -> None:
         e.depends_on_transformed = dt
         e.depends_on_unsupported = sorted(d for d in seen if man.models[d].status == "unsupported")
         e.effective_rewrites = sorted(set(e.rewrites).union(*(man.models[d].rewrites for d in dt)))
-        key = [[d, *(getattr(man.models[d], k) for k in _DEP_KEY)] for d in dt]
+        # every model of the hierarchy, unchanged intermediates included: one of them can
+        # change a transformed grandchild's parameterisation (PR #10 re-review, S50a)
+        key = [[d, *(getattr(man.models[d], k) for k in _DEP_KEY)] for d in sorted(seen)]
         sha = hashlib.sha256(json.dumps(key).encode()).hexdigest()
         if e.deps_sha256 != sha:
             e.deps_sha256 = sha
