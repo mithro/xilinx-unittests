@@ -732,8 +732,8 @@ def test_cocotb_top_drives_inputs_by_a_time0_nonblocking_update():
     """No declaration initialiser on clk/in_vec (a time-0 value that no process sees as an
     event): x until a time-0 non-blocking update, as xut_vector_tb.sv's barrier."""
     text = wrap.render_cocotb_top(build_map(WIDE))
-    assert "  reg  [`XUT_NCLK-1:0] clk;\n" in text
-    assert "  reg  [`XUT_NIN-1:0]  in_vec;\n" in text
+    decls = [ln.split("//")[0].strip() for ln in text.splitlines() if ln.startswith("  reg ")]
+    assert decls == ["reg  [`XUT_NCLK-1:0] clk;", "reg  [`XUT_NIN-1:0]  in_vec;"]
     assert "clk <= {`XUT_NCLK{1'b0}};" in text and "in_vec <= {`XUT_NIN{1'b0}};" in text
 
 
