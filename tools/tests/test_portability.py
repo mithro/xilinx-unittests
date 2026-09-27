@@ -446,6 +446,16 @@ class _PoolEx:
                 f.write(f"$ {' '.join(argv)}   [container fake]\n")
             if how == "timeout":
                 raise RunTimeout("timeout after 1s: bash")
+            if how == "docker-fail":  # docker run itself failed: the script never ran
+                with log.open("a") as f:
+                    f.write("docker: Error response from daemon: boom\n")
+                return 125
+            if how == "oom-no-done":  # killed between writing its rc and done.txt
+                (d / f"{tool}.log").write_text("xut-smoke: timeout (137)\n")
+                (d / f"{tool}.rc").write_text("137\n")
+                with log.open("a") as f:
+                    f.write(OOM_LINE + "\n")
+                return 137
             if how == "oom-early":
                 (d / f"{tool}.log").write_text("xut-smoke: build exit 0\n")
                 with log.open("a") as f:
@@ -649,3 +659,28 @@ def test_a_partial_run_never_touches_the_full_run_directory(tmp_path, fixture_so
     assert (ran[0] / "PLAIN/default/smoke.v").is_file()
     assert (root / "build/portability/partial/test-src.json").is_file()
     assert portability.out_dir(fixture_source, root) == full
+
+
+def test_run_scripts_record_the_container_exit_when_no_rc(tmp_path):
+    """S48a M-5: docker run's own failure is in the cell's reason."""
+    work, scripts = _pool_work(tmp_path, 1)
+    ex = _PoolEx(dict.fromkeys(scripts, "ok") | {scripts[0]: "docker-fail"}, delay=0)
+    portability._run_scripts(ex, work, scripts, jobs=2, progress=lambda _: None)
+    d, tool = work / Path(scripts[0]).parent, Path(scripts[0]).stem
+    want = "xut-container: exit 125: docker: Error response from daemon: boom"
+    assert want in (d / f"{tool}.log").read_text()
+    ok, why = portability._outcome(d, tool)
+    assert not ok and why == f"other: {want}"
+    assert not (d / f"{tool}.rc").exists()
+    assert len((work / "done.txt").read_text().splitlines()) == 2
+
+
+def test_run_scripts_count_every_script_done_exactly_once(tmp_path):
+    """S48a M-7: a script killed after its rc but before done.txt is still counted once."""
+    work, scripts = _pool_work(tmp_path, 2)
+    beh = dict.fromkeys(scripts, "ok") | {scripts[0]: "oom-no-done", scripts[1]: "oom-early"}
+    lines: list[str] = []
+    portability._run_scripts(_PoolEx(beh, delay=0), work, scripts, jobs=2, progress=lines.append)
+    done = (work / "done.txt").read_text().splitlines()
+    assert sorted(done) == sorted(str(Path(s).with_suffix("")) for s in scripts)
+    assert lines[-1].startswith(f"progress: done={len(scripts)} total={len(scripts)} ")
