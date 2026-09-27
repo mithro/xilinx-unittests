@@ -37,7 +37,7 @@ from pathlib import Path
 from xut.errors import XutError
 from xut.formats.xtr import Trace
 from xut.formats.xvec import Vec, XvecError, check_structure, free_runs
-from xut.validate import validate
+from xut.validate import Report, validate
 from xut.wrap import DutMap
 
 TB = Path(__file__).resolve().parent / "hdl" / "xut_vector_tb.sv"
@@ -75,7 +75,9 @@ def _w(op: str, idx: int, val: int, t: int) -> int:
     return (OPS[op] << 120) | (idx << 96) | (val << 64) | t
 
 
-def _check_fits(vec: Vec, m: DutMap) -> None:
+def check_fits(vec: Vec, m: DutMap) -> Report:
+    """Structure, sizes, primitive/configuration and ``validate`` errors (ruling S11):
+    the checks every compiler of an ``.xvec`` applies."""
     try:
         check_structure(vec)
     except XvecError as e:
@@ -101,6 +103,7 @@ def _check_fits(vec: Vec, m: DutMap) -> None:
             f"{vec.prim}/{vec.cfg}: stimulus is invalid, refusing to compile:\n  "
             + "\n  ".join(report.errors)
         )
+    return report
 
 
 def _clock_words(vec: Vec, name: str, t: int) -> list[int]:
@@ -117,7 +120,7 @@ def _clock_words(vec: Vec, name: str, t: int) -> list[int]:
 
 def compile_vec(vec: Vec, m: DutMap) -> Compiled:
     """The operation words and sample labels (in sample-number order) of ``vec``."""
-    _check_fits(vec, m)
+    check_fits(vec, m)
     words: list[int] = []
     labels: list[str] = []
     for e in vec.events:
