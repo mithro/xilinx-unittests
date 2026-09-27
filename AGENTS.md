@@ -159,7 +159,12 @@ there is no override. Each model source keeps its own tree hash, tools and
 results (`results_by_model_source`).
 
 `xut status init --refresh-bins` updates the bins of never-recorded stubs to
-the current catalog. The orchestrator runs it on `main` only.
+the current catalog. The orchestrator runs it on `main`. A unit branch may
+also run it after its overrides change its own primitives' bins (new claims,
+`active` levels, crosses), but commits only its own never-recorded
+`status/<family>/<PRIM>.yaml` stubs: any other file it changes is restored
+with `git checkout -- <path>` and reported to the orchestrator (ruling on
+PR #12, D16).
 
 ## 8. Clean-room golden models
 
@@ -261,6 +266,20 @@ smoke simulation whose memory grows without bound. Its container peaked at
   value in a plan or task brief is capped by this section. For example, the
   step-2 plan's `--jobs 80` and `--jobs 40` predate this section. Use 8
   until PR C is merged, and 24 after.
+- **One heavy command at a time, host-wide** (ruling S53). Every heavy command
+  (`xut run`, `xut portability`, `xut verilatorize --check`, `xut hw sim`,
+  `xut hw build`, and `pytest` with `-n` above 1) takes the one host-wide lock
+  before its scope, so two agents never run heavy jobs at once and each
+  command's own budget (at most 96G) holds:
+
+  ```bash
+  flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
+    --slice=vivado.slice --unit=xut-<what>-$(date +%s) \
+    -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command> > <log> 2>&1
+  ```
+
+  `flock` waits while another agent holds the lock; nothing ever deletes the
+  lock file.
 - **No `ulimit -v`.** It breaks Vivado. Use cgroup caps.
 - **An OOM kill is a normal result.** A scope result of `oom-kill`, or docker
   `OOMKilled=true`, is a retryable failure: lower the parallelism and re-run.
