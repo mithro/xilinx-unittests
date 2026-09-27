@@ -247,12 +247,17 @@ smoke simulation whose memory grows without bound. Its container peaked at
     <command> > <log> 2>&1
   ```
 
-  `xut heavy` waits for admission (below), then runs `<command>` as
-  `systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-<epoch>
-  -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command>`. The job then lives outside your own cgroup, and an OOM kill stays inside it.
-  `vivado.slice` is the host's shared slice for all heavy FPGA-tool jobs, not
-  only Vivado. It is capped at 300G in total and shared with other projects.
-  This project's share is 100G.
+  `xut heavy` waits for admission (below), then runs `<command>` as:
+
+  ```bash
+  systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-<epoch> \
+    --expand-environment=no -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command>
+  ```
+
+  The job then lives outside your own cgroup, and an OOM kill stays inside
+  it. `vivado.slice` is the host's shared slice for all heavy FPGA-tool jobs,
+  not only Vivado. It is capped at 300G in total and shared with other
+  projects. This project's share is 100G.
 - **Containers.** Docker containers run under the system slice, not your
   scope, so the scope alone does not cap them. From PR C
   (`infra/verilatorize`) on, every container xut starts is capped with
