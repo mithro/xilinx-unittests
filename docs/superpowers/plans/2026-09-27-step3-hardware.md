@@ -53,10 +53,11 @@ cd /home/tim/github/f4pga/xilinx-unittests && git fetch origin && git checkout m
 mkdir -p .cache
 uv run python -c "from xut.runners.sim import vector_check; from xut.runners.verilator import VerilatorRunner; from xut.runners.xsim import render_script, run_script; from xut.stimcompile import _check_fits, raw_to_trace; from xut.crosscheck import classify; from xut_models.registry import get; print('step-2 interfaces OK', get('7series','FDRE').PRIM)" > .cache/step3-step0.log 2>&1
 ls tests/7series/register/FDRE/test.yaml tests/7series/register/_shared/flops/flop_tests.py >> .cache/step3-step0.log 2>&1
+grep -n "revision 3.6" docs/superpowers/specs/2026-09-25-xilinx-primitive-test-suite-design.md >> .cache/step3-step0.log 2>&1
 cat .cache/step3-step0.log
 ```
 
-Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has not merged, stop and report: Tasks 1–11 need C (the shared simulator code), and Task 5b's FDRE proof and Task 12 need E. If a name differs, adapt this plan's calls to the merged code (not the semantics), and note the mapping in the first log entry.
+Expected: `step-2 interfaces OK FDRE`, both paths listed, and the spec's `Status: revision 3.6` line. Spec rev 3.6 (§5.6, §6, §7.1, §7.5, §8; ruling S49) lands with this plan's docs PR, and **must be on `main` before Task 1**: AGENTS.md §1 makes the spec on `main` win over a plan, and rev 3.4's §7.1/§7.5 text contradicts this plan (the stimulus in the bitstream, a dumped `.xtr`, a lock broken past its TTL). If PR C or E has not merged, stop and report: Tasks 1–11 need C (the shared simulator code), and Task 5b's FDRE proof and Task 12 need E. If a name differs, adapt this plan's calls to the merged code (not the semantics), and note the mapping in the first log entry.
 
 ## Global Constraints
 
@@ -84,7 +85,7 @@ Expected: `step-2 interfaces OK FDRE` and both paths listed. If PR C or E has no
 - **Transport errors are retried once** (spec §7.5, §14). An error is never retried into a pass: a retry re-runs the whole job, and a second failure is an `error` result.
 - **No hard-coded board access.** Board names, addresses, jump host, key path, UART device and lock names come from `hw/rigs.yaml` (or the file named by `XUT_HW_CONFIG`). No secret is ever committed: the rigs file names the key *path* (`~/.ssh/keys/xilinx-unittests_ed25519`), never key material. SSH runs with a generated `.cache/hw/ssh_config` (`IdentitiesOnly yes`, `BatchMode yes`), so no agent key or user config leaks in.
 - **Vivado** is only ever sourced in a subshell: `bash -c 'source /opt/xilinx/Vivado/2025.2/settings64.sh && ...'`, and never with `XIL_TIMING` (spec §2: timing is out of scope).
-- **Stdlib-only modules.** `tools/xut/hw/{proto,image,interp,selftest}.py` and `hw/pi/xut_uart.py` use only the standard library. `xut_uart.py` runs on the Pis; the others are imported by it in tests and by the emulator.
+- **Stdlib-only modules.** `hw/pi/xut_uart.py` is self-contained (standard library only, and it must not import `xut.*`): only the three `hw/pi` scripts are copied to a Pi. `tools/xut/hw/{proto,image,interp,selftest}.py` are standard library only too, so that the emulator and the tests can use them without xut's dependencies.
 - **Generated files** `status/PROGRESS.md`, `status/TODO.md`, `status/LOG.md` and `status/PORTABILITY.md` are never committed on a branch; only the orchestrator regenerates them on `main` (`status: regenerate`).
 - **Coordination.** Before any real-board step, check board availability with the fpgas.online sessions (ten64.welland.mithis.com, desktop.buddy.mithis.com), and confirm the shared lock name they use. Board access (keys on the Pis, the jump-host account) is fpgas-online/fpgas.online-infra#124. Route any infra request there. Never touch a repo outside github.com/mithro or github.com/fpgas-online.
 - **Long runs** follow the global progress-reporting rule: run in the background, log to a file, watch with a Monitor that reads the log's `progress: done=N total=M elapsed_s=E` lines (`xut run`, `xut hw build`, `xut hw sim` all print them), and report the remaining time and the finish clock-time at the stated cadence.
@@ -1107,30 +1108,13 @@ endmodule
 
 from pathlib import Path
 
-from xut.catalog.model import CatalogEntry
+from test_runner_base import TOY_ENTRY as TOY_HW_ENTRY  # the step-2 toy: one definition
+
 from xut.wrap import DutMap, DutSpec, build_map, spec_from_catalog
 from xut_models.base import Model, Out, bit_attr
 
 FIX = Path(__file__).parent / "fixtures" / "hw"
 TOYFF_V = FIX / "TOYFF.v"
-
-TOY_HW_ENTRY = CatalogEntry(
-    name="TOYFF",
-    family="7series",
-    group="REGISTER",
-    subgroup="SDR",
-    description="toy D flip-flop",
-    doc={"guide": "UG953", "edition": "2026.1", "page": 1},
-    model={"library": "unisims", "file": "TOYFF.v"},
-    ports=[
-        {"name": "Q", "direction": "output", "width": 1, "cls": "data", "doc_function": "Q"},
-        {"name": "C", "direction": "input", "width": 1, "cls": "clock", "doc_function": "C"},
-        {"name": "D", "direction": "input", "width": 1, "cls": "data", "doc_function": "D"},
-    ],
-    attributes=[
-        {"name": "INIT", "kind": "bits", "width": 1, "default": "1'b0", "allowed": ["1'b0", "1'b1"]},
-    ],
-)
 
 
 class HwToyFf(Model):
@@ -1768,8 +1752,14 @@ class SampleError(XutError, ValueError):
 
 
 class ModelDut:
-    def __init__(self, model_cls: type[Model], attrs: Mapping[str, str], m: DutMap) -> None:
-        self.cls, self.attrs, self.m = model_cls, dict(attrs), m
+    """``two_state``: report a golden don't-care (``-``) bit as ``0``, as 2-state silicon
+    would. The harness emulator (``xut.hw.fake``) needs it, because the protocol carries
+    only 0/1; ``hw_replay`` keeps ``-``, which ``compare`` masks."""
+
+    def __init__(
+        self, model_cls: type[Model], attrs: Mapping[str, str], m: DutMap, two_state: bool = False
+    ) -> None:
+        self.cls, self.attrs, self.m, self.two_state = model_cls, dict(attrs), m, two_state
 
     def _set(self, in_bits: str) -> None:
         new, old = in_bits[::-1], self._in[::-1]  # index = in_vec bit
@@ -1803,7 +1793,8 @@ class ModelDut:
         for b in self.m.of("out"):
             bits = outs[b.port].bits  # MSB first
             by_bit[b.bit] = bits[len(bits) - 1 - b.index]
-        return "".join(reversed(by_bit))
+        out = "".join(reversed(by_bit))
+        return out.replace("-", "0") if self.two_state else out
 
 
 def samples_to_trace(
@@ -2240,6 +2231,11 @@ endmodule
 // stimulus BRAM, sequencer and message printer. Protocol: xut.hw.proto. Reference model:
 // xut.hw.interp.Harness, which must predict this module's UART output byte for byte
 // (tools/tests/test_hw_rtl.py).
+//
+// A lost or garbled host byte leaves the loader waiting in S_LD_* for bytes that never
+// come; later command bytes are then taken as program data and the session times out.
+// There is deliberately no inter-byte timeout: the host treats any timeout as a
+// transport error, and every retry reprograms the FPGA, which resets this state.
 //
 // Correctness by construction: after every COMMIT (the selected slot's in_vec takes
 // in_nxt) and every EDGE (one of its clock flip-flops changes), S_WAITM holds MARGIN + 1
@@ -4603,13 +4599,13 @@ rigs:
   - name: pi-sw2-p9
     host: 10.21.2.9
   - name: pi-sw2-p10
-    host: 10.21.2.10
+    host: 10.21.2.10    # inferred from p9's pattern; unconfirmed until fpgas.online-infra#124
   - name: pi-sw2-p12
-    host: 10.21.2.12
+    host: 10.21.2.12    # inferred from p9's pattern; unconfirmed until fpgas.online-infra#124
     enabled: false
     reason: UART output is garbled on this rig; do not use
   - name: pi-sw2-p15
-    host: 10.21.2.15
+    host: 10.21.2.15    # inferred from p9's pattern; unconfirmed until fpgas.online-infra#124
 ```
 
 `user` (in `defaults`, a jump or a rig), `port`, `uart`, `baud`, `lock*` and `reboot_command` may be set per rig. When `user` is absent, ssh's default applies. The account comes from #124: add `user:` here once it is known.
@@ -4969,14 +4965,31 @@ PI = repo_root() / "hw" / "pi"
 FLASH = re.compile(r"(\s-f\b|--write-flash|--external-flash|--bulk-erase|--flash-sector|\s-o\b|--offset)")
 
 
+#: Prose and this test itself name the forbidden options on purpose.
+SRAM_SCAN_SKIP = {"AGENTS.md", "hw/README.md", "tools/tests/test_hw_pi.py"}
+
+
 def test_the_only_programming_line_is_sram():
     lines = [ln for ln in (PI / "xut_work.sh").read_text().splitlines() if "openFPGALoader -b" in ln]
     assert lines == ["openFPGALoader -b arty top.bit > program.log 2>&1"]
-    for f in [*PI.iterdir(), *(repo_root() / "tools/xut/hw").glob("*.py")]:
-        for ln in f.read_text().splitlines():
+    root = repo_root()
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    for name in tracked:
+        if name in SRAM_SCAN_SKIP or name.startswith("docs/") or name.startswith("log/"):
+            continue
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            continue  # binary
+        for ln in text.splitlines():
             if "openFPGALoader" in ln or "openocd" in ln:
-                assert not FLASH.search(ln), f"{f.name}: {ln}"
-                assert " program " not in ln, f"{f.name}: {ln} (openocd program is forbidden)"
+                assert not FLASH.search(ln), f"{name}: {ln}"
+                assert " program " not in ln, f"{name}: {ln} (openocd program is forbidden)"
 
 
 def _lock(tmp_path, *cmd, ttl="30", wait="1", owner="me@test"):
@@ -5906,7 +5919,8 @@ def default_sim_factory(slot: dict) -> DutSim:
     if slot["kind"] == "counter":
         return CounterSim()
     m = DutMap.from_json(slot["map_json"])
-    return ModelDut(registry.get(m.family, m.prim), m.attrs, m)  # looked up per call: tests monkeypatch it
+    model = registry.get(m.family, m.prim)  # looked up per call: tests monkeypatch it
+    return ModelDut(model, m.attrs, m, two_state=True)
 
 
 @dataclass
@@ -6417,6 +6431,7 @@ How the runner plugs in (it is the xsim runner's shape; `Runner.run` does the re
 - `configs`: the base's (the python run's `configs.json`). `config_exclusions.hw` are skipped by the base with their reason.
 - `run_config`: the first call runs `_batch` for the whole test; each call then writes its configuration's `trace.xtr` (repeat 1), `trace-r<k>.xtr`, `mismatches.txt` and `run.log`, and returns its `ConfigResult`.
 - `finish`: sets `res.hw` and adds the `openFPGALoader` version to `res.tools`.
+- `tools` and `available` both call `backend()`; it is built (and the rigs preflighted) once per process and rig selection, then cached.
 
 - [ ] **Step 1: Write the failing tests** — `tools/tests/test_runner_hw.py`. They use the step-2 TOYFF fixture test (`toy` fixture: `ToyDff` is its golden model) with `hw` declared, and the fakes from Task 9a:
 
@@ -6525,6 +6540,42 @@ def test_a_failed_post_flow_dut_check_is_a_flow_mismatch(tmp_path, fake_hw):
     assert _classes(tmp_path, case) == ["flow-mismatch"]
 
 
+def test_a_golden_dont_care_bit_reaches_the_fake_board_as_0(monkeypatch):
+    """A '-' output (a documented don't-care) must not break the fake board's protocol."""
+    from xut.hw.fake import default_sim_factory
+    from xut.wrap import Bit, DutMap
+    from xut_models.base import Model, Out
+
+    class DontCare(Model):
+        PRIM, CLOCKS, OUTPUTS = "DC", (), {"O": 1}
+
+        @classmethod
+        def inputs(cls):
+            return {"I": 1}
+
+        def power_on(self):
+            pass
+
+        def set_input(self, port, value):
+            pass
+
+        def clock_edge(self, port, rising):
+            pass
+
+        def glbl(self, signal, value):
+            pass
+
+        def outputs(self):
+            return {"O": Out("-", "doc:1")}
+
+    bits = [Bit("in", 0, "I", 0, "data"), Bit("out", 0, "O", 0, "data")]
+    m = DutMap("DC", "7series", "c", {}, 0, 1, 1, bits)
+    monkeypatch.setattr("xut_models.registry.get", lambda family, prim: DontCare)
+    sim = default_sim_factory({"kind": "dut", "map_json": m.to_json()})
+    sim.reset("0")
+    assert sim.out_bits() == "0"
+
+
 def test_a_bad_board_is_replaced(tmp_path, fake_hw):
     be, _ = fake_hw({"a": FakeRig(broken_selftest=True), "b": FakeRig()})
     _, res = _run(tmp_path, repeats=2)
@@ -6562,7 +6613,7 @@ def test_run_tests_python_at_rtl_hw_at_vivado(tmp_path, fake_hw):
     results = run_tests([case], ["hw"], _ctx(tmp_path, "vivado"))
     assert {(r.runner, r.flow) for r in results} == {("python", "rtl"), ("hw", "vivado")}
     assert (tmp_path / "build" / "rtl" / "python" / MS / case.id / "result.json").is_file()
-    with pytest.raises(XutError, match="does not run flow vivado"):
+    with pytest.raises(XutError, match=r"runner\(s\) \['xsim'\] do not run flow vivado"):
         run_tests([case], ["xsim"], _ctx(tmp_path, "vivado"))
 ```
 
@@ -7248,6 +7299,7 @@ uv run xut hw rigs > .cache/hw-rigs.log 2>&1; echo "exit=$?"; cat .cache/hw-rigs
 - **Expected:** `exit=0`; `ok` for pi-sw2-p9, p10 and p15, with each one's `openFPGALoader` version; p12 `disabled: UART output is garbled ...`.
 - If an address or account differs from `hw/rigs.yaml`, do **not** edit it here: it is an infra path. Copy it to `.cache/hw/rigs.local.yaml`, correct the copy, `export XUT_HW_CONFIG=$PWD/.cache/hw/rigs.local.yaml` for this session, and record a TODO in the log entry for an infra PR that fixes `hw/rigs.yaml`.
 - Record each rig's USB serial and openFPGALoader version in the log.
+- Check whether the rigs' openFPGALoader can read the Xilinx DNA without programming: `ssh -F .cache/hw/ssh_config xut-rig-pi-sw2-p9 'openFPGALoader --help' > .cache/ofl-help.log 2>&1`, then look for a DNA option in the log file. Record the answer (Decision 6); if it can, file the infra follow-up there.
 
 - [ ] **Step 3: Bring-up — self-test and the LUT6 smoke on every rig**
 
@@ -7290,6 +7342,7 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-run-hw-$(date +%s) -p
 ```
 
 - **Estimate:** about 32 hardware-declared flops tests. Each needs 1–2 bitstreams × 3 repeats × about 20–40 s per job (scp of about 2 MB through the jump host, SRAM programming, the UART session). With 3 rigs in parallel that is about 15–40 minutes, so report every 5 minutes from the `progress:` lines. If the first ETA exceeds 4 hours, switch to a 15-minute cadence.
+- This command also re-runs the golden model at flow `rtl` (python always runs first for vector tests), replacing Step 4's python results with identical ones at the same tree hash. That is expected, not a problem.
 - **Expected:** every `hw` cell is `pass`, or `skip` with a reason (declared unsupported, or the `IS_D_INVERTED` exclusion). `build/vivado/hw/unisim-2025.2/7series.FD*/result.json` exist, each with `hw.selftest = "pass"`, `hw.repeats = 3` and the rig, site and serial.
 
 - [ ] **Step 7: Cross-check and classify**
@@ -7312,7 +7365,7 @@ Expected in the best case: `exit=0`, with every test's matrix showing `hw` agree
 - [ ] **Step 8: Commit, then record status**
 
 ```bash
-git add tests/7series/register findings models catalog && git commit -m "flops: hardware pilot findings and expected divergences" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tests/7series/register findings models catalog/7series/FD*.overrides.yaml && git commit -m "flops: hardware pilot findings and expected divergences" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
 (Skip this commit if Step 7 changed nothing. If it changed any tree-hashed input, go back to Step 4 so every result carries the new tree hash.)
@@ -7425,9 +7478,9 @@ Expected: `exit=0`. A failure here is an infra bug: report it and stop.
 1. **Stimulus over the UART, not in the bitstream.** Spec §7.1 says timed events are compiled into "a BRAM image". They still are, but the image is loaded into the harness's BRAM over the UART at run time (`L`), not baked into the bitstream's BRAM INIT. A bitstream then depends only on its DUT slots, so tests with the same slot set share one cached bitstream, and changing a stimulus never costs a Vivado run.
 2. **The harness streams raw samples; the host writes the `.xtr`.** Spec §7.1: "streams `.xtr` with a header carrying the build ID, the configuration and a CRC". The fabric has no port names (they live in the wrapper's map), so the harness streams `S <n> <out_vec bits>` lines framed by a `run` line (build ID, slot) and an `end` line (sample count, status, CRC-32). The host checks the CRC and renders the `.xtr` with the map (`samples_to_trace`). The slot is the configuration, via the build manifest.
 3. **Power-on state.** The spec does not say how a stepped harness reproduces simulation's time-0 state. Here, each slot's input register powers up as the stimulus's `t=0` vector (flip-flop INIT in the bitstream), so the DUT sees those values through the configuration's GSR, as in simulation. A slot runs once per programming (the harness refuses a second run, status `used`), and every repeat reprograms. A different `t0` is a different slot, and part of the bitstream key.
-4. **Host-driven protocol.** The harness waits for commands (`I`, `L`, `R`) instead of dumping once after configuration, so the host can never miss the start of a dump, and one programming can run many slots in turn.
+4. **Host-driven protocol.** The harness waits for commands (`I`, `L`, `R`) instead of dumping once after configuration, so the host can never miss the start of a dump, and one programming can run many slots in turn. A lost host byte leaves the loader waiting for data that never comes; the session times out, and the retry reprograms the FPGA (there is deliberately no inter-byte timeout in the RTL, which the emulator would have to mirror).
 5. **The hw runner's flow and model source.** `hw` runs flow `vivado` (spec §6 lists "bitstream on hw" under the Vivado flow). Its results are recorded only against the reference model source `unisim-2025.2`, so crosscheck groups them with the golden model's; any other source is a skip with the reason.
-6. **Board DNA.** Spec §6 wants "board DNA, serial number and site" in `result.json`. A 7-series device has one DNA_PORT site, which is itself a primitive under test (§7.4: "the host reads the per-die value over JTAG"). The harness therefore must not occupy it, and JTAG DNA readback arrives with the configuration unit. Step 3 records the Arty's USB serial (FT2232), the rig and the site; `hw.dna` stays an optional field.
+6. **Board DNA.** Spec rev 3.4 §6 wanted "board DNA, serial number and site" in `result.json`. Two separate facts: the *harness* must not use the device's single DNA_PORT site, which is a primitive under test (§7.4); and reading the DNA over *JTAG* needs no DNA_PORT at all, only a JTAG tool that can do it without programming. Whether the rigs' `openFPGALoader` can (for example a `--read-dna` option) is unverified, because no board is reachable yet. Task 12, Step 2 checks `openFPGALoader --help` on a rig: if it offers a DNA read, a follow-up infra change adds it to `xut_work.sh` as a separate, non-programming invocation under the lock, extends the SRAM test's allow-list for exactly that line, and records `hw.dna`. Until then step 3 records the Arty's USB serial (FT2232), the rig and the site; `hw.dna` stays optional (spec rev 3.6 §6, §7.5).
 7. **The lock's mechanics** (ruling S49; spec rev 3.6 §7.5). `flock` on the rig's `lock` path under `/run/lock`, an owner record beside it (label, owner, host, boot id, pid, process groups, since, TTL), and our holder run under `timeout -k 10 <ttl>`, so it cannot outlive its TTL. flock is released by the kernel when its holder dies, so a lock that cannot be taken has a *live* holder: deleting or re-creating the file would put two holders on one board. So the lock file is never touched. A held lock is waited for up to `lock_wait_s`; then the rig is `busy` (a retryable harness error) and the job moves to the next rig. The only recovery is killing a holder verified as our own (same client owner and label, same host and boot id, a live pid in the recorded process group, past its TTL). The same wrapper guards any reboot. xut reboots a rig only through a configured `reboot_command`, and never by default. The lock path must match whatever the other fpgas.online users take; Task 12 checks this before any programming.
 8. **N and the system clock.** `MARGIN = 16` cycles at 100 MHz (160 ns, far above BUFG insertion and SLICE clock-to-out skews), with `set_max_delay -datapath_only` of (MARGIN − 2) periods. The system clock is the board oscillator through one BUFG, with no MMCM: the harness should not depend on a clock-management primitive, since those are primitives under test themselves.
 9. **What "run N times" means.** N = 3 programmings per bitstream (`--hw-repeats`). Any difference is `nondeterminism`, and the configuration fails.
