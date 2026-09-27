@@ -15,7 +15,7 @@
 - 4 new unit tests: explained by the companion; a transform-bug is not explained this
   way; no explanation when iverilog passed; no explanation without views.
 - `test_crosscheck.py` and `test_status_record.py`: 154 passed (8G scope, host lock).
-- Real data: this branch's `xut crosscheck '7series.FD*'` on unit/7series/flops@84b2c74
+- Real data: this branch's `xut crosscheck '7series.FD*'` on unit/7series/flops@84b2c74 (and again at 377b472)
   exits 0, with 56 agree and 2 known-divergence (previously exit 4).
 - ruff check and format are clean.
 
@@ -23,3 +23,11 @@
 - Merge PR #13, then rebase unit/7series/flops so Task 27's crosscheck exits 0.
 - The code-quality nit about the long commit subject is left as is: rewriting a reviewed
   branch's history is not allowed (AGENTS.md §12).
+
+## Correctness review fix
+- Correctness review must-fix: iverilog-vz follows verilator's exclusions, so it can fail a
+  configuration that iverilog never ran. That fail was compared with nothing, yet it counted as
+  explained. Now every configuration iverilog-vz failed must also have failed on iverilog;
+  otherwise the fail is not explained (fail closed). The reviewer's counterexample is a unit test.
+- 155 passed; the reviewer's counterexample now fails its false-clean assertion; the real flops
+  data still exits 0.

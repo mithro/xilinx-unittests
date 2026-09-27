@@ -1368,3 +1368,46 @@ def test_without_views_an_iverilog_vz_fail_stays_unexplained():
     found = classify(TID, vs, (ED,))
     issues = xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found)
     assert issues and "fail not explained" in issues[0]
+
+
+def test_iverilog_vz_fail_in_a_configuration_iverilog_did_not_fail_is_not_explained():
+    """PR #13 correctness review: iverilog-vz follows verilator's exclusions, so it can run
+    (and fail) a configuration iverilog skipped. That fail was compared with nothing."""
+    gold = {"c/S1": {"Q": "0"}, "d/S1": {"Q": "0"}}
+    vs = views(
+        V(
+            "python",
+            EXP(gold, "inferred:silent"),
+            configs=[{"cfg": "c", "status": "pass"}, {"cfg": "d", "status": "pass"}],
+        ),
+        V(
+            "iverilog",
+            T({"c/S1": {"Q": "1"}}),
+            status="fail",
+            reason="m",
+            configs=[
+                {"cfg": "c", "status": "fail", "reason": "m"},
+                {"cfg": "d", "status": "skip", "reason": "x"},
+            ],
+        ),
+        V(
+            "xsim",
+            T({"c/S1": {"Q": "1"}, "d/S1": {"Q": "0"}}),
+            status="fail",
+            reason="m",
+            configs=[{"cfg": "c", "status": "fail", "reason": "m"}, {"cfg": "d", "status": "pass"}],
+        ),
+        V(
+            "iverilog-vz",
+            T({"c/S1": {"Q": "1"}, "d/S1": {"Q": "1"}}),
+            status="fail",
+            reason="m",
+            configs=[
+                {"cfg": "c", "status": "fail", "reason": "m"},
+                {"cfg": "d", "status": "fail", "reason": "m"},
+            ],
+        ),
+    )
+    found = classify(TID, vs, (ED,))
+    issues = xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found, views=vs)
+    assert issues and "fail not explained" in issues[0]
