@@ -84,6 +84,8 @@ def test_self_referencing_read_is_not_a_write():
         ("vz_bad_looptask.v", "VZLOOPT", "cannot determine statically which override of r"),
         ("vz_bad_hier.v", "VZHIER", "hierarchical write to VZHIER.en"),
         ("vz_bad_fork.v", "VZFORK", "fork/join"),
+        # PR #10 review must-fix 5 (the reviewer's VZDIS): an early exit is not fall-through
+        ("vz_bad_disable.v", "VZDIS", "disable at line 13"),
     ],
 )
 def test_refusals(fname, module, msg):
@@ -558,3 +560,53 @@ def test_blocking_write_under_an_active_override_keeps_it(tmp_path):
     x = analyze(tmp_path / "vz_rw.v", "VZRAO", GLBL).forced["r"]
     ((ovr, _),) = x.overrides
     assert [r.active for r in x.stale_reads] == [ovr]  # forced: the write does not show
+
+
+JUMP = """\
+`timescale 1ps/1ps
+module VZJUMP (output Y, input R, input C, input D);
+  reg x, y;
+  integer i;
+  assign Y = y;
+  always @(posedge C) x <= D;
+  BODY
+endmodule
+"""
+
+
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        # a jump while an override is pending: its state never reaches the loop exit
+        ("always @(R) begin\n for (i = 0; i < 2; i = i + 1) begin\n assign x = 1'b1;\n"
+         " if (R) break;\n deassign x;\n end\n y = x;\n end", "break"),
+        ("always @(R) begin\n for (i = 0; i < 2; i = i + 1) begin\n assign x = 1'b1;\n"
+         " if (R) continue;\n deassign x;\n end\n y = x;\n end", "continue"),
+        # ... or the task's return never reaches the call site
+        ("task t; begin assign x = 1'b1; if (R) return; deassign x; end endtask\n"
+         "always @(R) begin t; y = x; end", "return"),
+        # a jump before the assign in a forcing block: the read after it is ambiguous too
+        ("always @(R) begin\n begin : blk\n if (R) disable blk;\n assign x = 1'b1;\n"
+         " end\n y = x;\n deassign x;\n end", "disable"),
+        # disabling, from elsewhere, a block that forces a reg
+        ("always @(R) begin : fb\n assign x = 1'b1;\n #1 deassign x;\n end\n"
+         "always @(D) disable fb;", "disable"),
+    ],
+)  # fmt: skip
+def test_early_exits_near_a_procedural_assign_are_refused(tmp_path, body, what):
+    """Ruling S50 (PR #10 must-fix 5): disable/break/continue/return in a tracked block
+    between an assign/deassign and a read is never treated as fall-through."""
+    f = tmp_path / "vz_jump.v"
+    f.write_text(JUMP.replace("BODY", body))
+    with pytest.raises(TransformError, match=f"{what} at line"):
+        analyze(f, "VZJUMP", GLBL)
+
+
+def test_an_early_exit_away_from_procedural_assigns_is_accepted(tmp_path):
+    body = (
+        "always @(R) if (R) assign x = 1'b1; else deassign x;\n"
+        "always @(posedge C) begin : other\n if (D) disable other;\n y = D;\n end"
+    )
+    f = tmp_path / "vz_jump.v"
+    f.write_text(JUMP.replace("BODY", body))
+    assert set(analyze(f, "VZJUMP", GLBL).triggers) == {"R"}

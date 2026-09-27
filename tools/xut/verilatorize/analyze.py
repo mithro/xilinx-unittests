@@ -51,6 +51,8 @@ _LOOPS = (
     _SK.ForeachLoop,
 )
 _NOOPS = (_SK.Empty, _SK.Disable, _SK.Return, _SK.Break, _SK.Continue)
+#: Early exits: their jump target is not modelled by ``track`` (PR #10 must-fix 5).
+_JUMPS = {_SK.Disable: "disable", _SK.Return: "return", _SK.Break: "break", _SK.Continue: "continue"}
 # Gate primitives whose leading terminals are all outputs (buf/not may drive several).
 _MULTI_OUT = ("buf", "not")
 _LITERALS = {
@@ -211,6 +213,10 @@ class _Driver:
     reads: frozenset[str]
     clocks: frozenset[str]
     nba: bool = False  # a non-blocking assignment (ruling S28: refused in a trigger cone)
+    #: an output of a same-file helper instance: (the helper's walker, the port's internal
+    #: signal in it, or None when the port has none). ``trace`` follows the port's cone
+    #: inside the helper for NBA-written regs and unresolvable drivers (PR #10 must-fix 1).
+    helper: tuple[_Walker, str | None] | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -540,6 +546,8 @@ class _Walker:
         self.always_forced: set[str] = set()  # forced from an always block (not only initial)
         self._stale: dict[str, dict[Span, Span | None]] = defaultdict(dict)
         self._proc = ast.ProceduralBlockKind.Always
+        # the block (or task) being tracked forces a reg: an early exit in it is refused
+        self._forcing = False
         self._dry = False  # loop fixpoint pre-pass: compute states without recording
         self.text = src.text
         self.buffer = inst.body.location.buffer
@@ -870,20 +878,24 @@ class _Walker:
                 ports[conn.port.name] = self.reads(e, set())
                 ins |= ports[conn.port.name]
             if conn.port.direction != _AD.In:
-                outs.append(e)
-        for e in outs:
+                outs.append((conn.port, e))
+        # A same-file helper module may force regs itself (ruling S18): analyse its body too.
+        child = _Walker(self.model, inst, self.src, parent=self)
+        child.prescan()
+        child.walk()
+        self.children.append(child)
+        for port, e in outs:
+            internal = getattr(port, "internalSymbol", None)
+            inside = child.key(internal) if internal is not None else None
             for nv in self.lvalues(e):
                 if self.key(nv.symbol) in self.forced_names:
                     raise self.err(
                         f"forced reg {self.key(nv.symbol)} is connected to an "
                         f"output of instance {inst.name}"
                     )
-                self.drive(nv, ins, frozenset())
-        # A same-file helper module may force regs itself (ruling S18): analyse its body too.
-        child = _Walker(self.model, inst, self.src, parent=self)
-        child.prescan()
-        child.walk()
-        self.children.append(child)
+                self.drivers[self.key(nv.symbol)].append(
+                    _Driver(frozenset(ins), frozenset(), helper=(child, inside))
+                )
 
     def lift(self, trig: set[str], en: set[str]) -> tuple[set[str], set[str]]:
         """Map roots that are this module's input ports up through the instance
@@ -921,6 +933,7 @@ class _Walker:
         if implicit:  # @* / always_comb / always_latch: sensitive to everything read
             levels |= self.reads(stmt, set())
         self._proc = pb.procedureKind
+        self._forcing = bool(self.forced_in(stmt))
         self.stmt(stmt, frozenset(), _Ctx(frozenset(edges), frozenset(levels)))
         start: dict[str, Span | None] = {}
         if pb.procedureKind == ast.ProceduralBlockKind.Always and body.kind != _SK.Timed:
@@ -1233,10 +1246,39 @@ class _Walker:
             if s.symbol.initializer is not None:
                 self.stale(s.symbol.initializer, st, in_task)
             return st
+        if k in _JUMPS:
+            self.jump(s, st)
+            return st
         if k in _NOOPS:
             return st
         self.stale(s, st, in_task)
         return st
+
+    def jump(self, s: ast.Statement, st: dict[str, Span | None]) -> None:
+        """Refuse an early exit (``disable``/``break``/``continue``/``return``) that could
+        carry an override state ``track`` does not model (PR #10 must-fix 5, ruling S50): one
+        taken while an assign/deassign is pending (``st``), one in a block or task that forces
+        a reg (a read after its jump target sees a state no fall-through path computed), and a
+        ``disable`` of a block or task that forces a reg (fail closed when the target cannot
+        be resolved)."""
+        what, line = _JUMPS[s.kind], self.src.line(s.sourceRange.start.offset)
+        why = None
+        if st:
+            why = f"while the override of {sorted(st)[0]} set earlier in the block is pending"
+        elif self._forcing:
+            why = "in a block or task that has a procedural assign/deassign"
+        elif s.kind == _SK.Disable:
+            sym = getattr(s.target, "symbol", None)
+            node = getattr(sym, "syntax", None)
+            if node is None:
+                why = "whose target block cannot be resolved"
+            elif any(n.kind in _SYNTAX_FORCE for n in _walk_syntax(node)):
+                why = f"of {sym.name}, which has a procedural assign/deassign"
+        if why is not None:
+            raise self.err(
+                f"{what} at line {line} {why}: its jump target is not modelled, so the "
+                "override state after it cannot be determined (spec §6.2 rule 4)"
+            )
 
     def track_expr(
         self, e: ast.Expression, st: dict[str, Span | None], in_task: str | None
@@ -1258,7 +1300,13 @@ class _Walker:
         if e.kind == _EK.Call and not e.isSystemCall:
             for a in e.arguments:
                 self.stale(a.right if a.kind == _EK.Assignment else a, st, in_task)
-            return self.track(e.subroutine.body, st, e.subroutine.name)
+            forcing, self._forcing = self._forcing, self._forcing or bool(
+                self.forced_in(e.subroutine.body)
+            )
+            try:
+                return self.track(e.subroutine.body, st, e.subroutine.name)
+            finally:
+                self._forcing = forcing
         self.stale(e, st, in_task)
         return st
 
@@ -1412,7 +1460,22 @@ class _Walker:
             for d in self.drivers[s]:
                 work += [(r, via_clock) for r in d.reads]
                 work += [(c, True) for c in d.clocks]
+                if d.helper is not None:
+                    self.through_helper(s, *d.helper)
         return trig, en - trig
+
+    def through_helper(self, s: str, child: _Walker, port: str | None) -> None:
+        """``s`` is driven by an output of the same-file helper instance ``child``: trace the
+        output's cone inside it (PR #10 must-fix 1, ruling S50), so an NBA-written reg there
+        lands in ``nba_sink`` (the rewrite then refuses a deassigned reg: ruling S28) and a
+        driver it cannot resolve refuses the model. The triggers stay the over-approximation
+        ``sub_instance`` recorded (every input of the instance)."""
+        if port is None:
+            raise self.err(
+                f"cannot trace {s}: the output port of helper instance {child.inst.name} "
+                "that drives it has no internal signal"
+            )
+        child.trace({port})
 
 
 def _merge(*states: dict[str, Span | None]) -> dict[str, Span | None]:
