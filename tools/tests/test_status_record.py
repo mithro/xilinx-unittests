@@ -742,3 +742,25 @@ def test_a_verilator_pass_needs_its_iverilog_vz_companion(repo, vz, want, gap):
         assert msgs and msgs[0].endswith(
             f"verilator pass not confirmed by iverilog-vz: {gap}; recorded as error"
         ), msgs
+
+
+@pytest.mark.parametrize("seed", [None, "default", 77])
+def test_record_warns_when_crediting_a_python_run_with_a_non_default_seed(repo, seed):
+    """Ruling S57: the unit guards (xut.unitkit.vector_reach) vouch for the default-seed
+    stimulus only, so crediting a generated vector test's python run made with
+    ``xut run --seed N`` warns. TODO: refuse it once `xut freeze-seed` exists."""
+    import zlib
+
+    _results(repo)
+    cap = TESTS[0]["id"]
+    data_p = repo / "build/rtl/python" / REFERENCE_MODEL_SOURCE / cap / "result.json"
+    data = json.loads(data_p.read_text())
+    data["seeds"]["stimulus"] = zlib.crc32(cap.encode()) if seed == "default" else seed
+    data_p.write_text(json.dumps(data))
+    warnings: list[str] = []
+    record(repo, "FDRE", warn=warnings.append)
+    seeded = [w for w in warnings if "seed" in w]
+    if seed == 77:
+        assert any(cap in w and "77" in w for w in seeded), warnings
+    else:
+        assert not seeded, seeded
