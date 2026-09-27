@@ -817,8 +817,8 @@ def _companion_explained(
     # configuration iverilog-vz failed that iverilog did not also fail was never checked
     # against anything, so it is not explained (fail closed).
     vz_failed, iv_failed = _failed_cfgs(v), _failed_cfgs(iv)
-    if vz_failed is not None and (iv_failed is None or not vz_failed <= iv_failed):
-        return False
+    if vz_failed is not None and (not vz_failed or iv_failed is None or not vz_failed <= iv_failed):
+        return False  # an empty set (a fail with no failed configuration) explains nothing
     return not any((f.known_of or f.cls) == "transform-bug" and _applies(f, v) for f in findings)
 
 

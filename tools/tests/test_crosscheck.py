@@ -1411,3 +1411,18 @@ def test_iverilog_vz_fail_in_a_configuration_iverilog_did_not_fail_is_not_explai
     found = classify(TID, vs, (ED,))
     issues = xc._result_issues("ms1", vs[("rtl", "iverilog-vz")], found, views=vs)
     assert issues and "fail not explained" in issues[0]
+
+
+def test_a_fail_with_no_failed_configuration_is_never_companion_explained():
+    vs = _cx_views(T(Q1))
+    vz = vs[("rtl", "iverilog-vz")]
+    vs[("rtl", "iverilog-vz")] = View(
+        vz.flow,
+        vz.runner,
+        "fail",
+        vz.model_source,
+        vz.trace,
+        {**vz.result, "configs": [{"cfg": "c", "status": "pass"}]},
+    )
+    found = classify(TID, vs, (ED,))
+    assert not xc._companion_explained(vs[("rtl", "iverilog-vz")], found, vs)
