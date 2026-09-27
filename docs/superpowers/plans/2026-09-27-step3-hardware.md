@@ -3761,11 +3761,17 @@ uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cac
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run xut lint --branch > .cache/lint.log 2>&1; cat .cache/lint.log
-git add tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/plan.py tools/xut/hw/hwsim.py tools/xut/cli.py tools/tests/test_hw_rtl.py
-git commit -m "hw: simulate the harness on Icarus and xsim; byte-exact against the emulator; xut hw sim" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add tools/xut/hw/plan.py tools/xut/hw/hwsim.py tools/xut/cli.py tools/tests/test_hw_plan.py tools/tests/test_hw_rtl.py
+git commit -m "hw: the shared planner, sim_case and xut hw sim; FDRE's golden trace reproduced in simulation" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
-(`tail` reads the log file, not a pipe.) Write `log/<ts>-infra-hw-harness-harness.md`: the byte-exact results per simulator, the `xut hw sim 'unit:flops'` summary for both simulators (pass/skip counts, durations) and the next steps. Commit it as `infra: log the hw harness session`, push, and open PR A:
+(`tail` reads the log file, not a pipe.) Write `log/<ts>-infra-hw-harness-harness.md`: the byte-exact results per simulator, the `xut hw sim 'unit:flops'` summary for both simulators (pass/skip counts, durations) and the next steps. Commit it, push, and open PR A:
+
+```bash
+git add log/<ts>-infra-hw-harness-harness.md
+git commit -m "infra: log the hw harness session" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
 
 ```bash
 git -c credential.helper= -c credential.helper='!gh auth git-credential' push https://github.com/mithro/xilinx-unittests.git infra/hw-harness
@@ -4490,7 +4496,7 @@ git commit -m "hw: Vivado batch build with generated constraints, post-flow DUT 
 ### Task 7: The first real builds — self-test, the 28-clock limit, FDRE and the cache
 
 **Files:**
-- Modify: `tools/tests/test_hw_vivado.py` (a `vivado`-marked build test), `tools/xut/hw/vivado.py` (only if a build shows a justified `ALLOWED_CRITICAL` entry, or a constraint/Tcl fix)
+- Modify: `tools/tests/test_hw_vivado.py` (the `vivado`-marked build tests), `tools/xut/hw/vivado.py` (only if a build shows a justified `ALLOWED_CRITICAL` entry, or a constraint/Tcl fix), `tools/xut/hw/slots.py` (only if `DUT_BUFG_BUDGET` must be lowered)
 
 - [ ] **Step 1: Add the build test** to `tools/tests/test_hw_vivado.py`:
 
@@ -4569,7 +4575,16 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwbuild-$(date +%s) -
 
 - [ ] **Step 4: Log, commit, push and open PR B**
 
-Commit any test/fix changes (`hw: ...`). Write `log/<ts>-infra-hw-vivado-builds.md`: build count, durations, IDs, WNS/WHS, utilization, the cache re-run, and any `ALLOWED_CRITICAL` entries with their justification. Commit it as `infra: log the hw Vivado build session`, push and open PR B:
+Commit the build tests (and any fix this task made to the flow), then write `log/<ts>-infra-hw-vivado-builds.md`: build count, durations, IDs, WNS/WHS, utilization, the largest DUT clock latency, the cache re-run, and any `ALLOWED_CRITICAL` entries with their justification. If Task 7 lowered `DUT_BUFG_BUDGET`, the log says so and a docs PR amends spec §7.1's "28 DUT clocks" to match.
+
+```bash
+git add tools/tests/test_hw_vivado.py tools/xut/hw/vivado.py tools/xut/hw/slots.py
+git commit -m "hw: real builds — self-test, the 28-clock budget, latency and DUT checks" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+git add log/<ts>-infra-hw-vivado-builds.md
+git commit -m "infra: log the hw Vivado build session" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
+```
+
+Push and open PR B:
 
 ```bash
 git -c credential.helper= -c credential.helper='!gh auth git-credential' push https://github.com/mithro/xilinx-unittests.git infra/hw-vivado
@@ -7356,7 +7371,7 @@ uv run pytest tools/tests/test_runner_hw.py tools/tests/test_run.py -v > .cache/
 systemd-run --user --scope --slice=vivado.slice --unit=xut-pytest-$(date +%s) -p MemoryMax=32G -p MemorySwapMax=0 -- \
   uv run pytest -n 4 --dist loadfile -m "not slow" > .cache/pytest-all.log 2>&1; tail -n 5 .cache/pytest-all.log
 uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_run.py
+git add tools/xut/runners tools/xut/run.py tools/xut/cli.py tools/xut/crosscheck.py tools/xut/schemas/result.schema.json tools/tests/test_runner_hw.py tools/tests/test_run.py tools/tests/test_crosscheck.py
 git commit -m "runners: add the hw runner (flow vivado; self-test, repeats, silicon cross-check) and xut run --flow vivado" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -7676,7 +7691,7 @@ uv run xut doctor > .cache/doctor.log 2>&1; cat .cache/doctor.log
 - **Expected:** the full suite passes, with `vivado` and `container` tests included (they need Vivado and the image, both on this host). The `hw` tests skip with "no board access". Lint is clean.
 - `xut doctor` shows `hw-rigs` ok and, until #124 is done, a failing `hw:<rig>` per rig, with the ssh error as the detail. Record that output in the log: it is the honest state of board access.
 
-Write `log/<ts>-infra-hw-runner-runner.md` (what changed, the test results, the doctor output, the smoke build's ID and timing, next steps: Task 12 once #124 grants access). Commit it as `infra: log the hw runner session`, push and open PR C with `--base infra/hw-vivado`. The body covers Tasks 8–11 and Review Focus items 1, 4 and 5, and ends with the Claude Code line.
+Write `log/<ts>-infra-hw-runner-runner.md` (what changed, the test results, the doctor output, the smoke build's ID and timing, next steps: Task 12 once #124 grants access). Commit it (`git add log/<ts>-infra-hw-runner-runner.md && git commit -m "infra: log the hw runner session" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`), push and open PR C with `--base infra/hw-vivado`. The body covers Tasks 8–11 and Review Focus items 1, 4 and 5, and ends with the Claude Code line.
 
 ---
 
@@ -7827,9 +7842,11 @@ Write `log/<ts>-unit-7series-flops-hw-pilot.md`:
 - any rigs-file TODO for infra;
 - the luts decision (Task 13 or its TODO).
 
-Commit it (`flops: log the hardware pilot`), push, and open PR D:
+Commit it, push, and open PR D:
 
 ```bash
+git add log/<ts>-unit-7series-flops-hw-pilot.md
+git commit -m "flops: log the hardware pilot" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 git -c credential.helper= -c credential.helper='!gh auth git-credential' push https://github.com/mithro/xilinx-unittests.git unit/7series/flops
 gh pr create --base main --title "flops: hardware pilot" --body-file .cache/pr-d.md
 ```
@@ -7852,7 +7869,7 @@ The body summarises the silicon results and findings, and ends with the Claude C
   - any test built on a GSR pulse declares `hw: "unsupported"` with the §7.2 reason;
   - `CFGLUT5`'s `CLK` is a stepped clock like a flop's, so its shift tests are renderable.
 
-  Commit any change as `luts: declare the hw runner for the vector tests`.
+  Commit any change: `git add tests/7series/clb && git commit -m "luts: declare the hw runner for the vector tests" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"`.
 - [ ] **Step 2: Prove it in simulation first**
 
 ```bash
