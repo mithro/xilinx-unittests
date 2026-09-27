@@ -1081,6 +1081,7 @@ Expected: all pass (the step-2 `test_stimcompile.py` still passes after the rena
 
 **Files:**
 - Create: `tools/xut/hw/interp.py`, `tools/xut/hw/selftest.py`, `tools/xut/hw/replay.py`, `tools/tests/hw_toy.py`, `tools/tests/fixtures/hw/TOYFF.v`, `tools/tests/test_hw_interp.py`, `tools/tests/test_hw_selftest.py`, `tools/tests/test_hw_replay.py`
+- Modify: `tools/xut/stimcompile.py` (`out_port_bits`, `port_values`: the one out_vec → port grouping, shared by `raw_to_trace` and `samples_to_trace`)
 
 **Interfaces:**
 - Produces (`xut.hw.interp`, standard library only):
@@ -1112,46 +1113,20 @@ endmodule
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
-"""A toy flip-flop for the hardware tests: fixtures/hw/TOYFF.v and its golden model."""
+"""A toy flip-flop for the hardware tests: fixtures/hw/TOYFF.v, with the step-2 toy's
+catalog entry (``TOY_ENTRY``) and golden model (``ToyDff``): one definition of each."""
 
 from pathlib import Path
 
-from test_runner_base import TOY_ENTRY as TOY_HW_ENTRY  # the step-2 toy: one definition
+from test_golden import ToyDff
+from test_runner_base import TOY_ENTRY as TOY_HW_ENTRY
 
 from xut.wrap import DutMap, DutSpec, build_map, spec_from_catalog
-from xut_models.base import Model, Out, bit_attr
+
+__all__ = ["TOYFF_V", "TOY_HW_ENTRY", "ToyDff", "toy_map", "toy_spec"]
 
 FIX = Path(__file__).parent / "fixtures" / "hw"
 TOYFF_V = FIX / "TOYFF.v"
-
-
-class HwToyFf(Model):
-    PRIM = "TOYFF"
-    CLOCKS = ("C",)
-    OUTPUTS = {"Q": 1}
-
-    @classmethod
-    def inputs(cls) -> dict[str, int]:
-        return {"C": 1, "D": 1}
-
-    def power_on(self) -> None:
-        self.init = bit_attr(self.attrs.get("INIT", 0))
-        self.q, self.d, self.gsr = self.init, 0, 1
-
-    def set_input(self, port: str, value: int) -> None:
-        self.d = value
-
-    def clock_edge(self, port: str, rising: bool) -> None:
-        if rising and not self.gsr:
-            self.q = self.d
-
-    def glbl(self, signal: str, value: int) -> None:
-        self.gsr = value
-        if value:
-            self.q = self.init
-
-    def outputs(self) -> dict[str, Out]:
-        return {"Q": Out(str(self.q), "doc:1")}
 
 
 def toy_spec(cfg: str, init: int) -> DutSpec:
@@ -1319,7 +1294,7 @@ golden trace: the compiler and the interpreter preserve every behaviour the step
 harness claims to preserve (spec §5.1 ruling S8')."""
 
 import pytest
-from hw_toy import HwToyFf, toy_map
+from hw_toy import ToyDff, toy_map
 
 from xut.golden import replay
 from xut.hw.compile import HwUnrenderable, compile_program
@@ -1342,7 +1317,7 @@ def test_toy(init):
         b.set(D=d)
         b.cycle("C")
     vec = b.build()
-    assert hw_replay(HwToyFf, vec, m).samples == replay(HwToyFf, vec, m)[0].samples
+    assert hw_replay(ToyDff, vec, m).samples == replay(ToyDff, vec, m)[0].samples
 
 
 def _flops_vector_cases():
@@ -1726,7 +1701,26 @@ def check(slot: int, reply: proto.RunReply) -> str | None:
     return None
 ```
 
-- [ ] **Step 5: Implement `tools/xut/hw/replay.py`**
+- [ ] **Step 5: Share the port grouping.** In `tools/xut/stimcompile.py`, lift `raw_to_trace`'s grouping into two functions and have `raw_to_trace` use them (its step-2 tests must pass unchanged):
+
+```python
+def out_port_bits(m: DutMap) -> dict[str, list[Bit]]:
+    """Each out_vec port's bits, MSB first (map order of ports)."""
+    return {
+        p: sorted((b for b in m.of("out") if b.port == p), key=lambda b: -b.index)
+        for p in m.out_ports()
+    }
+
+
+def port_values(ports: dict[str, list[Bit]], bits: str) -> dict[str, str]:
+    """One out_vec sample (MSB first) as per-port values (MSB first)."""
+    by_index = bits[::-1]  # by_index[i] is out_vec[i]
+    return {p: "".join(by_index[b.bit] for b in pb) for p, pb in ports.items()}
+```
+
+(`raw_to_trace` then builds `ports = out_port_bits(m)` once and adds `port_values(ports, bits)` per line; import `Bit` from `xut.wrap`.)
+
+- [ ] **Step 6: Implement `tools/xut/hw/replay.py`**
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -1749,6 +1743,7 @@ from xut.formats.xvec import Vec
 from xut.hw.compile import compile_program
 from xut.hw.image import width
 from xut.hw.interp import run_program
+from xut.stimcompile import out_port_bits, port_values
 from xut.wrap import DutMap
 from xut_models.base import Model
 
@@ -1810,19 +1805,16 @@ def samples_to_trace(
     header: dict[str, str],
     kind: str = "actual",
 ) -> Trace:
-    """out_vec samples (MSB first) as a trace grouped by port, like ``raw_to_trace``."""
+    """out_vec samples (MSB first) as a trace grouped by port, with the port grouping
+    ``raw_to_trace`` uses (``stimcompile.out_port_bits``/``port_values``)."""
     if len(samples) != len(labels):
         raise SampleError(f"{len(samples)} samples for {len(labels)} labels")
     t = Trace({**header, **({"kind": kind} if kind != "actual" else {})})
-    ports = {
-        p: sorted((b for b in m.of("out") if b.port == p), key=lambda b: -b.index)
-        for p in m.out_ports()
-    }
+    ports = out_port_bits(m)
     for label, bits in zip(labels, samples, strict=True):
         if len(bits) != width(m.nout):
             raise SampleError(f"sample {label}: {len(bits)} bits, out_vec is {width(m.nout)}")
-        by_index = bits[::-1]
-        t.add(label, {p: "".join(by_index[b.bit] for b in pb) for p, pb in ports.items()})
+        t.add(label, port_values(ports, bits))
     return t
 
 
@@ -1838,12 +1830,12 @@ def hw_replay(model_cls: type[Model], vec: Vec, m: DutMap) -> Trace:
     return samples_to_trace(out.samples, prog.labels, m, header, kind="expected")
 ```
 
-- [ ] **Step 6: Run the tests, lint and commit**
+- [ ] **Step 7: Run the tests, lint and commit**
 
 ```bash
-uv run pytest tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
+uv run pytest tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py tools/tests/test_stimcompile.py -v > .cache/pytest.log 2>&1; cat .cache/pytest.log
 uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/hw/interp.py tools/xut/hw/selftest.py tools/xut/hw/replay.py tools/tests/hw_toy.py tools/tests/fixtures/hw tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py
+git add tools/xut/hw/interp.py tools/xut/hw/selftest.py tools/xut/hw/replay.py tools/xut/stimcompile.py tools/tests/hw_toy.py tools/tests/fixtures/hw tools/tests/test_hw_interp.py tools/tests/test_hw_selftest.py tools/tests/test_hw_replay.py
 git commit -m "hw: reference interpreter, harness emulator, self-test channels and golden-model DUTs" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -2852,7 +2844,7 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
 ### Task 5a: Capped scopes, and the harness in simulation — byte-exact against the emulator
 
 **Files:**
-- Create: `tools/xut/scope.py`, `tools/tests/test_scope.py`, `tools/xut/hdl/hw/xut_hw_tb.sv`, `tools/xut/hw/hwsim.py`, `tools/tests/test_hw_rtl.py`
+- Create: `tools/xut/scope.py`, `tools/tests/test_scope.py`, `tools/xut/hdl/hw/xut_hw_tb.sv`, `tools/xut/hw/steps.py`, `tools/xut/hw/hwsim.py`, `tools/tests/test_hw_rtl.py`
 
 **Interfaces:**
 - Produces (`xut.scope`; here, not in PR B, because `xut hw sim` needs it first):
@@ -2861,9 +2853,11 @@ git commit -m "hw: harness RTL (UART, printer, controller, top) and the per-bits
   - `VIVADO_MEMORY_MAX = "16G"`, `OOM_RCS = (137, -9)`
 - Consumes: `xut.slots.vivado_slot()` (PR #10, ruling S50 CQ2): a context manager that takes one of `XUT_VIVADO_SLOTS` (default 4) flock files `$XDG_RUNTIME_DIR/xut-vivado/slot{N}.lock`, with a non-blocking scan and then a wait. This plan has no slot mechanism of its own.
 - Produces (`xut.hw.hwsim`):
-  - `Step(send: bytes, lines: int)`: one host command and the number of lines its reply has
-  - `session_steps(programs: dict[int, HwProgram]) -> list[Step]`: `I`, then per slot in order `L` (1 line) and `R` (`2 + len(labels)` lines). `xut.hw.session` reuses it for boards.
-  - `render_host(steps) -> tuple[str, int]`, `split_replies(data, steps) -> list[bytes]`, `run_replies(replies, programs) -> dict[int, RunReply]`
+  - `render_host(steps) -> tuple[str, int]`
+- Produces (`xut.hw.steps`, standard library only; the simulator, `xut.hw.session`, the smoke design and the tests all import it):
+  - `Step(send: bytes, lines: int)`, `RUN_FRAME_LINES = 2`
+  - `session_steps(programs: dict[int, HwProgram]) -> list[Step]`: `I`, then per slot in order `L` (1 line) and `R` (`RUN_FRAME_LINES + len(labels)` lines)
+  - `split_replies(data, steps) -> list[bytes]`, `slot_replies(replies, slots) -> dict[int, tuple[bytes, bytes]]` (the one owner of the reply indexing), `run_replies(replies, slots) -> dict[int, RunReply]`
   - `simulate(slots, steps, sim, workdir, *, model_source, work_root, extra_files=(), maxwords=MAXWORDS, margin=MARGIN, timeout_s=1800) -> SimResult` with `SimResult(tx: bytes, replies: list[bytes], log: Path, margin_violations: list[str])`
   - `SIM_BUILD_ID = 0x51AB0001`, `CPB = 4` (the testbench's UART clocks per bit), `HW_SIM_MEMORY_MAX = "16G"`, `HwSimError`
 
@@ -3149,16 +3143,17 @@ Icarus (container) and on xsim (Vivado), error paths included (Task 5a); and the
 simulated harness reproduces the golden traces of real flops (Task 5b)."""
 
 import pytest
-from hw_toy import TOYFF_V, HwToyFf, toy_map, toy_spec
+from hw_toy import TOYFF_V, ToyDff, toy_map, toy_spec
 
 from xut.hw import proto
 from xut.hw.compile import compile_program
-from xut.hw.hwsim import SIM_BUILD_ID, Step, session_steps, simulate
+from xut.hw.hwsim import SIM_BUILD_ID, simulate
 from xut.hw.image import MARGIN, MAXWORDS, W_END
 from xut.hw.interp import EmuSlot, Harness
 from xut.hw.replay import ModelDut
 from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
 from xut.hw.slots import SELFTEST_SLOTS, dut_slot
+from xut.hw.steps import Step, run_replies, session_steps
 from xut.modelsrc import resolve
 from xut.stimgen import VecBuilder
 from xut.wrap import render_wrapper
@@ -3185,8 +3180,12 @@ def _toy(init: int, d0: int):
     return m, prog, dut_slot(m, render_wrapper(toy_spec(cfg, init), m), prog.t0), vec
 
 
+#: The error-path steps ``_steps`` puts before the normal session.
+N_ERROR_STEPS = 4
+
+
 def _steps(progs):
-    """The normal session, preceded and interleaved with every error path."""
+    """The normal session, preceded and followed by every error path."""
     t2 = progs[2]
     bad_crc = bytearray(proto.load_frame(2, t2.words))
     bad_crc[-1] ^= 0xFF
@@ -3197,6 +3196,7 @@ def _steps(progs):
         Step(proto.load_frame(9, [W_END]), 1),  # badslot
     ]
     post = [Step(proto.load_frame(2, t2.words), 1), Step(proto.CMD_RUN, 2)]  # used
+    assert len(pre) == N_ERROR_STEPS
     return pre + session_steps(progs) + post
 
 
@@ -3220,8 +3220,8 @@ def test_rtl_matches_the_emulator_byte_for_byte(sim, tmp_path):
         [
             EmuSlot(16, 16, 0, "0" * 16, PassthroughSim()),
             EmuSlot(2, 8, 1, "00", CounterSim()),
-            EmuSlot(1, 1, 1, a[1].t0, ModelDut(HwToyFf, a[3].attrs, a[0])),
-            EmuSlot(1, 1, 1, b[1].t0, ModelDut(HwToyFf, b[3].attrs, b[0])),
+            EmuSlot(1, 1, 1, a[1].t0, ModelDut(ToyDff, a[3].attrs, a[0])),
+            EmuSlot(1, 1, 1, b[1].t0, ModelDut(ToyDff, b[3].attrs, b[0])),
         ],
         margin=MARGIN,
         maxwords=MAXWORDS,
@@ -3229,9 +3229,8 @@ def test_rtl_matches_the_emulator_byte_for_byte(sim, tmp_path):
     expected = b"".join(emu.feed(s.send) for s in steps)
     assert r.margin_violations == []
     assert r.tx == expected
-    n_pre = 4  # _steps' error-path steps before the normal session
-    first_toy_run = n_pre + 1 + 2 * 2 + 1  # after I, slots 0 and 1 (L and R each), slot 2's L
-    toy_run = proto.parse_run(r.replies[first_toy_run])
+    session = r.replies[N_ERROR_STEPS : N_ERROR_STEPS + len(session_steps(progs))]
+    toy_run = run_replies(session, progs)[2]
     assert toy_run.status == 0 and toy_run.samples[0] == "0"  # power-on Q = INIT = 0
     assert toy_run.samples[1] == "1"  # the first edge captured the power-on D = t0 = 1
 ```
@@ -3240,7 +3239,75 @@ The last three asserts also pin the power-on semantics on the RTL: the toy slot 
 
 Run `uv run pytest tools/tests/test_scope.py tools/tests/test_hw_rtl.py > .cache/pytest.log 2>&1; cat .cache/pytest.log`. Expected: `No module named 'xut.scope'` (then, after Step 2, `xut.hw.hwsim`).
 
-- [ ] **Step 5: Implement `tools/xut/hw/hwsim.py`**
+- [ ] **Step 5: Implement `tools/xut/hw/steps.py`** (standard library only: the session layout is protocol, and `xut.hw.session` and the Pi-side tests use it without the simulator):
+
+```python
+# SPDX-License-Identifier: Apache-2.0
+"""The host's side of one harness session, independent of how the bytes travel
+(simulation testbench, UART on a rig, the emulator). Standard library only.
+
+A session is ``I``, then per slot in slot order ``L`` (one reply line) and ``R`` (the run
+line, one line per sample, the end line). ``slot_replies`` owns that indexing; the
+simulator, the board session and the tests all use it rather than re-deriving it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+
+from xut.hw import proto
+from xut.hw.image import HwProgram
+
+#: Lines in an ``R`` reply besides its samples: the run line and the end line.
+RUN_FRAME_LINES = 2
+
+
+@dataclass(frozen=True)
+class Step:
+    send: bytes
+    lines: int  # the lines of the harness's reply
+
+
+def session_steps(programs: dict[int, HwProgram]) -> list[Step]:
+    """``I``, then per slot in order: ``L`` (one line) and ``R`` (run, samples, end)."""
+    steps = [Step(proto.CMD_ID, 1)]
+    for slot, p in sorted(programs.items()):
+        steps.append(Step(proto.load_frame(slot, p.words), 1))
+        steps.append(Step(proto.CMD_RUN, RUN_FRAME_LINES + len(p.labels)))
+    return steps
+
+
+def split_replies(data: bytes, steps: Sequence[Step]) -> list[bytes]:
+    """``data`` cut into one reply per step by line counts; leftovers are an error."""
+    out, pos = [], 0
+    for s in steps:
+        end = pos
+        for _ in range(s.lines):
+            j = data.find(b"\n", end)
+            if j < 0:
+                raise proto.ProtoError(f"reply to {s.send[:1]!r} truncated: {data[pos:][:80]!r}")
+            end = j + 1
+        out.append(data[pos:end])
+        pos = end
+    if pos != len(data):
+        raise proto.ProtoError(
+            f"{len(data) - pos} unexpected trailing byte(s): {data[pos:][:80]!r}"
+        )
+    return out
+
+
+def slot_replies(replies: Sequence[bytes], slots: Iterable[int]) -> dict[int, tuple[bytes, bytes]]:
+    """The raw ``(L reply, R reply)`` per slot of a ``session_steps`` session."""
+    return {s: (replies[1 + 2 * k], replies[2 + 2 * k]) for k, s in enumerate(sorted(slots))}
+
+
+def run_replies(replies: Sequence[bytes], slots: Iterable[int]) -> dict[int, proto.RunReply]:
+    """The parsed ``R`` reply per slot."""
+    return {s: proto.parse_run(run) for s, (_, run) in slot_replies(replies, slots).items()}
+```
+
+- [ ] **Step 6: Implement `tools/xut/hw/hwsim.py`**
 
 ```python
 # SPDX-License-Identifier: Apache-2.0
@@ -3263,9 +3330,9 @@ from pathlib import Path
 
 from xut.container import executor_for
 from xut.errors import XutError
-from xut.hw import proto
-from xut.hw.image import MARGIN, MAXWORDS, HwProgram
+from xut.hw.image import MARGIN, MAXWORDS
 from xut.hw.slots import HW_HDL, HW_INCLUDES, HW_SOURCES, SlotBuild, render_cfg_vh, render_slots
+from xut.hw.steps import Step, split_replies
 from xut.modelsrc import ModelSource
 from xut.runners.xsim import render_script
 from xut.scope import scoped_run
@@ -3282,21 +3349,6 @@ class HwSimError(XutError, RuntimeError):
     """The simulated harness did not compile, did not finish, or answered malformed."""
 
 
-@dataclass(frozen=True)
-class Step:
-    send: bytes
-    lines: int  # the lines of the harness's reply
-
-
-def session_steps(programs: dict[int, HwProgram]) -> list[Step]:
-    """``I``, then per slot in order: ``L`` (one line) and ``R`` (run, samples, end)."""
-    steps = [Step(proto.CMD_ID, 1)]
-    for slot, p in sorted(programs.items()):
-        steps.append(Step(proto.load_frame(slot, p.words), 1))
-        steps.append(Step(proto.CMD_RUN, 2 + len(p.labels)))
-    return steps
-
-
 def render_host(steps: Sequence[Step]) -> tuple[str, int]:
     """``host.memh`` for ``steps`` and its word count."""
     words: list[int] = []
@@ -3307,25 +3359,6 @@ def render_host(steps: Sequence[Step]) -> tuple[str, int]:
         words.append((1 << 28) | nl)
     words.append(0xF << 28)
     return "".join(f"{w:08x}\n" for w in words), len(words)
-
-
-def split_replies(data: bytes, steps: Sequence[Step]) -> list[bytes]:
-    """``data`` cut into one reply per step by line counts; leftovers are an error."""
-    out, pos = [], 0
-    for s in steps:
-        end = pos
-        for _ in range(s.lines):
-            j = data.find(b"\n", end)
-            if j < 0:
-                raise proto.ProtoError(f"reply to {s.send[:1]!r} truncated: {data[pos:][:80]!r}")
-            end = j + 1
-        out.append(data[pos:end])
-        pos = end
-    if pos != len(data):
-        raise proto.ProtoError(
-            f"{len(data) - pos} unexpected trailing byte(s): {data[pos:][:80]!r}"
-        )
-    return out
 
 
 @dataclass
@@ -3408,18 +3441,9 @@ def simulate(
     tx = bytes(int(x, 16) for x in tx_file.read_text().split())
     viol = [ln.strip() for ln in text.splitlines() if "XUT_MARGIN_VIOLATION" in ln]
     return SimResult(tx, split_replies(tx, steps), workdir / "run.log", viol)
-
-
-def run_replies(replies: list[bytes], programs: dict[int, HwProgram]) -> dict[int, proto.RunReply]:
-    """The parsed ``R`` reply per slot of a ``session_steps`` session: ``I`` comes first,
-    then ``L`` and ``R`` per slot in order, so the k-th slot's run reply is
-    ``replies[2 + 2 * k]``."""
-    return {s: proto.parse_run(replies[2 + 2 * k]) for k, s in enumerate(sorted(programs))}
 ```
 
-Reply indexing: `session_steps` puts `I` first, then `L`/`R` per slot, so the k-th slot's run reply is `replies[2 + 2 * k]` (`run_replies`).
-
-- [ ] **Step 6: Run the byte-exact tests on both simulators.** Expected under 10 minutes, so report every 60 s:
+- [ ] **Step 7: Run the byte-exact tests on both simulators.** Expected under 10 minutes, so report every 60 s:
 
 ```bash
 systemd-run --user --scope --slice=vivado.slice --unit=xut-hwrtl-$(date +%s) -p MemoryMax=16G -p MemorySwapMax=0 -- \
@@ -3428,11 +3452,11 @@ systemd-run --user --scope --slice=vivado.slice --unit=xut-hwrtl-$(date +%s) -p 
 
 Expected: `test_rtl_matches_the_emulator_byte_for_byte[iverilog]` and `[xsim]` pass. On a mismatch, `r.tx` and `expected` differ at some byte. Find the first differing line (write both to `.cache/` and diff the files) and decide from the protocol spec which side is wrong. Fix the RTL or the emulator, never the test. Pay particular attention to the handling of `lslot`/`lwords` after a failed load, and to the CRC of the `load` reply.
 
-- [ ] **Step 7: Lint and commit**
+- [ ] **Step 8: Lint and commit**
 
 ```bash
 uv run ruff format tools > .cache/ruff.log 2>&1; uv run ruff check tools >> .cache/ruff.log 2>&1; cat .cache/ruff.log
-git add tools/xut/scope.py tools/tests/test_scope.py tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/hwsim.py tools/tests/test_hw_rtl.py
+git add tools/xut/scope.py tools/tests/test_scope.py tools/xut/hdl/hw/xut_hw_tb.sv tools/xut/hw/steps.py tools/xut/hw/hwsim.py tools/tests/test_hw_rtl.py
 git commit -m "hw: capped scopes; simulate the harness on Icarus and xsim, byte-exact against the emulator" -m "Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
 
@@ -3442,14 +3466,15 @@ git commit -m "hw: capped scopes; simulate the harness on Icarus and xsim, byte-
 
 **Files:**
 - Create: `tools/xut/hw/plan.py`, `tools/tests/test_hw_plan.py`
-- Modify: `tools/xut/hw/hwsim.py` (`sim_case`), `tools/tests/test_hw_rtl.py` (the golden-reproduction test), `tools/xut/cli.py` (`xut hw sim`)
+- Modify: `tools/xut/runners/sim.py` (`judge_trace`; `vector_check` uses it), `tools/xut/hw/hwsim.py` (`sim_case`), `tools/tests/test_hw_rtl.py` (the golden-reproduction test), `tools/xut/cli.py` (`xut hw sim`)
 
 **Interfaces:**
 - Produces (`xut.hw.plan`; consumed by `xut hw sim` here, by `xut hw build` in Task 6, by the hw runner in Task 10 and by nothing else, so all three run exactly the same configurations):
   - `CfgPlan(cfg: str, m: DutMap, prog: HwProgram, slot: SlotBuild, expected: Trace, seed: int, stim_sha256: str)`
-  - `TestPlan(case: TestCase, items: list[CfgPlan], settled: dict[str, tuple[str, str]], groups: list[list[int]])`, where `settled` maps a configuration that never reaches hardware to `(status, reason)` (`skip` for `config_exclusions` and not-renderable, `error` otherwise) and `groups` holds indices into `items`, one list per bitstream; methods `members(g) -> list[CfgPlan]`, `slots(g) -> tuple[SlotBuild, ...]` (self-test slots first), `programs(g) -> dict[int, HwProgram]` (keyed by slot)
+  - `TestPlan(case: TestCase, items: list[CfgPlan], settled: dict[str, tuple[str, str]], groups: list[list[int]])` with `dut_slot(j) -> int` (the slot of a group's `j`-th member), where `settled` maps a configuration that never reaches hardware to `(status, reason)` (`skip` for `config_exclusions` and not-renderable, `error` otherwise) and `groups` holds indices into `items`, one list per bitstream; methods `members(g) -> list[CfgPlan]`, `slots(g) -> tuple[SlotBuild, ...]` (self-test slots first), `programs(g) -> dict[int, HwProgram]` (keyed by slot)
   - `plan_case(case: TestCase, ctx: RunContext) -> TestPlan`
-- Produces (`xut.hw.hwsim`): `sim_case(case, ctx, sim) -> list[CfgOutcome]` with `CfgOutcome(cfg, status, reason)`, writing `build/hwsim-runs/<sim>/<model-source>/<test-id>/`
+- Produces (`xut.runners.sim`): `judge_trace(cd, actual, expected, *, x_observable, stim_sha256, problems=()) -> ConfigResult` and `S15_REASON`: the one samples → trace → compare step, shared by `vector_check`, `sim_case` and the hw runner; `vector_check` is refactored onto it
+- Produces (`xut.hw.hwsim`): `sim_case(case, ctx, sim) -> list[ConfigResult]`, writing `build/hwsim-runs/<sim>/<model-source>/<test-id>/`
 - CLI: `xut hw sim SELECTORS... [--sim iverilog|xsim] [--model-source auto] [--jobs N]`. It runs the python runner first for the selected vector tests, then `sim_case` per test. It prints `progress:` lines and exits 3 on any mismatch (it wins, as in `xut crosscheck`), otherwise 4 on any error, otherwise 0.
 
 `xut hw sim` is a verification tool, not a runner. It writes no `result.json` and nothing in `status/`, because simulating the harness is evidence about the harness, not about the primitive. Its output lives under `build/hwsim-runs/`, whose layout `xut.crosscheck.gather` (`build/*/*/*/<test>/`) never matches. The primitive's hardware evidence comes only from silicon (the `hw` runner).
@@ -3461,13 +3486,23 @@ git commit -m "hw: capped scopes; simulate the harness on Icarus and xsim, byte-
 import dataclasses
 
 import pytest
+from test_golden import ToyDff
 from test_runner_base import _case
 
+from xut.formats import xtr
+from xut.hw import hwsim
+from xut.hw.hwsim import SIM_BUILD_ID, SimResult
+from xut.hw.interp import EmuSlot, Harness
 from xut.hw.plan import plan_case
+from xut.hw.replay import ModelDut
+from xut.hw.selftest import CounterSim, PassthroughSim
 from xut.hw.slots import SELFTEST_SLOTS
+from xut.hw.steps import split_replies
 from xut.modelsrc import ModelSource
-from xut.runners.base import NoPythonRun, RunContext
+from xut.runners.base import NoPythonRun, RunContext, python_dir
 from xut.runners.python import PythonRunner
+from xut.runners.sim import S15_REASON
+from xut.wrap import DutMap
 
 
 def _ctx(tmp_path):
@@ -3493,6 +3528,36 @@ def test_exclusions_are_settled_skips(tmp_path, toy):
 def test_no_python_run_raises(tmp_path, toy):
     with pytest.raises(NoPythonRun):
         plan_case(_case(), _ctx(tmp_path))
+
+
+def _emulated_simulate(slots, steps, sim, workdir, **kw):
+    """`simulate` without a simulator: the reference emulator answers the session."""
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    def sim_for(s):
+        if s.kind == "passthrough":
+            return PassthroughSim()
+        if s.kind == "counter":
+            return CounterSim()
+        m = DutMap.from_json(s.map_json)
+        return ModelDut(ToyDff, m.attrs, m, two_state=True)
+
+    emu = Harness(SIM_BUILD_ID, [EmuSlot(s.nin, s.nout, s.nclk, s.t0, sim_for(s)) for s in slots])
+    tx = b"".join(emu.feed(st.send) for st in steps)
+    return SimResult(tx, split_replies(tx, steps), workdir / "run.log", [])
+
+
+def test_sim_case_judges_through_judge_trace_with_the_s15_guard(tmp_path, toy, monkeypatch):
+    """An expected trace without samples is an error, never a pass (ruling S15), on the
+    `xut hw sim` path too; the other configuration still passes."""
+    case, ctx = _case(), _ctx(tmp_path)
+    assert PythonRunner().run(case, ctx).status == "pass"
+    exp = python_dir(ctx, case) / "cfg-init0" / "expected.xtr"
+    xtr.dump(xtr.Trace(xtr.load(exp).header), exp)
+    monkeypatch.setattr(hwsim, "simulate", _emulated_simulate)
+    out = {r.cfg: r for r in hwsim.sim_case(case, ctx, "iverilog")}
+    assert out["init0"].status == "error" and out["init0"].reason == S15_REASON
+    assert out["init1"].status == "pass"
 ```
 
 - [ ] **Step 2: Implement `tools/xut/hw/plan.py`** (as follows), then `sim_case`:
@@ -3544,10 +3609,15 @@ class TestPlan:
     def slots(self, g: int) -> tuple[SlotBuild, ...]:
         return (*SELFTEST_SLOTS, *(it.slot for it in self.members(g)))
 
+    @staticmethod
+    def dut_slot(j: int) -> int:
+        """The harness slot of a group's ``j``-th member: after the self-test slots."""
+        return len(SELFTEST_SLOTS) + j
+
     def programs(self, g: int) -> dict[int, HwProgram]:
         progs = selftest_programs()
         for j, it in enumerate(self.members(g)):
-            progs[len(SELFTEST_SLOTS) + j] = it.prog
+            progs[self.dut_slot(j)] = it.prog
         return progs
 
 
@@ -3580,36 +3650,93 @@ def plan_case(case: TestCase, ctx: RunContext) -> TestPlan:
     return TestPlan(case, items, settled, pack([it.slot for it in items]))
 ```
 
+Then add the **one shared judging step** to `tools/xut/runners/sim.py` (must-fix: the samples → trace → compare path exists once). `judge_trace` is `vector_check`'s body after the trace exists: the ruling-S15 guard (an expected trace without samples is an `error`: zero evidence is never a pass), `trace.xtr`, `compare`, `mismatches.txt`, and the reason from any extra problems plus the first three mismatches. `vector_check` keeps parsing `raw.txt` and calls it; `sim_case` (here) and the hw runner (Task 10) call it with a trace built from harness samples:
+
+```python
+#: Ruling S15: an expected trace without samples is never a pass.
+S15_REASON = "expected trace has no samples (ruling S15)"
+
+
+def judge_trace(
+    cd: Path,
+    actual: xtr.Trace,
+    expected: xtr.Trace,
+    *,
+    x_observable: bool,
+    stim_sha256: str | None,
+    problems: Sequence[str] = (),
+) -> ConfigResult:
+    """Judge one configuration's actual trace: write ``trace.xtr`` and ``mismatches.txt``
+    in ``cd`` and return pass or fail. ``problems`` are already-worded reasons that fail the
+    configuration whatever the comparison says (model error lines, nondeterminism)."""
+    cfg = cfg_of(actual.header)
+    if not expected.samples:
+        return ConfigResult(cfg, "error", S15_REASON)
+    xtr.dump(actual, cd / "trace.xtr")
+    mm = xtr.compare(expected, actual, x_observable=x_observable)
+    (cd / "mismatches.txt").write_text("".join(f"{x}\n" for x in mm))
+    reasons = [*problems, *(str(x) for x in mm[:3])]
+    return ConfigResult(
+        cfg,
+        "fail" if mm or problems else "pass",
+        "; ".join(reasons) or None,
+        stim_sha256,
+        sha256_file(cd / "trace.xtr"),
+        len(mm),
+    )
+```
+
+and `vector_check`'s tail becomes:
+
+```python
+    cfg = cfg_of(header)
+    if not expected.samples:  # validate refuses such a stimulus; never pass on nothing
+        return ConfigResult(cfg, "error", S15_REASON)
+    raw = cd / "raw.txt"
+    if not raw.is_file():
+        return ConfigResult(cfg, "error", "no raw.txt (simulation did not start)")
+    actual = raw_to_trace(raw.read_text(), labels, m, header)
+    errors = model_errors(run_text)
+    return judge_trace(
+        cd,
+        actual,
+        expected,
+        x_observable=x_observable,
+        stim_sha256=sha256_file(cd / "stim.xvec"),
+        problems=[_errors_reason(errors)] if errors else [],
+    )
+```
+
+(Add `from collections.abc import Sequence` to `runners/sim.py`. The step-2 tests of `vector_check` must pass unchanged: same reasons, same files.)
+
 Then add ``sim_case`` to `tools/xut/hw/hwsim.py`, with these imports added to its block:
 
 ```python
 import json
 from dataclasses import asdict
 
-from xut.formats import xtr
+from xut.hw import proto
 from xut.hw.plan import plan_case
 from xut.hw.replay import samples_to_trace
+from xut.hw.selftest import COUNT_SLOT, PASS_SLOT
 from xut.hw.selftest import check as selftest_check
-from xut.runners.base import RunContext, error_reason
+from xut.hw.steps import run_replies, session_steps
+from xut.runners.base import ConfigResult, RunContext, error_reason, trace_header
+from xut.runners.sim import judge_trace
 from xut.testspec import TestCase
 ```
 
 ```python
-@dataclass
-class CfgOutcome:
-    cfg: str
-    status: str  # pass | fail | error | skip
-    reason: str | None = None
-
-
-def sim_case(case: TestCase, ctx: RunContext, sim: str) -> list[CfgOutcome]:
-    """Every configuration of vector test ``case`` through the simulated harness."""
+def sim_case(case: TestCase, ctx: RunContext, sim: str) -> list[ConfigResult]:
+    """Every configuration of vector test ``case`` through the simulated harness, judged by
+    ``judge_trace`` against the golden expected trace (2-state, as silicon would be)."""
     out_dir = ctx.root / "build" / "hwsim-runs" / sim / ctx.model_source.name / case.id
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
     plan = plan_case(case, ctx)
-    outcomes = {c: CfgOutcome(c, st, why) for c, (st, why) in plan.settled.items()}
+    outcomes = {c: ConfigResult(c, st, why) for c, (st, why) in plan.settled.items()}
+    runner = f"hwsim-{sim}"
     for g in range(len(plan.groups)):
         members = plan.members(g)
         programs = plan.programs(g)
@@ -3624,40 +3751,33 @@ def sim_case(case: TestCase, ctx: RunContext, sim: str) -> list[CfgOutcome]:
                 work_root=ctx.root,
             )
             runs = run_replies(r.replies, programs)
-            bad = [selftest_check(s, runs[s]) for s in (0, 1)]
+            bad = [selftest_check(s, runs[s]) for s in (PASS_SLOT, COUNT_SLOT)]
             problems = [b for b in bad if b] + r.margin_violations
             if problems:
                 raise HwSimError("; ".join(problems))
         except Exception as e:
             for it in members:
-                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", error_reason(e))
+                outcomes[it.cfg] = ConfigResult(it.cfg, "error", error_reason(e), it.stim_sha256)
             continue
         for j, it in enumerate(members):
-            run = runs[2 + j]
-            header = {
-                "runner": f"hwsim-{sim}",
-                "flow": "rtl",
-                "model": ctx.model_source.name,
-                "seed": str(it.seed),
-                "prim": case.prim,
-                "cfg": it.cfg,
-            }
+            run = runs[plan.dut_slot(j)]
             cd = out_dir / f"cfg-{it.cfg}"
             cd.mkdir()
-            if run.status != 0:
-                outcomes[it.cfg] = CfgOutcome(it.cfg, "error", f"status {proto.STATUS[run.status]}")
+            if run.status != proto.STATUS_CODE["ok"]:
+                why = f"harness status {proto.STATUS.get(run.status, run.status)}"
+                outcomes[it.cfg] = ConfigResult(it.cfg, "error", why, it.stim_sha256)
                 continue
+            header = trace_header(runner, case, it.cfg, ctx) | {"seed": str(it.seed)}
             actual = samples_to_trace(run.samples, it.prog.labels, it.m, header)
-            xtr.dump(actual, cd / "trace.xtr")
-            mm = xtr.compare(it.expected, actual, x_observable=False)
-            (cd / "mismatches.txt").write_text("".join(f"{x}\n" for x in mm))
-            outcomes[it.cfg] = CfgOutcome(
-                it.cfg, "fail" if mm else "pass", "; ".join(str(x) for x in mm[:3]) or None
+            outcomes[it.cfg] = judge_trace(
+                cd, actual, it.expected, x_observable=False, stim_sha256=it.stim_sha256
             )
     result = [outcomes[c] for c in sorted(outcomes)]
     (out_dir / "report.json").write_text(json.dumps([asdict(o) for o in result], indent=1) + "\n")
     return result
 ```
+
+(`trace_header` names flow `ctx.flow`, which is `rtl` here: `xut hw sim` runs with an `rtl` context.)
 
 - [ ] **Step 3: Add the golden-reproduction test** to `tools/tests/test_hw_rtl.py`. Add these imports to the file's import block:
 
@@ -5071,7 +5191,7 @@ from pathlib import Path
 import pytest
 
 from xut.hw import proto
-from xut.hw.hwsim import session_steps
+from xut.hw.steps import session_steps
 from xut.hw.interp import EmuSlot, Harness
 from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
 from xut.paths import repo_root
@@ -5908,6 +6028,7 @@ from xut.errors import XutError
 from xut.hw import proto
 from xut.hw.image import HwProgram
 from xut.hw.rigs import Rig
+from xut.hw.steps import session_steps, slot_replies
 from xut.paths import repo_root
 
 #: The one programming command: SRAM only (never a flash option; AGENTS.md §10.2).
@@ -6042,10 +6163,6 @@ def _timeout_s(nbytes: int, baud: int) -> int:
 def session_json(job: HwJob, baud: int) -> dict:
     """The UART steps (``session_steps`` order: I, then L and R per slot) with timeouts
     from the bytes each direction carries (3x the line time, plus 5 s)."""
-    # Imported here: xut.hw.hwsim imports xut.runners, whose hw runner imports this
-    # module, so a module-level import would be circular.
-    from xut.hw.hwsim import session_steps
-
     progs = {r.slot: r.program for r in job.runs}
     steps = []
     for s in session_steps(progs):
@@ -6084,8 +6201,8 @@ def parse_session(
                 "(programming did not take?)"
             )
         loads, runs = {}, {}
-        for k, slot in enumerate(slots):
-            load = proto.parse_load(rx[1 + 2 * k])
+        for slot, (load_rx, run_rx) in slot_replies(rx, slots).items():
+            load = proto.parse_load(load_rx)
             if load.status == proto.STATUS_CODE["badcrc"]:
                 raise TransportError(
                     f"slot {slot}: the harness received a corrupt program (badcrc)"
@@ -6094,7 +6211,7 @@ def parse_session(
                 raise HarnessError(
                     f"slot {slot}: load status {proto.STATUS.get(load.status, load.status)}"
                 )
-            loads[slot], runs[slot] = load, proto.parse_run(rx[2 + 2 * k])
+            loads[slot], runs[slot] = load, proto.parse_run(run_rx)
     except proto.ProtoError as e:
         raise TransportError(f"corrupt UART reply: {e}") from e
     return ident, loads, runs
@@ -6843,9 +6960,11 @@ from xut.hw.session import SshBoardSession
 from xut.modelsrc import ModelSource
 from xut.run import run_tests
 from xut.runners import hw as hw_runner
-from xut.runners.base import RunContext
+from xut.formats import xtr
+from xut.runners.base import RunContext, python_dir
 from xut.runners.hw import HwBackend, HwRunner
 from xut.runners.python import PythonRunner
+from xut.runners.sim import S15_REASON
 
 MS = "unisim-2025.2"
 
@@ -6927,6 +7046,19 @@ def test_a_failed_post_flow_dut_check_is_a_flow_mismatch(tmp_path, fake_hw):
     assert res.status == "error" and "flow-mismatch" in res.reason
     assert res.hw["dut_check"] == "fail" and t.programmings["a"] == 0  # nothing ran
     assert _classes(tmp_path, case) == ["flow-mismatch"]
+
+
+def test_an_empty_expected_trace_is_an_error_on_hardware_too(tmp_path, fake_hw):
+    """Ruling S15 on the hw path: no expected samples is never a pass."""
+    fake_hw({"a": FakeRig()})
+    case = _case_hw()
+    assert PythonRunner().run(case, _ctx(tmp_path, "rtl")).status == "pass"
+    exp = python_dir(_ctx(tmp_path, "rtl"), case) / "cfg-init0" / "expected.xtr"
+    xtr.dump(xtr.Trace(xtr.load(exp).header), exp)
+    res = HwRunner().run(case, _ctx(tmp_path, "vivado"))
+    by_cfg = {c.cfg: c for c in res.configs}
+    assert by_cfg["init0"].status == "error" and by_cfg["init0"].reason == S15_REASON
+    assert by_cfg["init1"].status == "pass"
 
 
 def test_a_dut_check_failure_does_not_hide_a_silicon_mismatch(tmp_path, fake_hw, monkeypatch):
@@ -7169,14 +7301,15 @@ from xut.runners.base import (
     Runner,
     RunResult,
     error_reason,
-    sha256_file,
+    trace_header,
     workdir,
 )
+from xut.runners.sim import judge_trace
 from xut.runners.xsim import settings_available
 from xut.testspec import TestCase
 
 if TYPE_CHECKING:
-    from xut.hw.plan import CfgPlan
+    from xut.hw.plan import CfgPlan, TestPlan
 
 REFERENCE = "unisim-2025.2"
 _SAFE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -7189,15 +7322,16 @@ class HwBackend:
     preflight: dict[str, str] = field(default_factory=dict)  # rig -> "ok" or why not
 
 
-_BACKENDS: dict[tuple[str, ...], HwBackend] = {}
+_BACKENDS: dict[tuple[Path, tuple[str, ...]], HwBackend] = {}
 _LOCK = threading.Lock()
 
 
 def backend(root: Path, rigs: tuple[str, ...] = ()) -> HwBackend:
-    """The process-wide backend for ``rigs`` (every enabled rig when empty): the Vivado
-    builder and a pool of the rigs that passed their preflight."""
+    """The process-wide backend for ``root`` and ``rigs`` (every enabled rig when empty): the
+    Vivado builder and a pool of the rigs that passed their preflight."""
+    key = (Path(root).resolve(), rigs)
     with _LOCK:
-        if rigs not in _BACKENDS:
+        if key not in _BACKENDS:
             cfg = load_rigs(config_path(root))
             chosen = [cfg.get(n) for n in rigs] if rigs else cfg.enabled()
             t = SshTransport(write_ssh_config(cfg, root))
@@ -7215,17 +7349,20 @@ def backend(root: Path, rigs: tuple[str, ...] = ()) -> HwBackend:
                 pre[r.name] = "ok" if pf.ok else f"preflight failed ({pf.detail}; see {log})"
                 if pf.ok:
                     sessions.append(s)
-            _BACKENDS[rigs] = HwBackend(VivadoBuilder(root), BoardPool(sessions), pre)
-        return _BACKENDS[rigs]
+            _BACKENDS[key] = HwBackend(VivadoBuilder(root), BoardPool(sessions), pre)
+        return _BACKENDS[key]
 
 
 @dataclass
 class _Done:
-    result: ConfigResult
+    """One configuration's outcome from ``_batch``: either settled (``result``: a skip or
+    an error) or its plan item with the traces of every repeat, judged in ``run_config``."""
+
+    result: ConfigResult | None = None
+    item: CfgPlan | None = None
     traces: list[xtr.Trace] = field(default_factory=list)
-    mismatches: list[str] = field(default_factory=list)
+    differ: list[str] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
-    differs: bool = False
 
 
 class HwRunner(Runner):
@@ -7271,13 +7408,27 @@ class HwRunner(Runner):
                 cfg, "error", "the python run lists this configuration but the hw plan does not"
             )
         (cd / "run.log").write_text("".join(f"{ln}\n" for ln in done.log))
-        r = done.result
-        if done.traces:
-            xtr.dump(done.traces[0], cd / "trace.xtr")
-            for k, t in enumerate(done.traces, start=1):
-                xtr.dump(t, cd / f"trace-r{k}.xtr")
-            (cd / "mismatches.txt").write_text("".join(f"{m}\n" for m in done.mismatches))
-            r.trace_sha256 = sha256_file(cd / "trace.xtr")
+        if done.result is not None:
+            return done.result
+        if done.item is None or not done.traces:  # _batch sets both together
+            return ConfigResult(cfg, "error", "hw batch left this configuration without traces")
+        for k, t in enumerate(done.traces, start=1):
+            xtr.dump(t, cd / f"trace-r{k}.xtr")
+        problems = []
+        if done.differ:
+            shown = "; ".join(done.differ[:3])
+            problems.append(f"nondeterminism ({len(done.differ)} difference(s)): {shown}")
+        r = judge_trace(
+            cd,
+            done.traces[0],
+            done.item.expected,
+            x_observable=self.x_observable,
+            stim_sha256=done.item.stim_sha256,
+            problems=problems,
+        )
+        if done.differ:
+            with (cd / "mismatches.txt").open("a") as f:
+                f.writelines(f"{m}\n" for m in done.differ)
         return r
 
     def finish(self, case: TestCase, ctx: RunContext, d: Path, res: RunResult) -> None:
@@ -7285,24 +7436,14 @@ class HwRunner(Runner):
         if self._ofl:
             res.tools = {**res.tools, "openFPGALoader": self._ofl}
 
-    @staticmethod
-    def _settle(
-        done: dict[str, _Done], members: list[CfgPlan], status: str, why: str, log: list[str]
-    ) -> None:
-        for it in members:
-            done[it.cfg] = _Done(
-                ConfigResult(it.cfg, status, why, it.stim_sha256), log=[*log, f"{status}: {why}"]
-            )
-
     def _batch(self, case: TestCase, ctx: RunContext, d: Path) -> dict[str, _Done]:
         # Imported here: xut.hw.plan imports xut.runners.base, and importing that package
         # imports this module (the RUNNERS registry), so a module-level import is circular.
         from xut.hw.plan import plan_case
 
-        be = backend(ctx.root, ctx.hw_rigs)
         plan = plan_case(case, ctx)
         done = {c: _Done(ConfigResult(c, st, why)) for c, (st, why) in plan.settled.items()}
-        hw: dict = {
+        self._hw = {
             "part": PART,
             "repeats": ctx.hw_repeats,
             "repeats_differ": False,
@@ -7313,104 +7454,79 @@ class HwRunner(Runner):
             "rigs": [],
         }
         for g in range(len(plan.groups)):
-            members = plan.members(g)
-            log = [f"group {g}: configurations {', '.join(it.cfg for it in members)}"]
-            try:
-                bit = be.builder.ensure(plan.slots(g))
-            except FlowMismatch as e:  # spec §6 post-flow DUT check: a toolchain bug, no DUT result
-                hw["dut_check"] = "fail"
-                hw["dut_check_detail"] = str(e)
-                self._settle(done, members, "error", f"flow-mismatch: {e}", log)
-                continue
-            except Exception as e:
-                self._settle(
-                    done, members, "error", f"bitstream build failed: {error_reason(e)}", log
-                )
-                continue
-            if hw["dut_check"] == "not-run":
-                hw["dut_check"] = "pass"
-            hw["build_ids"].append(f"{bit.build_id:08x}")
-            hw["bitstream_sha256"].append(bit.sha256)
-            log.append(f"bitstream {bit.build_id:08x}: {bit.path}")
-            runs = tuple(SlotRun(s, p) for s, p in plan.programs(g).items())
-            dut_slots = [2 + j for j in range(len(members))]
-            reps: dict[int, list[tuple[str, ...]]] = {s: [] for s in dut_slots}
-            why: str | None = None
-            for r in range(1, ctx.hw_repeats + 1):
-                job = HwJob(
-                    f"{_SAFE.sub('_', case.id)}-g{g}-r{r}-{uuid.uuid4().hex[:8]}",
-                    bit.path,
-                    bit.build_id,
-                    runs,
-                )
-                try:
-                    out = run_job(be.pool, job, d / "jobs" / f"g{g}-r{r}")
-                except Exception as e:  # a second transport error, no board, a harness bug
-                    why = f"repeat {r}: {error_reason(e)}"
-                    break
-                log += out.attempts
-                res = out.result
-                hw.update(rig=res.rig, site=res.site, serial=res.serial, board=res.board)
-                if res.rig not in hw["rigs"]:
-                    hw["rigs"].append(res.rig)
-                self._ofl = res.ofl_version or self._ofl
-                if out.selftest == "fail":
-                    hw["selftest"] = "fail"
-                    why = (
-                        f"harness self-test failed on {res.rig} (a harness error, "
-                        f"not a DUT result): {out.selftest_detail}"
-                    )
-                    break
-                if hw["selftest"] == "not-run":
-                    hw["selftest"] = "pass"
-                bad = [s for s in dut_slots if res.runs[s].status != proto.STATUS_CODE["ok"]]
-                if bad:
-                    st = proto.STATUS.get(res.runs[bad[0]].status, res.runs[bad[0]].status)
-                    why = f"repeat {r}: the harness ended slot {bad[0]} with status {st}"
-                    break
-                for s in dut_slots:
-                    reps[s].append(res.runs[s].samples)
-            if why is not None:
-                self._settle(done, members, "error", why, log)
-                continue
-            for j, it in enumerate(members):
-                dn = self._judge(case, ctx, it, reps[2 + j], hw["rig"])
-                dn.log = [*log, *dn.log]
-                done[it.cfg] = dn
-                hw["repeats_differ"] = hw["repeats_differ"] or dn.differs
-        self._hw = hw
+            done.update(self._group(case, ctx, d, plan, g))
         return done
 
-    def _judge(
-        self, case: TestCase, ctx: RunContext, it: CfgPlan, reps: list[tuple[str, ...]], rig: str
-    ) -> _Done:
-        header = {
-            "runner": self.name,
-            "flow": ctx.flow,
-            "model": ctx.model_source.name,
-            "seed": str(it.seed),
-            "prim": case.prim,
-            "cfg": it.cfg,
-            "rig": rig,
-        }
-        traces = [samples_to_trace(s, it.prog.labels, it.m, header) for s in reps]
-        differ = [
-            f"repeat {k + 1} vs repeat 1: {m}"
-            for k in range(1, len(traces))
-            for m in xtr.diff(traces[0], traces[k], a_x=False, b_x=False)
-        ]
-        mm = xtr.compare(it.expected, traces[0], x_observable=False)
-        reasons = (
-            [f"nondeterminism ({len(differ)} difference(s)): " + "; ".join(differ[:3])]
-            if differ
-            else []
-        )
-        reasons += [str(m) for m in mm[:3]]
-        status = "fail" if differ or mm else "pass"
-        res = ConfigResult(
-            it.cfg, status, "; ".join(reasons) or None, it.stim_sha256, None, len(mm)
-        )
-        return _Done(res, traces, [str(m) for m in mm] + differ, [], bool(differ))
+    def _group(self, case: TestCase, ctx: RunContext, d: Path, plan: TestPlan, g: int) -> dict:
+        """One bitstream group: build it, run it ``hw_repeats`` times, and return each
+        member configuration's ``_Done``."""
+        hw, be = self._hw, backend(ctx.root, ctx.hw_rigs)
+        members = plan.members(g)
+        log = [f"group {g}: configurations {', '.join(it.cfg for it in members)}"]
+
+        def settle(why: str) -> dict:
+            return {
+                it.cfg: _Done(ConfigResult(it.cfg, "error", why, it.stim_sha256), log=[*log, why])
+                for it in members
+            }
+
+        try:
+            bit = be.builder.ensure(plan.slots(g))
+        except FlowMismatch as e:  # spec §6 post-flow DUT check: a toolchain bug, no DUT result
+            hw["dut_check"] = "fail"
+            hw["dut_check_detail"] = str(e)
+            return settle(f"flow-mismatch: {e}")
+        except Exception as e:
+            return settle(f"bitstream build failed: {error_reason(e)}")
+        if hw["dut_check"] == "not-run":
+            hw["dut_check"] = "pass"
+        hw["build_ids"].append(f"{bit.build_id:08x}")
+        hw["bitstream_sha256"].append(bit.sha256)
+        log.append(f"bitstream {bit.build_id:08x}: {bit.path}")
+        runs = tuple(SlotRun(s, p) for s, p in plan.programs(g).items())
+        dut_slots = [plan.dut_slot(j) for j in range(len(members))]
+        reps: dict[int, list[tuple[str, ...]]] = {s: [] for s in dut_slots}
+        for r in range(1, ctx.hw_repeats + 1):
+            job_id = f"{_SAFE.sub('_', case.id)}-g{g}-r{r}-{uuid.uuid4().hex[:8]}"
+            try:
+                out = run_job(be.pool, HwJob(job_id, bit.path, bit.build_id, runs), d / "jobs" / job_id)
+            except Exception as e:  # a second transport error, no free rig, a harness bug
+                return settle(f"repeat {r}: {error_reason(e)}")
+            log += out.attempts
+            res = out.result
+            hw.update(rig=res.rig, site=res.site, serial=res.serial, board=res.board)
+            if res.rig not in hw["rigs"]:
+                hw["rigs"].append(res.rig)
+            self._ofl = res.ofl_version or self._ofl
+            if out.selftest == "fail":
+                hw["selftest"] = "fail"
+                return settle(
+                    f"harness self-test failed on {res.rig} (a harness error, "
+                    f"not a DUT result): {out.selftest_detail}"
+                )
+            if hw["selftest"] == "not-run":
+                hw["selftest"] = "pass"
+            bad = [s for s in dut_slots if res.runs[s].status != proto.STATUS_CODE["ok"]]
+            if bad:
+                st = proto.STATUS.get(res.runs[bad[0]].status, res.runs[bad[0]].status)
+                return settle(f"repeat {r}: the harness ended slot {bad[0]} with status {st}")
+            for s in dut_slots:
+                reps[s].append(res.runs[s].samples)
+        out_done = {}
+        for j, it in enumerate(members):
+            header = trace_header(self.name, case, it.cfg, ctx) | {
+                "seed": str(it.seed),
+                "rig": hw["rig"],
+            }
+            traces = [samples_to_trace(s, it.prog.labels, it.m, header) for s in reps[dut_slots[j]]]
+            differ = [
+                f"repeat {k + 1} vs repeat 1: {m}"
+                for k in range(1, len(traces))
+                for m in xtr.diff(traces[0], traces[k], a_x=False, b_x=False)
+            ]
+            hw["repeats_differ"] = hw["repeats_differ"] or bool(differ)
+            out_done[it.cfg] = _Done(item=it, traces=traces, differ=differ, log=list(log))
+        return out_done
 ```
 
 Register it in `tools/xut/runners/__init__.py`: `from xut.runners.hw import HwRunner` and `"hw": HwRunner` in `RUNNERS`.
@@ -7541,7 +7657,8 @@ from pathlib import Path
 from xut.catalog.model import load_entry
 from xut.hw import proto
 from xut.hw.compile import compile_program
-from xut.hw.hwsim import run_replies, session_steps, simulate
+from xut.hw.hwsim import simulate
+from xut.hw.steps import run_replies, session_steps
 from xut.hw.image import HwProgram, width
 from xut.hw.interp import run_program
 from xut.hw.selftest import expected_samples, selftest_programs
