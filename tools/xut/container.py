@@ -177,8 +177,8 @@ class NativeExecutor:
     """Tools on the host PATH (selected by `executor_for` when XUT_NATIVE=1).
 
     NOT memory-capped (S48a M-6): nothing limits what a native run may allocate. The
-    caller must run xut inside a capped scope, e.g. `systemd-run --user --scope
-    -p MemoryMax=16G -p MemorySwapMax=0 -- uv run xut ...`."""
+    caller must run xut as a heavy command, in a capped scope admitted by the memory budget
+    (AGENTS.md §10.1): `uv run xut heavy --mem 16G --containers 0 -- uv run xut ...`."""
 
     def guest(self, path: Path) -> str:
         return str(path)

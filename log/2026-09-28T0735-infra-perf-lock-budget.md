@@ -87,3 +87,33 @@ peaks are far below the caps:
     `XUT_HEAVY_VIVADO=1`;
   - a nested `xut heavy` inside it was refused (exit 1);
   - `bash -c 'echo HOME=$HOME'` printed the real home.
+
+## Fix round 2 (code-quality review of PR #18)
+
+- **[must-fix]** The E501 at `test_heavy.py:130` is fixed, so `ruff check
+  tools models` is clean. CI's tooling job had stopped before pytest.
+- **Parallelism detector.** It is now tool-aware:
+  - pytest's `-n`/`--numprocesses` counts only in a pytest command,
+    including `python -m pytest`;
+  - `--jobs` counts only in an xut command;
+  - `-j`/`--jobs` counts only in a make or ninja command.
+
+  A `bash -c` script is split into its commands at `;`, `&&`, `|` and the
+  like, so `tail -n 50`, `head -n`, `git log -n` and `sort -n` no longer
+  count. There are new cases for each.
+- **Refactor.** `admit`'s token loop is extracted as `_take_tokens`, and the
+  held tokens are kept in a dict keyed by index.
+- **`--mem`.** It is normalised once in `run()` (uppercase) for both the
+  budget and `MemoryMax`.
+- **Threading tests.** They no longer use sleeps: each admission is observed
+  through `admit`'s `log` messages (waiting for the gate, the tokens or the
+  old mutex, then admitted), with `Event.wait` and a check that each thread
+  ended.
+- **Lock-passing probe.** The child now takes each passed token lock
+  exclusively without blocking, which it can only do because it holds that
+  very lock.
+- **Docs.** `NativeExecutor`'s docstring points at `xut heavy`. AGENTS.md
+  §10.1 is rewrapped, and the scope command is a code block.
+- **Tests.** `test_heavy`, `test_unitkit`, `test_cli` and the non-container
+  `test_container`: 154 passed, 5 runs out of 5, in a capped scope. ruff is
+  clean.

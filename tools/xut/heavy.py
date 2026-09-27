@@ -85,10 +85,18 @@ LEGACY_LOCK = "xut-heavy.lock"
 GATE = "gate.lock"
 POLL_S = 1.0
 _NAME = re.compile(r"[A-Za-z0-9_.-]+")
-#: A parallelism option: xut's ``--jobs N``, make/ninja-style ``-j N`` or pytest-xdist's
-#: ``-n N`` (also ``--opt=N`` and ``-nN``/``-jN``).
-_PAR = re.compile(r"^(?:--jobs|-j|-n|--numprocesses)(?:=(.*))?$|^-[nj](\w+)$")
+#: The parallelism options of each tool, as ``tool -> regex``; a match's value is group 1
+#: (``--opt=N``, ``-nN``) or else the next word. Only a command of that tool counts: ``tail
+#: -n 50`` or ``git log -n 3`` is not parallelism (review nit).
+_PAR = {
+    "pytest": re.compile(r"^(?:-n|--numprocesses)(?:=(.*))?$|^-n(\w+)$"),
+    "xut": re.compile(r"^--jobs(?:=(.*))?$"),
+    "make": re.compile(r"^(?:-j|--jobs)(?:=(.*))?$|^-j(\w+)$"),
+}
+_PAR["ninja"] = _PAR["make"]
 _SHELLS = {"bash", "sh", "dash", "zsh"}
+#: Shell operators that end one command of a ``bash -c`` script.
+_SEPARATORS = {";", "&&", "||", "|", "&", "(", ")", "\n"}
 
 
 def runtime_dir() -> Path:
@@ -127,7 +135,7 @@ def tokens_for(mem: str, containers: int, container_cap: str | None = None, viva
     ``XutError`` when that is more than the whole budget: it could never be admitted."""
     cap = container_memory(container_cap)
     total = (
-        size_bytes(mem.lower(), "--mem")
+        size_bytes(mem.lower(), f"--mem {mem}")
         + containers * size_bytes(cap, "container cap")
         + vivado * VIVADO_G * _G
     )
@@ -141,33 +149,62 @@ def tokens_for(mem: str, containers: int, container_cap: str | None = None, viva
     return need
 
 
-def _words(argv: Sequence[str]) -> list[str]:
-    """``argv``, with the script of each ``bash -c``/``sh -c`` split into words too."""
-    out = list(argv)
-    for i, a in enumerate(argv[:-1]):
-        if Path(a).name in _SHELLS and argv[i + 1] == "-c" and i + 2 < len(argv):
+def _commands(argv: Sequence[str]) -> list[list[str]]:
+    """``argv`` and, for each ``bash -c``/``sh -c`` it runs, each command of that script
+    (split at ``;``, ``&&``, ``|`` and the like), as word lists."""
+    out = [list(argv)]
+    for i, a in enumerate(argv[:-2]):
+        if Path(a).name in _SHELLS and argv[i + 1] == "-c":
+            lex = shlex.shlex(argv[i + 2], posix=True, punctuation_chars=True)
+            lex.whitespace_split = True
+            lex.commenters = "#"
             try:
-                out += shlex.split(argv[i + 2], comments=True)
+                words = list(lex)
             except ValueError:
-                out += argv[i + 2].split()
-    return out
+                words = argv[i + 2].split()
+            cmd: list[str] = []
+            for w in words:
+                if w in _SEPARATORS or set(w) <= set(";&|()"):
+                    out.append(cmd)
+                    cmd = []
+                else:
+                    cmd.append(w)
+            out.append(cmd)
+    return [c for c in out if c]
+
+
+def _tool(cmd: list[str]) -> str | None:
+    """The tool whose parallelism options ``cmd`` takes (``_PAR``), if any: a word naming
+    it (``pytest``, ``python -m pytest``, ``uv run xut``, ``make``)."""
+    names = [Path(w).name for w in cmd]
+    for tool in _PAR:
+        if tool in names:
+            return tool
+    return None
 
 
 def declared_parallelism(argv: Sequence[str]) -> int | None:
-    """The largest ``--jobs``/``-j``/``-n`` value in ``argv`` or in a ``bash -c`` script it
-    runs (None without one); best-effort: a script file is not read. ``XutError`` for ``-n
-    auto``/``logical``: 88 workers on this host (AGENTS.md §10.1)."""
-    argv = _words(argv)
+    """The largest parallelism a command declares (None without one): pytest's ``-n``, xut's
+    ``--jobs``, make/ninja's ``-j``, each counted only in a command of that tool, in
+    ``argv`` or in a ``bash -c`` script it runs. Best effort: a script file is not read.
+    ``XutError`` for pytest's ``-n auto``/``logical``: 88 workers on this host (AGENTS.md
+    §10.1)."""
     found: list[int] = []
-    for i, a in enumerate(argv):
-        m = _PAR.match(a)
-        if not m:
+    for cmd in _commands(argv):
+        tool = _tool(cmd)
+        if tool is None:
             continue
-        value = m.group(2) or m.group(1) or (argv[i + 1] if i + 1 < len(argv) else "")
-        if value in ("auto", "logical"):
-            raise XutError(f"{a} {value}: give an explicit number (AGENTS.md §10.1)")
-        if value.isdigit():
-            found.append(int(value))
+        for i, a in enumerate(cmd):
+            m = _PAR[tool].match(a)
+            if not m:
+                continue
+            value = next((g for g in m.groups() if g), None)
+            if value is None:
+                value = cmd[i + 1] if i + 1 < len(cmd) else ""
+            if value in ("auto", "logical"):
+                raise XutError(f"{a} {value}: give an explicit number (AGENTS.md §10.1)")
+            if value.isdigit():
+                found.append(int(value))
     return max(found) if found else None
 
 
@@ -204,37 +241,45 @@ def admit(
         except BlockingIOError:
             say(f"xut heavy: waiting for a command holding {legacy} alone (the old mutex)")
             fcntl.flock(old, fcntl.LOCK_SH)
-        held: list[IO[str]] = []
         with (d / GATE).open("a") as gate:
             if not _try(gate):
                 say("xut heavy: waiting for earlier commands to be admitted")
                 fcntl.flock(gate, fcntl.LOCK_EX)
-            waited = False
-            while True:
-                for i in range(TOKENS):
-                    if len(held) == need:
-                        break
-                    p = d / f"token{i:02d}.lock"
-                    if any(h.name == str(p) for h in held):
-                        continue
-                    f = p.open("a")
-                    if _try(f):
-                        held.append(f)
-                        stack.callback(f.close)
-                    else:
-                        f.close()
-                if len(held) == need:
-                    break
-                if not waited:
-                    say(
-                        f"xut heavy: waiting for {need} of {TOKENS} tokens "
-                        f"({need * TOKEN_G}G of {BUDGET_G}G); holding {len(held)}"
-                    )
-                    waited = True
-                time.sleep(poll_s)
+            held = _take_tokens(d, need, stack, poll_s, say)
             # the gate is released here, once every token is held
         say(f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of {BUDGET_G}G)")
         yield [old.fileno(), *(h.fileno() for h in held)]
+
+
+def _take_tokens(
+    d: Path, need: int, stack: ExitStack, poll_s: float, say: Callable[[str], None]
+) -> list[IO[str]]:
+    """Take ``need`` free tokens in ``d``, waiting for more as they are released; called
+    only while holding the gate, so no other command takes tokens meanwhile. Each held
+    token's file is closed (released) by ``stack``."""
+    held: dict[int, IO[str]] = {}
+    waited = False
+    while True:
+        for i in range(TOKENS):
+            if len(held) == need:
+                return list(held.values())
+            if i in held:
+                continue
+            f = (d / f"token{i:02d}.lock").open("a")
+            if _try(f):
+                held[i] = f
+                stack.callback(f.close)
+            else:
+                f.close()
+        if len(held) == need:
+            return list(held.values())
+        if not waited:
+            say(
+                f"xut heavy: waiting for {need} of {TOKENS} tokens "
+                f"({need * TOKEN_G}G of {BUDGET_G}G); holding {len(held)}"
+            )
+            waited = True
+        time.sleep(poll_s)
 
 
 def scope_argv(name: str, mem: str, command: Sequence[str]) -> list[str]:
@@ -248,7 +293,7 @@ def scope_argv(name: str, mem: str, command: Sequence[str]) -> list[str]:
         f"--unit=xut-{name}-{int(time.time())}",
         # the command is passed as written: never let systemd expand $VAR in it
         "--expand-environment=no",
-        "-p", f"MemoryMax={mem.upper()}", "-p", "MemorySwapMax=0", "--", *command,
+        "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0", "--", *command,
     ]  # fmt: skip
 
 
@@ -279,6 +324,7 @@ def run(
             f"the command runs {par} jobs but --containers is {containers}: declare at least "
             f"{par} (each job may hold one container; AGENTS.md §10.1)"
         )
+    mem = mem.upper()  # one spelling for the budget and the cap: MemoryMax=8G
     need = tokens_for(mem, containers, vivado=vivado)
     argv = scope_argv(name, mem, command)
     env = {**os.environ, NESTED_ENV: "1", VIVADO_ENV: str(vivado)}

@@ -5,7 +5,6 @@ lock directories."""
 import fcntl
 import subprocess
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -81,6 +80,13 @@ def test_over_the_budget_is_refused(mem, containers, monkeypatch):
         (["bash", "-c", "cd x && uv run xut run unit:flops --jobs 16 > log 2>&1"], 16),
         (["/bin/sh", "-c", "uv run pytest -n4 -q"], 4),
         (["bash", "script.sh"], None),  # best-effort: a script file is not read
+        # another tool's -n/-j is not parallelism (review nit)
+        (["bash", "-c", "uv run xut run X --jobs 4 > log 2>&1; tail -n 50 log"], 4),
+        (["bash", "-c", "git log -n 30 && head -n 99 f | sort -n"], None),
+        (["bash", "-c", "uv run pytest -n 2 x.py|tail -n 40"], 2),
+        (["python", "-m", "pytest", "-n", "3"], 3),
+        (["ninja", "-j8"], 8),
+        (["tail", "-n", "50", "log"], None),
     ],
 )
 def test_declared_parallelism(argv, n):
@@ -127,7 +133,8 @@ def test_scope_argv():
     assert argv[:4] == ["systemd-run", "--user", "--scope", "--slice=vivado.slice"]
     assert argv[4].startswith("--unit=xut-flops-run-")
     assert argv[5:] == [
-        "--expand-environment=no", "-p", "MemoryMax=8G", "-p", "MemorySwapMax=0", "--", "uv", "run", "xut", "run",
+        "--expand-environment=no", "-p", "MemoryMax=8g", "-p", "MemorySwapMax=0",
+        "--", "uv", "run", "xut", "run",
     ]  # fmt: skip
     with pytest.raises(XutError, match="--name"):
         heavy.scope_argv("a b", "8G", ["true"])
@@ -156,64 +163,80 @@ def test_commands_within_the_budget_run_together(tmp_path):
     assert not any(_held(t) for t in d.glob("token*.lock"))  # released on exit
 
 
-def _admit_in_thread(need, d, legacy, events, key, release):
-    def body():
-        with heavy.admit(need, d, legacy, poll_s=0.01):
-            events.append(f"{key} in")
-            release.wait(5)
-        events.append(f"{key} out")
+class _Admission:
+    """An ``admit`` in a thread, observed through its ``log`` messages (no sleeps)."""
 
-    t = threading.Thread(target=body)
-    t.start()
-    return t
+    def __init__(self, need, d, legacy, order):
+        self.need, self.order = need, order
+        self.waiting_gate, self.waiting_tokens = threading.Event(), threading.Event()
+        self.waiting_old, self.admitted = threading.Event(), threading.Event()
+        self.release, self.out = threading.Event(), threading.Event()
+        self.thread = threading.Thread(target=self._body, args=(d, legacy))
+        self.thread.start()
+
+    def _log(self, line: str) -> None:
+        if "earlier commands" in line:
+            self.waiting_gate.set()
+        elif "waiting for" in line and "tokens" in line:
+            self.waiting_tokens.set()
+        elif "the old mutex" in line:
+            self.waiting_old.set()
+        elif "admitted" in line:
+            self.order.append(self.need)
+            self.admitted.set()
+
+    def _body(self, d, legacy):
+        with heavy.admit(self.need, d, legacy, poll_s=0.01, log=self._log):
+            self.release.wait(10)
+        self.out.set()
+
+    def finish(self):
+        self.release.set()
+        self.thread.join(10)
+        assert not self.thread.is_alive()
 
 
 def test_a_command_over_the_free_budget_waits(tmp_path):
     d, legacy = _dirs(tmp_path)
-    events: list[str] = []
-    go = threading.Event()
-    go.set()
+    order: list[int] = []
     with heavy.admit(20, d, legacy):
-        t = _admit_in_thread(8, d, legacy, events, "b", go)
-        time.sleep(0.2)
-        assert events == []  # 20 + 8 > 24: waits
-    t.join(5)
-    assert events == ["b in", "b out"]
+        b = _Admission(8, d, legacy, order)
+        assert b.waiting_tokens.wait(10)  # it holds the gate and waits: 20 + 8 > 24
+        assert not b.admitted.is_set()
+    assert b.admitted.wait(10)  # admitted once the 20 are released
+    b.finish()
+    assert order == [8]
 
 
 def test_the_head_of_the_queue_is_never_overtaken(tmp_path):
-    """A small command that would fit waits behind a larger one that came first."""
+    """A small command that would fit waits behind a larger one that holds the gate."""
     d, legacy = _dirs(tmp_path)
-    events: list[str] = []
-    rel = threading.Event()
+    order: list[int] = []
     with heavy.admit(20, d, legacy):
-        b = _admit_in_thread(8, d, legacy, events, "b", rel)
-        time.sleep(0.2)
-        c = _admit_in_thread(2, d, legacy, events, "c", rel)  # 2 of the 4 free would fit
-        time.sleep(0.2)
-        assert events == []
-    time.sleep(0.3)
-    assert events[0] == "b in" and "c in" in events  # b first, then c beside it (8 + 2)
-    rel.set()
-    b.join(5)
-    c.join(5)
+        b = _Admission(8, d, legacy, order)
+        assert b.waiting_tokens.wait(10)  # b holds the gate
+        c = _Admission(2, d, legacy, order)  # 2 of the 4 free would fit
+        assert c.waiting_gate.wait(10)  # but c waits for the gate
+        assert not b.admitted.is_set() and not c.admitted.is_set()
+    assert b.admitted.wait(10) and c.admitted.wait(10)
+    assert order == [8, 2]  # b first, then c beside it (8 + 2 of 24)
+    b.finish()
+    c.finish()
 
 
 def test_the_old_mutex_and_admitted_commands_exclude_each_other(tmp_path):
     d, legacy = _dirs(tmp_path)
     with heavy.admit(1, d, legacy):
         assert _held(legacy)  # an old-style flock (exclusive) waits
-    events: list[str] = []
-    go = threading.Event()
-    go.set()
+    order: list[int] = []
     with legacy.open("a") as old:
         fcntl.flock(old, fcntl.LOCK_EX)  # an old-style command runs alone
-        t = _admit_in_thread(1, d, legacy, events, "new", go)
-        time.sleep(0.2)
-        assert events == []
+        new = _Admission(1, d, legacy, order)
+        assert new.waiting_old.wait(10)
+        assert not new.admitted.is_set()
         fcntl.flock(old, fcntl.LOCK_UN)
-    t.join(5)
-    assert events == ["new in", "new out"]
+    assert new.admitted.wait(10)
+    new.finish()
 
 
 def test_the_locks_are_passed_to_the_command(tmp_path, monkeypatch):
@@ -222,18 +245,21 @@ def test_the_locks_are_passed_to_the_command(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.delenv("XUT_CONTAINER_MEMORY", raising=False)
     d = heavy.token_dir()
+    # The child can take each lock exclusively without blocking only because it holds the
+    # very same lock (the inherited open file description): another holder would block it.
     probe = (
-        "import fcntl, os, sys\n"
-        "fds = [int(x) for x in sys.argv[1:]]\n"
-        "print(all(os.fstat(f) is not None for f in fds))\n"
+        "import fcntl, sys\n"
+        "for f in map(int, sys.argv[1:]):\n"
+        "    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "print('held')\n"
     )
 
     def execute(argv, fds, env):
         assert argv[0] == "systemd-run" and argv[-2:] == ["run", "--jobs=2"]
         assert env[heavy.NESTED_ENV] == "1" and env[heavy.VIVADO_ENV] == "1"
-        cmd = ["python3", "-c", probe, *map(str, fds)]
+        cmd = ["python3", "-c", probe, *map(str, fds[1:])]  # the tokens (fds[0]: legacy, shared)
         out = subprocess.run(cmd, pass_fds=fds, capture_output=True, text=True, check=True)
-        assert out.stdout.strip() == "True"
+        assert out.stdout.strip() == "held"
         assert sum(_held(t) for t in d.glob("token*.lock")) == 7  # 4G + 2 x 4g + 16G
         return 7
 
