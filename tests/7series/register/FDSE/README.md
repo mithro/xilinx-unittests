@@ -133,8 +133,9 @@ FDSE is a single D flip-flop with clock enable and a synchronous set input `S` t
 | `7series.FDSE.L1.sv_x_inputs` | no: self-checking sv testbench; there is no golden-model replay | yes | yes | unsupported: 2-state simulator: x stimulus is randomised per X seed (spec §5.6), so the undocumented x checkpoints cannot be compared | unsupported: sv testbenches are simulation-only (spec §4.3) |
 | `7series.FDSE.L2.cocotb_random` | no: the cocotb test compares against the golden model itself | unsupported: cocotb has no xsim backend (spec §4.3) | yes | yes | unsupported: cocotb runs in simulation; failing seeds are frozen into vector tests |
 
-Findings: none recorded.
+Findings:
 
+- [FDSE-doc-gap-doc-init_default](../../../../findings/FDSE-doc-gap-doc-init_default.md)
 
 ## Related tests
 
