@@ -187,3 +187,19 @@ Verification, all on the scratch copy of `main` plus P1 and luts:
 - the non-container suite under the heavy lock in a 16G scope: `1866 passed, 5 skipped` (1699 with P1 alone).
 
 Next: re-review of PR #12.
+
+## Follow-up: the S52 ruling on `L1.is_clk_inverted`
+
+The coordinator ruled that holding address 0 relied on the inferred shift direction, so under S52 `L1.is_clk_inverted` must not credit C7.
+
+- **Recipe.** The recipe reads address 31 again.
+- **Credited claims.** C7 is out of the test's `exercises`; C3 stays. Its `gaps` carry the S52 note: C7 is exercised, not credited, because a simulator that shifts on the rise differs there only on order-dependent samples.
+- **C7's crediting configuration.** `L1.edge_polarity` remains C7's order-free crediting configuration, and the only test that declares C7.
+- **Guard.** The failing-mutant guard now checks only the tests that declare the claim in `exercises`. That matches `xut status`, which credits `exercises` ∩ reached. The strict event guard passes for C7 through `L1.edge_polarity`.
+- **Plan text.** A3, P1 item 2, the B3 recipe table and D20 say so.
+
+Verification, all on the scratch copy of `main` plus P1 and luts:
+- luts pytest plus P1's focused tests in a 4G scope: `231 passed`;
+- the cocotb stand-in: exit 0;
+- ruff: clean;
+- the non-container suite under the heavy lock in a 16G scope: `1866 passed, 5 skipped`.
