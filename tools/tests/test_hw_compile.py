@@ -1,10 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 
+from xut.formats.xvec import loads
 from xut.hw import image
 from xut.hw.compile import HwUnrenderable, compile_program, t0_bits
 from xut.stimgen import VecBuilder
 from xut.wrap import Bit, DutMap
+
+# nin=2 nout=1 nclk=1, matching _map()'s defaults, for the tests below that build
+# their Vec directly (a free-running clock and a sub-gap Vec can't come from
+# VecBuilder: it always emits stepped clocks and enforces the minimum event gap).
+HDR = (
+    "# xut-vec 2  prim=TOYFF cfg=c0 nin=2 nout=1 nclk=1 settle_ps=120000 seed=0\n"
+    "clock clk0 period=10000 phase=0 duty=50 mode=stepped\n"
+)
 
 
 def _map(nin=2, clk=True, cls="data") -> DutMap:
@@ -66,3 +75,41 @@ def test_expect_reject_is_unrenderable():
     b.sample("s")
     with pytest.raises(HwUnrenderable, match="reject"):
         compile_program(b.build(), m)
+
+
+def test_pad_class_is_unrenderable():
+    m = _map(cls="pad")  # R is pad-class: needs the pad harness (spec §7.3)
+    b = VecBuilder(m, seed=1)
+    b.set(D=1, R=1)
+    b.sample("s")
+    with pytest.raises(HwUnrenderable, match="pad harness"):
+        compile_program(b.build(), m)
+
+
+def test_free_running_clock_is_unrenderable():
+    m = _map()
+    # t=126000: no input change at all, so it cannot coincide with a free-clock edge
+    # (validate's own "a sample shares its time with a change" rule).
+    vec = loads(
+        HDR.replace("mode=stepped", "mode=free") + "t=120000 clock_start clk0\nt=126000 sample s\n"
+    )
+    with pytest.raises(HwUnrenderable, match="free-running"):
+        compile_program(vec, m)
+
+
+def test_simultaneous_group_is_unrenderable():
+    m = _map()
+    b = VecBuilder(m, seed=1)
+    with b.simultaneous():
+        b.edge("C", True)
+        b.set(D=1)
+    b.sample("s")
+    with pytest.raises(HwUnrenderable, match="simultaneous"):
+        compile_program(b.build(), m)
+
+
+def test_event_gap_is_unrenderable():
+    m = _map()
+    vec = loads(HDR + "t=121000 set in[1]=1\nt=121400 set in[0]=1\nt=123000 sample s\n")
+    with pytest.raises(HwUnrenderable, match="min event gap"):
+        compile_program(vec, m)
