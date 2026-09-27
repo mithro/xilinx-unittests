@@ -11,6 +11,7 @@ and validates a status file, and builds a fresh stub.
 import os
 import subprocess
 import sys
+import zlib
 from collections.abc import Callable
 from itertools import combinations
 from pathlib import Path
@@ -680,6 +681,24 @@ def _sim_passed(case: TestCase, results: Results) -> bool:
     )
 
 
+def _warn_non_default_seed(
+    case: TestCase, python: dict | None, warn: Callable[[str], None]
+) -> None:
+    """Warn when a generated vector test's credited python run used a seed other than
+    the default (``xut.runners.base.seed_for``: crc32 of the test id). The unit guards
+    (``xut.unitkit.vector_reach``) vouch for the default-seed stimulus only (ruling S57).
+    A frozen ``.xvec`` keeps its own seed. TODO: refuse such a run instead, once
+    ``xut freeze-seed`` turns an explored seed into a frozen vector test."""
+    if case.source and case.source.endswith(".xvec"):
+        return
+    seed = ((python or {}).get("seeds") or {}).get("stimulus")
+    if isinstance(seed, int) and seed != zlib.crc32(case.id.encode()):
+        warn(
+            f"{case.id}: credits a python run made with --seed {seed}, not the default; the "
+            "unit guards checked the default-seed stimulus only (ruling S57)"
+        )
+
+
 def _vector_reached(
     case: TestCase, ms: str, results: Results, warn: Callable[[str], None]
 ) -> tuple[set[str], set[str]] | None:
@@ -687,7 +706,8 @@ def _vector_reached(
     is credited only when it passed on the golden model AND on at least one simulator
     (rulings S21, S23), and only its own reach counts. ``None`` (with a warning) when
     no configuration is credited."""
-    golden = _passed_cfgs(results.get(("rtl", "python", case.id)))
+    python = results.get(("rtl", "python", case.id))
+    golden = _passed_cfgs(python)
     credited = set(golden) & _sim_passed_cfgs(case, results)
     if not credited:
         if case.exercises:
@@ -701,6 +721,7 @@ def _vector_reached(
                 "the golden model alone covers nothing)"
             )
         return None
+    _warn_non_default_seed(case, python, warn)
     reached: set[str] = set()
     for cfg in sorted(credited):
         bins = golden[cfg].get("bins_reached")

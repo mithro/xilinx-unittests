@@ -275,7 +275,11 @@ def _replay_all(case: TestCase, root: Path) -> list[_Replayed]:
 def vector_reach(case: TestCase, root: Path) -> list[ConfigReach]:
     """Every non-reject configuration of vector test ``case``, generated and replayed
     exactly as ``xut run --runner python`` does (``generate`` with the default seed,
-    ``replay_config``)."""
+    ``replay_config``).
+
+    TODO (ruling S57): only the default seed is checked. ``xut status record`` warns
+    when it credits a python run made with another ``--seed``; refuse it instead once
+    ``xut freeze-seed`` exists."""
     return [r.reach for r in _replay_all(case, root)]
 
 
