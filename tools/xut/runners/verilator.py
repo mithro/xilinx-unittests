@@ -28,7 +28,7 @@ configuration whose stimulus sets any input bit to x or z is an ``error``
 run root (``build/<flow>/verilator/<model-source>/<id>/``)::
 
     verilator --binary --timing -j 2 --timescale 1ps/1ps -Wno-fatal -Wno-MULTITOP
-      --x-assign unique --x-initial unique -Mdir obj -o simx -I. -Idut
+      --x-assign unique --x-initial unique -fno-dedup -Mdir obj -o simx -I. -Idut
       -y <vz_dir> -y <ms>/unisims [-y <ms>/retarget] +libext+.v [+define+K=V ...]
       xut_vector_tb.sv dut/xut_dut.v <ms>/glbl.v
 
@@ -36,6 +36,19 @@ Warnings are not waived beyond that (ruling S35.5): they are written to ``build.
 never fail the build (``-Wno-fatal``); lint and style warnings are kept in the log too. A
 failed build is ``error "compile failed: <first %Error line>"``; ``TRISTATE`` below
 explains one inherent case.
+
+``-fno-dedup`` (``OPT_FLAGS``; the cocotb launcher's builds carry it too). Verilator
+5.048's V3Gate dedupe, which merges identical logic, stops with "Internal Error: ...
+V3Gate.cpp:974: Consumer doesn't match lhs of assign" on a UNISIM LUT4, LUT5, LUT6 or
+LUT6_2 whose output is constant (INIT all zeros or all ones; for LUT6_2 a uniform lower
+half), on both model sources. Those models compute O with nested calls of a mux function
+over INIT slices, which a constant INIT makes identical; LUT1-LUT3 use a UDP instead and
+are unaffected. ``-fno-dedup`` turns off only that sub-pass (``-fno-gate`` would turn off
+all of V3Gate; no other ``-fno-*`` option avoids the error). An optimisation pass changes
+no semantics: every other Verilator result is byte-identical with and without it
+(trace.xtr, raw.txt, xdep.json, per-configuration status; the infra/verilator-gate log).
+Pinned by ``test_constant_output_lut4_builds_and_simulates``, whose control build without
+the flag still fails: when a Verilator upgrade makes it pass, the flag can be reconsidered.
 
 **glbl** is a second top (spec §6): the Task 15 spike showed Verilator 5.048 elaborates
 ``glbl`` beside ``xut_vector_tb`` (``-Wno-MULTITOP``), the model's upward ``glbl.GSR`` and
@@ -177,6 +190,10 @@ _TRISTATE_WHY = (
     "not caused by the testbench or the transform; see xut.runners.verilator)"
 )
 _MAX = 300
+#: Optimisations disabled in every Verilator build, vector, sv and cocotb alike (module
+#: docstring, ``-fno-dedup``). ``xut/hdl/cocotb_run.py`` repeats them (pinned by
+#: test_runner_cocotb).
+OPT_FLAGS = ("-fno-dedup",)
 _SX = pyslang.syntax.SyntaxKind
 
 
@@ -265,7 +282,7 @@ def verilator_argv(
     return [
         "verilator", "--binary", "--timing", "-j", "2", "--timescale", "1ps/1ps",
         "-Wno-fatal", "-Wno-MULTITOP", "--x-assign", "unique", "--x-initial", "unique",
-        "-Mdir", "obj", "-o", "simx", *extra, *libs, "+libext+.v", *defs, *sources,
+        *OPT_FLAGS, "-Mdir", "obj", "-o", "simx", *extra, *libs, "+libext+.v", *defs, *sources,
     ]  # fmt: skip
 
 

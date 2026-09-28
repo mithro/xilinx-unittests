@@ -30,6 +30,10 @@ TOP = "xut_cocotb_top"
 #: Exit code when the HDL build fails (no test ran); the runner reports ``compile failed``.
 #: Keep equal to ``xut.runners.sim.COCOTB_BUILD_FAILED`` (pinned by test_runner_cocotb).
 BUILD_FAILED = 3
+#: Optimisations disabled in every Verilator build. Keep equal to
+#: ``xut.runners.verilator.OPT_FLAGS``, whose module docstring says why (pinned by
+#: test_runner_cocotb).
+OPT_FLAGS = ("-fno-dedup",)
 
 
 def build_args(sim: str, unisims: str, retarget: str | None, lib_first: list[str]) -> list[str]:
@@ -45,6 +49,7 @@ def build_args(sim: str, unisims: str, retarget: str | None, lib_first: list[str
         "unique",
         "--x-initial",
         "unique",
+        *OPT_FLAGS,
         *(a for d in libs for a in ("-y", d)),
         "+libext+.v",
     ]

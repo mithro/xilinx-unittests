@@ -22,7 +22,7 @@ from xut import run as run_mod
 from xut import schemas
 from xut.catalog.model import CatalogEntry
 from xut.cli import main
-from xut.container import NativeExecutor
+from xut.container import NativeExecutor, executor_for
 from xut.formats import xtr, xvec
 from xut.modelsrc import ModelSource
 from xut.runners import RUNNERS
@@ -1205,3 +1205,65 @@ def test_iverilog_vz_without_a_python_run_says_why(ctx, toy, no_container, monke
     res = IverilogVzRunner().run(_case("7series.TOYFF.L1.capture"), ctx)
     assert res.status == "error"
     assert all("FileNotFoundError" not in (c.reason or "") for c in res.configs), res.configs
+
+
+def test_every_build_disables_the_v3gate_dedupe(tmp_path):
+    """-fno-dedup (module docstring) sits in every vector and sv build, before the
+    libraries, and the cocotb launcher's Verilator builds carry the same flags."""
+    ms = make_model_source(tmp_path / "ms")
+    argv = verilator_argv(NativeExecutor(), RunContext(tmp_path, "rtl", ms), tmp_path, [], [])
+    assert vl.OPT_FLAGS == ("-fno-dedup",)
+    i = argv.index("-fno-dedup")
+    assert i < argv.index("-y") and argv[i - 2 : i] == ["--x-initial", "unique"]
+
+
+#: A constant-output LUT4 (INIT all zeros, the default) whose inputs are first written by
+#: an initial block: Verilator 5.048's V3Gate dedupe stops on it with "Internal Error:
+#: ... V3Gate.cpp:974: Consumer doesn't match lhs of assign" (the luts findings
+#: LUT{4,5,6,6_2}-sim-divergence-verilator-constant-output).
+CONST_LUT4_TB = """\
+// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+module const_lut4_tb;
+  reg [3:0] i;
+  wire o;
+  LUT4 #(.INIT(16'h0000)) dut (.O(o), .I0(i[0]), .I1(i[1]), .I2(i[2]), .I3(i[3]));
+  initial begin
+    i = 4'd0;
+    repeat (16) begin
+      #10 $display("O %b %b", i, o);
+      i = i + 4'd1;
+    end
+    $finish;
+  end
+endmodule
+"""
+
+
+@pytest.mark.container
+@pytest.mark.parametrize("source", ["unisim-2025.2", "unisim-gh-2020.1"])
+def test_constant_output_lut4_builds_and_simulates(work, source):
+    """The runner's build command (``verilator_argv``) builds the real UNISIM LUT4 with a
+    constant output and simulates it to O=0 for every input. Without ``OPT_FLAGS`` the same
+    build still hits the V3Gate internal error: when a Verilator upgrade fixes it, this
+    control fails, and -fno-dedup can be reconsidered."""
+    from xut.modelsrc import model_sources
+
+    ms = model_sources().get(source)
+    if ms is None:
+        pytest.skip(f"model source {source} not available")
+    (work / "vz").mkdir()
+    (work / "const_lut4_tb.sv").write_text(CONST_LUT4_TB)
+    ex = executor_for(ms, work)
+    ctx = RunContext(work, "rtl", ms)
+    argv = verilator_argv(ex, ctx, work / "vz", ["const_lut4_tb.sv"], [])
+    rc = ex.run(argv, cwd=work, log=work / "build.log", timeout_s=600)
+    assert rc == 0, (work / "build.log").read_text()
+    assert ex.run(["obj/simx"], cwd=work, log=work / "sim.log", timeout_s=60) == 0
+    got = [ln.split()[1:] for ln in (work / "sim.log").read_text().splitlines() if ln[:2] == "O "]
+    assert got == [[f"{k:04b}", "0"] for k in range(16)]
+
+    ctl = [a for a in argv if a not in vl.OPT_FLAGS]
+    ctl[ctl.index("obj")] = "obj-ctl"
+    assert ex.run(ctl, cwd=work, log=work / "control.log", timeout_s=600) != 0
+    assert "Consumer doesn't match lhs of assign" in (work / "control.log").read_text()
