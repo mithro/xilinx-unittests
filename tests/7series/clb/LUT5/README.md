@@ -101,8 +101,9 @@ LUT5 reads a 32-bit INIT at the address formed by its inputs; it has no clock an
 | `7series.LUT5.L1.sv_gsr_midsim` | no: self-checking sv testbench; there is no golden-model replay | yes | yes | yes | unsupported: sv testbenches are simulation-only (spec §4.3) |
 | `7series.LUT5.L2.cocotb_random` | no: the cocotb test compares against the golden model itself | unsupported: cocotb has no xsim backend (spec §4.3) | yes | yes | unsupported: cocotb runs in simulation; failing seeds are frozen into vector tests |
 
-Findings: none recorded.
+Findings:
 
+- [LUT5-sim-divergence-verilator-constant-output](../../../../findings/LUT5-sim-divergence-verilator-constant-output.md)
 
 ## Related tests
 
