@@ -8,7 +8,11 @@
 //   ends sample_take's cycle (xut_hw_ctrl's strobe timing), not at the strobe;
 // - XUT_X_SAMPLE: an X or Z in the bits a SAMPLE captured from cur_out (the printer would
 //   print it as 0);
-// - XUT_X_TX: an X or Z in a byte the harness transmitted.
+// - XUT_X_TX: an X or Z in a byte the harness transmitted;
+// - XUT_SHORT_REPLY: the host is waiting for reply lines, but the harness has been idle
+//   (controller in S_IDLE, no byte being received from it) for IDLE_CYCLES: the reply was
+//   shorter than the step expected. The run ends at once, with every byte received so far
+//   in harness_tx.txt (flushed after every byte), instead of at XUT_TIMEOUT.
 // The host side drives and samples on the falling clock edge, so it never races the
 // harness's rising-edge logic.
 //
@@ -22,6 +26,7 @@ module xut_hw_tb;
   localparam integer CPB = `XUT_HW_TB_CPB;          // hwsim.CPB, via host.vh
   localparam integer MON_MARGIN = `XUT_HW_TB_MON_MARGIN;
   localparam integer NHOST = `XUT_HOST_WORDS;
+  localparam integer IDLE_CYCLES = 16 * 10 * CPB;  // 16 byte-times
   reg clk = 1'b0;
   always #5000 clk = ~clk;                     // 100 MHz
   reg  rx = 1'b1;
@@ -38,11 +43,13 @@ module xut_hw_tb;
 
   // ---- the harness's transmitter, decoded mid-bit
   reg [7:0] rbyte;
+  reg       rbusy = 1'b0;
   integer   rk;
   initial begin
     fd = $fopen("harness_tx.txt", "w");
     forever begin
       @(negedge tx);
+      rbusy = 1'b1;
       repeat (CPB / 2) @(negedge clk);
       for (rk = 0; rk < 8; rk = rk + 1) begin
         repeat (CPB) @(negedge clk);
@@ -51,7 +58,9 @@ module xut_hw_tb;
       repeat (CPB) @(negedge clk);
       if (^rbyte === 1'bx) $display("XUT_X_TX cycle=%0d byte=%b", cyc, rbyte);
       $fwrite(fd, "%02x\n", rbyte);
+      $fflush(fd);
       if (rbyte == 8'h0a) nl = nl + 1;
+      rbusy = 1'b0;
     end
   end
 
@@ -70,13 +79,28 @@ module xut_hw_tb;
     end
   endtask
 
+  // The last cycle the harness was doing something: not in S_IDLE (5'd0), or sending.
+  reg [63:0] last_busy = 64'd0;
+  always @(posedge clk) if (u_top.u_ctrl.st != 5'd0 || rbusy) last_busy <= cyc;
+
   integer i;
+  reg [63:0] wait_from;
   initial begin : host_side
     $readmemh("host.memh", host);
     #(3_000_000);                              // 3 us: glbl's GSR and the harness's reset
     for (i = 0; i < NHOST; i = i + 1) begin
       if (host[i][31:28] == 4'h0) send_byte(host[i][7:0]);
-      else if (host[i][31:28] == 4'h1) wait (nl >= host[i][27:0]);
+      else if (host[i][31:28] == 4'h1) begin
+        wait_from = cyc;
+        while (nl < host[i][27:0]) begin
+          @(negedge clk);
+          if (cyc - (last_busy > wait_from ? last_busy : wait_from) > IDLE_CYCLES) begin
+            $display("XUT_SHORT_REPLY want=%0d nl=%0d", host[i][27:0], nl);
+            $fflush(fd);
+            $finish;
+          end
+        end
+      end
     end
     repeat (8 * CPB) @(negedge clk);
     $fflush(fd);

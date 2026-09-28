@@ -12,7 +12,7 @@ from xut.hw.hwsim import SIM_BUILD_ID, simulate
 from xut.hw.image import MARGIN, MAXWORDS, W_END, W_SAMPLE, HwProgram, w_commit, w_set
 from xut.hw.interp import EmuSlot, Harness
 from xut.hw.replay import ModelDut
-from xut.hw.selftest import CounterSim, PassthroughSim, passthrough_program, selftest_programs
+from xut.hw.selftest import CounterSim, PassthroughSim, selftest_programs
 from xut.hw.slots import SELFTEST_SLOTS, SlotBuild, dut_slot
 from xut.hw.steps import Step, run_replies, session_steps
 from xut.modelsrc import resolve
@@ -166,14 +166,16 @@ endmodule
 
 @pytest.mark.container
 def test_the_testbench_flags_x_samples_and_measures_the_physical_capture(tmp_path):
-    """The monitor measures change-to-capture against the physical capture into
-    ``cur_out`` (sample_take - 2): with a monitor bound of MARGIN + 2, the passthrough's
-    COMMIT-then-SAMPLE is flagged at exactly MARGIN + 1 cycles, the shortest gap the
-    harness guarantees. And an X reaching ``cur_out`` at a sample is reported, not
-    silently printed as 0."""
+    """Both monitor branches are live and measure what the ``xut_hw_ctrl`` strobe timing
+    says. With a bound of MARGIN + 4, the capture branch (timed at the physical capture
+    into ``cur_out``, sample_take - 2) flags the COMMIT/EDGE-then-SAMPLE gaps, the
+    shortest being exactly MARGIN + 1; the change branch flags the counter's back-to-back
+    EDGEs at exactly MARGIN + 3. And an X reaching ``cur_out`` at a sample is reported,
+    not silently printed as 0."""
     xslot = SlotBuild("dut", 1, 1, 0, "0", X_WRAPPER, "LUT1")
     xprog = HwProgram(1, 0, 1, "0", (W_SAMPLE, W_END), ("x",))
-    progs = {0: passthrough_program(), 2: xprog}
+    progs = {**selftest_programs(), 2: xprog}
+    bound = MARGIN + 4
     r = simulate(
         (*SELFTEST_SLOTS, xslot),
         session_steps(progs),
@@ -181,12 +183,43 @@ def test_the_testbench_flags_x_samples_and_measures_the_physical_capture(tmp_pat
         tmp_path / "sim",
         model_source=resolve("auto"),
         work_root=tmp_path,
-        monitor_margin=MARGIN + 2,
+        monitor_margin=bound,
     )
-    gaps = {int(v.rsplit("gap=", 1)[1]) for v in r.margin_violations}
-    assert gaps == {MARGIN + 1}, r.margin_violations
+
+    def gaps(kind: str) -> set[int]:
+        return {
+            int(v.rsplit("gap=", 1)[1])
+            for v in r.margin_violations
+            if v.startswith(f"XUT_MARGIN_VIOLATION {kind} ")
+        }
+
+    assert min(gaps("capture")) == MARGIN + 1 and max(gaps("capture")) < bound
+    assert gaps("change") == {MARGIN + 3}, r.margin_violations
     assert len(r.x_samples) == 1 and "x" in r.x_samples[0].split("bits=")[1], r.x_samples
     assert run_replies(r.replies, progs)[2].samples == ("0",)  # what the printer made of X
+
+
+@pytest.mark.container
+def test_a_short_reply_ends_the_simulation_with_the_partial_reply(tmp_path):
+    """A step that expects more lines than the harness sends (an early ``end``, a wrong
+    label count) ends the run once the harness is idle, in seconds, not at the outer
+    timeout, and the error carries every byte that did arrive."""
+    from xut.hw.hwsim import HwSimError
+
+    with pytest.raises(HwSimError, match="short reply") as ei:
+        simulate(
+            SELFTEST_SLOTS,
+            [Step(proto.CMD_ID, 2)],
+            "iverilog",
+            tmp_path / "sim",
+            model_source=resolve("auto"),
+            work_root=tmp_path,
+            timeout_s=120,
+        )
+    assert ei.value.tx == proto.render(
+        "id", build=SIM_BUILD_ID, slots=2, maxwords=MAXWORDS, margin=MARGIN
+    )
+    assert "step 0" in str(ei.value)
 
 
 def test_render_host_waits_for_each_whole_reply():
@@ -267,3 +300,19 @@ def test_an_oom_killed_xsim_run_is_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(hwsim, "scoped_run", lambda argv, **kw: 137)
     with pytest.raises(hwsim.HwSimError, match="scope cap"):
         hwsim._xsim(tmp_path, ["a.sv"], 10)
+
+
+def test_an_oom_killed_vvp_run_is_an_error(tmp_path, monkeypatch):
+    from xut.hw import hwsim
+
+    class FakeEx:
+        def guest(self, p):
+            return str(p)
+
+        def run(self, argv, cwd, log, timeout_s):
+            log.write_text("")
+            return 137 if argv[0] == "vvp" else 0
+
+    monkeypatch.setattr(hwsim, "executor_for", lambda ms, root: FakeEx())
+    with pytest.raises(hwsim.HwSimError, match="memory cap"):
+        hwsim._iverilog(tmp_path, ["a.sv"], resolve("auto"), tmp_path, 10)

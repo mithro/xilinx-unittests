@@ -18,6 +18,9 @@ The testbench also observes the harness (``SimResult``):
   bit as ``0`` (the RTL has no simulator ifdefs), so without this an X from a UNISIM DUT
   would pass silently; it is the evidence of an ``x-dependence`` finding.
 - An X or Z in a byte the harness transmits is a harness error (``HwSimError``).
+- A reply shorter than its step expects ends the run once the harness has been idle for
+  16 byte-times (``XUT_SHORT_REPLY``): ``HwSimError`` names the step and carries the
+  bytes that arrived, rather than the run hanging until ``timeout_s``.
 """
 
 from __future__ import annotations
@@ -26,12 +29,14 @@ import os
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from itertools import accumulate
 from pathlib import Path
 
 from xut import container
 from xut.container import executor_for
 from xut.errors import XutError
 from xut.hw.image import MARGIN, MAXWORDS
+from xut.hw.proto import ProtoError
 from xut.hw.slots import HW_HDL, HW_INCLUDES, HW_SOURCES, SlotBuild, render_cfg_vh, render_slots
 from xut.hw.steps import Step, split_replies
 from xut.modelsrc import ModelSource
@@ -65,7 +70,12 @@ def max_sim_jobs(sim: str) -> int:
 
 
 class HwSimError(XutError, RuntimeError):
-    """The simulated harness did not compile, did not finish, or answered malformed."""
+    """The simulated harness did not compile, did not finish, or answered malformed.
+    ``tx`` holds whatever the harness transmitted before the failure (a short reply)."""
+
+    def __init__(self, msg: str, tx: bytes = b"") -> None:
+        super().__init__(msg)
+        self.tx = tx
 
 
 def render_host(steps: Sequence[Step]) -> tuple[str, int]:
@@ -99,8 +109,11 @@ def _iverilog(d: Path, files: list[str], ms: ModelSource, work_root: Path, timeo
     log = d / "run.log"
     if ex.run(comp, cwd=d, log=log, timeout_s=timeout_s) != 0:
         raise HwSimError(f"iverilog: the harness did not compile (see {log})")
-    ex.run(["vvp", "-n", "sim.vvp"], cwd=d, log=log, timeout_s=timeout_s)
-    return log.read_text(errors="replace")
+    rc = ex.run(["vvp", "-n", "sim.vvp"], cwd=d, log=log, timeout_s=timeout_s)
+    text = log.read_text(errors="replace")
+    if rc in OOM_RCS or container.OOM_MARK in text:
+        raise HwSimError(f"iverilog: vvp was killed at its memory cap, rc {rc} (see {log})")
+    return text
 
 
 def _xsim(d: Path, files: list[str], timeout_s: int) -> str:
@@ -122,6 +135,31 @@ def _xsim(d: Path, files: list[str], timeout_s: int) -> str:
     if rc in OOM_RCS:
         raise HwSimError(f"xsim: killed at the {HW_SIM_MEMORY_MAX} scope cap, rc {rc} (see {log})")
     return log.read_text(errors="replace")
+
+
+def _read_tx(tx_file: Path) -> bytes:
+    return bytes(int(x, 16) for x in tx_file.read_text().split()) if tx_file.exists() else b""
+
+
+def _short_reply(
+    sim: str, text: str, tx_file: Path, steps: Sequence[Step], log: Path
+) -> HwSimError:
+    """The error for a reply shorter than its step expects: which step, and what arrived."""
+    line = next(ln.strip() for ln in text.splitlines() if "XUT_SHORT_REPLY" in ln)
+    want = int(line.split("want=", 1)[1].split()[0])
+    ends = list(accumulate(s.lines for s in steps))
+    k = next((j for j, e in enumerate(ends) if e >= want), len(steps) - 1)
+    tx = _read_tx(tx_file)
+    try:
+        split_replies(tx, steps)
+        why = "the whole session arrived after all"
+    except ProtoError as e:
+        why = str(e)
+    return HwSimError(
+        f"{sim}: short reply at step {k} ({steps[k].send[:1]!r}): the harness went idle "
+        f"after {len(tx)} byte(s); {why} (see {log})",
+        tx,
+    )
 
 
 def simulate(
@@ -164,13 +202,16 @@ def simulate(
     else:
         raise HwSimError(f"unknown simulator {sim!r} (iverilog or xsim)")
     log = workdir / "run.log"
+    tx_file = workdir / "harness_tx.txt"
+    if "XUT_SHORT_REPLY" in text:
+        raise _short_reply(sim, text, tx_file, steps, log)
     if "XUT_DONE" not in text:
         why = "timed out" if "XUT_TIMEOUT" in text else "did not finish"
         raise HwSimError(f"{sim}: the harness testbench {why} (see {log})")
     x_tx = [ln.strip() for ln in text.splitlines() if "XUT_X_TX" in ln]
     if x_tx:
         raise HwSimError(f"{sim}: the harness transmitted X/Z: {x_tx[0]} (see {log})")
-    tx = bytes(int(x, 16) for x in (workdir / "harness_tx.txt").read_text().split())
+    tx = _read_tx(tx_file)
     viol = [ln.strip() for ln in text.splitlines() if "XUT_MARGIN_VIOLATION" in ln]
     xs = [ln.strip() for ln in text.splitlines() if "XUT_X_SAMPLE" in ln]
     return SimResult(tx, split_replies(tx, steps), log, viol, xs)
