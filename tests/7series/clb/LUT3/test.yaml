@@ -76,6 +76,14 @@ tests:
   gaps:
   - only an all-x INIT is tried; an over-wide literal is refused by xut wrap
   - whether UNISIM rejects it is observed, not documented (Task A6 rule)
+  - 'UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog):
+    findings/LUT3-doc-gap-L0-illegal_init.md; kept by the user''s decision of 2026-09-28'
+  expected_divergence:
+  - finding: findings/LUT3-doc-gap-L0-illegal_init.md
+    cls: doc-gap
+    runners:
+    - xsim
+    - iverilog
 - id: 7series.LUT3.L1.default_init
   level: L1
   style: vector

@@ -39,6 +39,7 @@ CFGLUT5 reads a 32-bit INIT at the address formed by its inputs; CE-enabled CLK 
 - `7series.CFGLUT5.L0.illegal_init`: An INIT with x digits is not the HEX value UG953 asks for (p349); the simulation must reject it (expect=reject), the runtime-rejection path of spec §4.1.
   - Misses: only an all-x INIT is tried; an over-wide literal is refused by xut wrap
   - Misses: whether UNISIM rejects it is observed, not documented (Task A6 rule)
+  - Misses: UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/CFGLUT5-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - `7series.CFGLUT5.L1.default_init`: INIT unset: every address reads 0 (a ground, per the Introduction); a flow that drops or mangles the default fails here.
   - Misses: the default is the only value; explicit zero is in L2.init_sweep
   - Misses: no x/z on any input (sv_x_inputs covers x)
@@ -114,6 +115,7 @@ CFGLUT5 reads a 32-bit INIT at the address formed by its inputs; CE-enabled CLK 
 - claims: reads that depend on CFGLUT5's inferred bit order are exercised but credit nothing (ruling S52; findings/CFGLUT5-doc-gap-L1-projections.md)
 - only an all-x INIT is tried; an over-wide literal is refused by xut wrap
 - whether UNISIM rejects it is observed, not documented (Task A6 rule)
+- UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/CFGLUT5-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - the default is the only value; explicit zero is in L2.init_sweep
 - single-input functions only; general INITs are in L2
 - only uniform contents: the bit order is left to the other tests
@@ -163,6 +165,7 @@ CFGLUT5 reads a 32-bit INIT at the address formed by its inputs; CE-enabled CLK 
 
 Findings:
 
+- [CFGLUT5-doc-gap-L0-illegal_init](../../../../findings/CFGLUT5-doc-gap-L0-illegal_init.md)
 - [CFGLUT5-doc-gap-L1-partial_shift](../../../../findings/CFGLUT5-doc-gap-L1-partial_shift.md)
 - [CFGLUT5-doc-gap-L1-projections](../../../../findings/CFGLUT5-doc-gap-L1-projections.md)
 

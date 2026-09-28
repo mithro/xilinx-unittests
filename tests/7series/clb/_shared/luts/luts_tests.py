@@ -56,6 +56,9 @@ CFG_VL: Reason = (
     "srl/CFGLUT5 recovery of ruling S29(2)",
 )
 NO_X = "no x/z on any input (sv_x_inputs covers x)"
+#: UNISIM accepts the all-x INIT of L0.illegal_init; the test is kept and lists this
+#: doc-gap (the user's decision of 2026-09-28, in place of Task A6's removal rule)
+ILLEGAL_INIT_FINDING = "{prim}-doc-gap-L0-illegal_init.md"
 NO_TIMING = "propagation delay is not measured (timing is out of scope, spec §2)"
 #: Ruling S52: a CFGLUT5 read whose value depends on the inferred bit order credits nothing
 S52 = (
@@ -140,6 +143,7 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         *,
         gaps: Sequence[str],
         related: Sequence[str] = (),
+        expected: Sequence[dict] = (),
         **kw: object,
     ) -> None:
         twin = [f"{FAMILY}.{TWIN[prim]}.{level}.{name}"] if prim in TWIN else []
@@ -148,6 +152,8 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         e = unitkit.entry(
             FAMILY, prim, level, name, style, source, exercises, gaps=gaps, related=rel, **kw
         )
+        if expected:
+            e["expected_divergence"] = list(expected)  # last in the schema's key order
         out.append((e, why))
 
     # C1 (LUT6_2/CFGLUT5: C1, C2) is credited by an explicit INIT's reads; the default's
@@ -194,8 +200,18 @@ def tests_for(k: LutKind) -> list[tuple[dict, str]]:
         gaps=[
             "only an all-x INIT is tried; an over-wide literal is refused by xut wrap",
             "whether UNISIM rejects it is observed, not documented (Task A6 rule)",
+            f"UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, "
+            f"unisim-gh-2020.1 on iverilog): findings/{ILLEGAL_INIT_FINDING.format(prim=prim)}; "
+            "kept by the user's decision of 2026-09-28",
         ],
         related=[f"{FAMILY}.{prim}.L0.smoke"],
+        expected=[
+            {
+                "finding": f"findings/{ILLEGAL_INIT_FINDING.format(prim=prim)}",
+                "cls": "doc-gap",
+                "runners": ["xsim", "iverilog"],
+            }
+        ],
     )
     add(
         "L1",

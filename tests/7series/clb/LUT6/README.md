@@ -30,6 +30,7 @@ LUT6 reads a 64-bit INIT at the address formed by its inputs; it has no clock an
 - `7series.LUT6.L0.illegal_init`: An INIT with x digits is not the HEX value UG953 asks for (p507); the simulation must reject it (expect=reject), the runtime-rejection path of spec §4.1.
   - Misses: only an all-x INIT is tried; an over-wide literal is refused by xut wrap
   - Misses: whether UNISIM rejects it is observed, not documented (Task A6 rule)
+  - Misses: UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/LUT6-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - `7series.LUT6.L1.default_init`: INIT unset: every address reads 0 (a ground, per the Introduction); a flow that drops or mangles the default fails here.
   - Misses: the default is the only value; explicit zero is in L2.init_sweep
   - Misses: no x/z on any input (sv_x_inputs covers x)
@@ -72,6 +73,7 @@ LUT6 reads a 64-bit INIT at the address formed by its inputs; it has no clock an
 - illegal values are tried only by L0.illegal_init
 - only an all-x INIT is tried; an over-wide literal is refused by xut wrap
 - whether UNISIM rejects it is observed, not documented (Task A6 rule)
+- UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/LUT6-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - the default is the only value; explicit zero is in L2.init_sweep
 - single-input functions only; general INITs are in L2
 - claims are credited only by the sweeps before and after the pulse
@@ -103,6 +105,7 @@ LUT6 reads a 64-bit INIT at the address formed by its inputs; it has no clock an
 
 Findings:
 
+- [LUT6-doc-gap-L0-illegal_init](../../../../findings/LUT6-doc-gap-L0-illegal_init.md)
 - [LUT6-sim-divergence-verilator-constant-output](../../../../findings/LUT6-sim-divergence-verilator-constant-output.md)
 
 ## Related tests

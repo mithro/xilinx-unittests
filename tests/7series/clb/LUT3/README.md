@@ -30,6 +30,7 @@ LUT3 reads a 8-bit INIT at the address formed by its inputs; it has no clock and
 - `7series.LUT3.L0.illegal_init`: An INIT with x digits is not the HEX value UG953 asks for (p495); the simulation must reject it (expect=reject), the runtime-rejection path of spec §4.1.
   - Misses: only an all-x INIT is tried; an over-wide literal is refused by xut wrap
   - Misses: whether UNISIM rejects it is observed, not documented (Task A6 rule)
+  - Misses: UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/LUT3-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - `7series.LUT3.L1.default_init`: INIT unset: every address reads 0 (a ground, per the Introduction); a flow that drops or mangles the default fails here.
   - Misses: the default is the only value; explicit zero is in L2.init_sweep
   - Misses: no x/z on any input (sv_x_inputs covers x)
@@ -72,6 +73,7 @@ LUT3 reads a 8-bit INIT at the address formed by its inputs; it has no clock and
 - illegal values are tried only by L0.illegal_init
 - only an all-x INIT is tried; an over-wide literal is refused by xut wrap
 - whether UNISIM rejects it is observed, not documented (Task A6 rule)
+- UNISIM accepts the all-x INIT (unisim-2025.2 on xsim and iverilog, unisim-gh-2020.1 on iverilog): findings/LUT3-doc-gap-L0-illegal_init.md; kept by the user's decision of 2026-09-28
 - the default is the only value; explicit zero is in L2.init_sweep
 - single-input functions only; general INITs are in L2
 - claims are credited only by the sweeps before and after the pulse
@@ -101,8 +103,9 @@ LUT3 reads a 8-bit INIT at the address formed by its inputs; it has no clock and
 | `7series.LUT3.L1.sv_gsr_midsim` | no: self-checking sv testbench; there is no golden-model replay | yes | yes | yes | unsupported: sv testbenches are simulation-only (spec §4.3) |
 | `7series.LUT3.L2.cocotb_random` | no: the cocotb test compares against the golden model itself | unsupported: cocotb has no xsim backend (spec §4.3) | yes | yes | unsupported: cocotb runs in simulation; failing seeds are frozen into vector tests |
 
-Findings: none recorded.
+Findings:
 
+- [LUT3-doc-gap-L0-illegal_init](../../../../findings/LUT3-doc-gap-L0-illegal_init.md)
 
 ## Related tests
 
