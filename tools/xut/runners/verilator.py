@@ -28,7 +28,7 @@ configuration whose stimulus sets any input bit to x or z is an ``error``
 run root (``build/<flow>/verilator/<model-source>/<id>/``)::
 
     verilator --binary --timing -j 2 --timescale 1ps/1ps -Wno-fatal -Wno-MULTITOP
-      --x-assign unique --x-initial unique -Mdir obj -o simx -I. -Idut
+      --x-assign unique --x-initial unique -fno-dedup -Mdir obj -o simx -I. -Idut
       -y <vz_dir> -y <ms>/unisims [-y <ms>/retarget] +libext+.v [+define+K=V ...]
       xut_vector_tb.sv dut/xut_dut.v <ms>/glbl.v
 
@@ -177,6 +177,10 @@ _TRISTATE_WHY = (
     "not caused by the testbench or the transform; see xut.runners.verilator)"
 )
 _MAX = 300
+#: Optimisations disabled in every Verilator build, vector, sv and cocotb alike (module
+#: docstring, ``-fno-dedup``). ``xut/hdl/cocotb_run.py`` repeats them (pinned by
+#: test_runner_cocotb).
+OPT_FLAGS = ("-fno-dedup",)
 _SX = pyslang.syntax.SyntaxKind
 
 
@@ -265,7 +269,7 @@ def verilator_argv(
     return [
         "verilator", "--binary", "--timing", "-j", "2", "--timescale", "1ps/1ps",
         "-Wno-fatal", "-Wno-MULTITOP", "--x-assign", "unique", "--x-initial", "unique",
-        "-Mdir", "obj", "-o", "simx", *extra, *libs, "+libext+.v", *defs, *sources,
+        *OPT_FLAGS, "-Mdir", "obj", "-o", "simx", *extra, *libs, "+libext+.v", *defs, *sources,
     ]  # fmt: skip
 
 
