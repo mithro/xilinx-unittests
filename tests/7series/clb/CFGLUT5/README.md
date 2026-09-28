@@ -190,9 +190,7 @@ Findings:
 ## How to run
 
 ```bash
-flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
-  --slice=vivado.slice --unit=xut-run-$(date +%s) \
-  -p MemoryMax=32G -p MemorySwapMax=0 -- \
+uv run xut heavy --mem 8G --containers 16 --name run-cfglut5 -- \
   uv run xut run CFGLUT5 --jobs 16 > .cache/run-cfglut5.log 2>&1
 uv run xut crosscheck CFGLUT5 > .cache/xc-cfglut5.log 2>&1
 uv run xut status record CFGLUT5 > .cache/status-cfglut5.log 2>&1

@@ -113,9 +113,7 @@ Findings: none recorded.
 ## How to run
 
 ```bash
-flock "$XDG_RUNTIME_DIR/xut-heavy.lock" systemd-run --user --scope \
-  --slice=vivado.slice --unit=xut-run-$(date +%s) \
-  -p MemoryMax=32G -p MemorySwapMax=0 -- \
+uv run xut heavy --mem 8G --containers 16 --name run-lut1 -- \
   uv run xut run LUT1 --jobs 16 > .cache/run-lut1.log 2>&1
 uv run xut crosscheck LUT1 > .cache/xc-lut1.log 2>&1
 uv run xut status record LUT1 > .cache/status-lut1.log 2>&1
