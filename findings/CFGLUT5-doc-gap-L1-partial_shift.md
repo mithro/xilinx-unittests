@@ -27,3 +27,12 @@ and S53: an output whose value depends on it credits no claim; CFGLUT5.C3/C5/C7 
 credited only where the contents are known to be uniform whatever the direction (uniform
 since power-on with equal bits shifted in, or after 32 equal shifts). This finding stays open until the documentation
 states the direction, whatever UNISIM shows.
+
+Known blind spot (luts B1-B5 review, Minor 1): because CDO is order-dependent whenever the
+contents are not known-uniform, nothing checks CDO *during* a run of shifts; only the
+value after a full 32-shift run is documented. A simulator that shifts two bits per
+active edge therefore passes every documented bit. One reading of p348's "32 bits per
+LUT" cascade is that CDO keeps the old uniform value for the first 31 shifts of an
+opposite-valued run, whatever the direction; that reading would catch it, but it goes
+beyond what the page states, so it is not modelled. It is a candidate C5 strengthening
+for Tier 2 if the documentation, or an orchestrator ruling, settles the latency.
