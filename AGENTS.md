@@ -275,27 +275,24 @@ smoke simulation whose memory grows without bound. Its container peaked at
   because containers are uncapped. Use `pytest -n` at most 8.
   Never use `-n auto` locally: it means 88 workers. There are two host-wide
   slot pools (`xut.slots`, ruling S60). Each is only a semaphore, never a
-  second budget:
-  - **Vivado synthesis and implementation** (`xut hw build`): at most 4 at a
-    time (`XUT_VIVADO_SLOTS`), each sized at 16G. That size is a conservative
-    starting value, not yet measured for our Vivado runs.
-  - **xsim** (one configuration's xvlog, xelab and simulation, in the xsim
-    runner and the verilatorize oracle): at most 12 at a time
-    (`XUT_XSIM_SLOTS`). Measured: one configuration's whole `xsim.sh` peaked
-    at 340M on its own. A unit run with four at once peaked at 1.3G for its
-    whole scope, and one with twelve at once at 3.4G, including the Python
-    process and the result checking.
-
-  Every Vivado/xsim run is counted in the budget of the heavy command that
-  starts it, in one of two ways:
-  - **In the caller's own scope** (today's xsim runner and verilatorize
-    oracle): covered by the caller's `--mem`. A `--mem` of 8G covers twelve
-    xsim with room to spare.
-  - **In a 16G scope of its own** (step 3's `scoped_run`: Vivado builds and
-    `xut hw sim` xsim): counted through `xut heavy --vivado N`, which reserves
-    N × 16G inside the 96G. A command that can start them declares `--vivado`
-    with the most it runs at once. `scoped_run` refuses to start one (fail
-    closed) when its caller reserved none (`xut.heavy.vivado_reserved`).
+  second budget. Which pool a run takes follows from where it runs, and so
+  from how its memory is counted:
+  - **The Vivado pool, for runs in a 16G scope of their own.** This is step 3's
+    `scoped_run`: `xut hw build`'s synthesis and implementation, and `xut hw
+    sim`'s xsim. At most 4 run at a time (`XUT_VIVADO_SLOTS`). They are
+    counted through `xut heavy --vivado N`, which reserves N × 16G inside the
+    96G. A command that can start them declares `--vivado` with the most it
+    runs at once. `scoped_run` refuses to start one (fail closed) when its
+    caller reserved none (`xut.heavy.vivado_reserved`). The 16G is a
+    conservative starting value, not yet measured for our Vivado runs.
+  - **The xsim pool, for xsim runs inside the caller's own scope.** This is one
+    configuration's xvlog, xelab and simulation, in the xsim runner and the
+    verilatorize oracle. At most 12 run at a time (`XUT_XSIM_SLOTS`), covered
+    by the caller's `--mem`. Measured: one configuration's whole `xsim.sh`
+    peaked at 340M on its own. An xsim-only FDRE run peaked at 1.3G for its
+    whole scope with four at once, and at 3.4G with twelve, including the
+    Python process and the result checking. A `--mem` of 8G covers twelve
+    with room to spare.
 
   With too small a cap, an OOM kill is a retryable result. Measure new kinds
   of runs with the scope's `memory.peak` (`journalctl --user` prints it when
@@ -351,7 +348,8 @@ smoke simulation whose memory grows without bound. Its container peaked at
 
     | Command | Scope peak | Suggested `--mem` |
     |---|---|---|
-    | `xut run` of a whole unit, all runners, `--jobs 16` | 1.4G | 8G |
+    | `xut run` of a whole unit, all runners, `--jobs 16` (4 xsim slots) | 1.4G | 8G |
+    | `xut run` with twelve xsim at once (FDRE, xsim only) | 3.4G | 8G |
     | full `pytest -n 8` | 2.5G | 8G |
     | targeted `pytest -n 2..4` | 0.2–0.7G | 4G |
     | `xut crosscheck`, `xut lint`, `ruff` | 0.4G | 2G (or no scope) |

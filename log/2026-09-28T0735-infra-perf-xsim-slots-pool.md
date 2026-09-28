@@ -36,3 +36,20 @@
 
 S60 item 2: xsim-first, longest-first scheduling. That is also where the 12
 slots pay off fully.
+
+## Rebase onto main (#18 merged), then the code-quality review
+
+- **Rebase.** Rebased onto 6a66bd6. The only conflict was AGENTS.md §10.1,
+  where #18 had rewritten the same paragraph, and I merged the two texts by
+  hand. They now say which pool a run takes by where it runs:
+  - **The Vivado pool** is for runs in a 16G scope of their own: `hw build`
+    and `hw sim`'s xsim, counted by `--vivado N`.
+  - **The xsim pool** is for xsim inside the caller's scope: the runner and
+    the oracle, counted by `--mem`.
+- **`slots.py`.** The docstring says the same.
+- **Validation.** `vivado_slot` validates `kind` up front, and `KINDS` is a
+  `NamedTuple`.
+- **Tests.** The slot test is split into four.
+- **§10.1 table.** A 3.4G row for twelve xsim at once.
+- **History note.** The benchmark in the entry above ran under the old
+  `flock` mutex and predates `xut heavy`. Do not copy that command.
