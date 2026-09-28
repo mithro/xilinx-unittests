@@ -28,6 +28,7 @@ from xut.container import NativeExecutor
 from xut.formats import xtr
 from xut.modelsrc import ModelSource
 from xut.runners import RUNNERS
+from xut.runners import verilator as verilator_runner
 from xut.runners.base import RunContext, seed_for, workdir
 from xut.runners.iverilog import IverilogRunner
 from xut.runners.python import PythonRunner
@@ -280,9 +281,11 @@ def test_launcher_build_args(launcher):
     ]
     assert launcher.build_args("verilator", "/u", None, ["/vz"]) == [
         *("--timing", "-Wno-fatal"),
-        *("--x-assign", "unique", "--x-initial", "unique"),
+        *("--x-assign", "unique", "--x-initial", "unique", "-fno-dedup"),
         *("-y", "/vz", "-y", "/u", "+libext+.v"),
     ]
+    # the same optimisations off as the verilator runner's own builds
+    assert launcher.OPT_FLAGS == verilator_runner.OPT_FLAGS
 
 
 def test_launcher_plusargs_and_defines(launcher):
