@@ -1299,6 +1299,172 @@ def test_reject_configurations_agree_on_the_rejection(repo):
     assert rep.verdict == "agree" and rep.exit_code == 0, rep.issues
 
 
+# --- rejection disagreements (ruling S64) ----------------------------------------------------
+
+ACCEPTED = "expected rejection, got acceptance: the run reached XUT_DONE (INIT)"
+
+
+def _reject_result(repo, runner, outcome, flow="rtl", ms="ms1"):
+    """A reject configuration ``r``: header-only trace on every side; the config status
+    carries the outcome (``pass`` = rejects, ``fail`` = accepts, ``xut.runners.reject``)."""
+    status = {"rejects": "pass", "accepts": "fail"}[outcome]
+    reason = None if status == "pass" else ACCEPTED
+    _result(
+        repo,
+        flow,
+        runner,
+        ms,
+        TID,
+        status=status,
+        reason=reason,
+        trace=T({}, kind="expected" if runner == "python" else "actual"),
+        configs=[{"cfg": "r", "status": status, "reason": reason}],
+    )
+
+
+def _rejection(repo, expected_divergence=(), **outcomes):
+    runners = {"python": "yes", **dict.fromkeys(outcomes, "yes")}
+    runners.pop("iverilog_vz", None)
+    _test_yaml(repo, expected_divergence, runners=runners)
+    _reject_result(repo, "python", "rejects")
+    for r, o in outcomes.items():
+        _reject_result(repo, r.replace("_", "-"), o)
+
+
+def _finding_file(repo, status="open"):
+    (repo / "findings").mkdir(exist_ok=True)
+    (repo / ED["finding"]).write_text(f"# TOYFF\n- Status: {status}\n")
+
+
+def RV(runner, outcome, flow="rtl"):
+    """A synthetic view of reject configuration ``r``."""
+    status = {"rejects": "pass", "accepts": "fail"}[outcome]
+    return V(runner, T({}), flow=flow, status=status, configs=[{"cfg": "r", "status": status}])
+
+
+def test_golden_rejects_every_simulator_accepts_is_an_unlisted_doc_gap(repo):
+    """The golden model rejects the configuration, the simulators accept it: a doc-gap
+    (UG953 lists the legal values, it promises no simulation-time check), exit 3."""
+    _rejection(repo, iverilog="accepts", xsim="accepts")
+    rep = xc.check(repo, _case(repo))
+    (f,) = rep.findings
+    assert (f.cls, f.runners, f.flow, f.model_source) == (
+        "doc-gap",
+        ("iverilog", "xsim"),
+        "rtl",
+        "ms1",
+    )
+    assert f.points == (
+        "cfg r: rejection disagreement: the golden model rejects (an illegal "
+        "configuration); accepted by iverilog, xsim",
+    )
+    assert rep.issues == []  # the two fails are explained by the finding
+    assert rep.verdict == "divergence" and rep.exit_code == 3
+    r = _xc("TOYFF")
+    assert r.exit_code == 3 and "UNLISTED: doc-gap" in r.output, r.output
+
+
+def test_a_listed_rejection_disagreement_is_a_known_divergence_exit_0(repo):
+    """Listed with an open finding: known-divergence (of doc-gap), still reported."""
+    _rejection(repo, [ED], iverilog="accepts", xsim="accepts")
+    _finding_file(repo)
+    rep = xc.check(repo, _case(repo))
+    (f,) = rep.findings
+    assert (f.cls, f.known_of, f.finding) == (
+        "known-divergence",
+        "doc-gap",
+        "TOYFF-doc-gap-L1-capture",
+    )
+    assert f.points and "rejection disagreement" in f.points[0]  # never masked
+    assert rep.issues == [] and rep.unmatched_expected == []
+    assert rep.verdict == "known-divergence" and rep.exit_code == 0
+    r = _xc("TOYFF")
+    assert r.exit_code == 0 and "known-divergence (of doc-gap" in r.output, r.output
+    assert "rejection disagreement" in r.output
+
+
+@pytest.mark.parametrize("status", ["closed", None])
+def test_a_listed_rejection_disagreement_needs_an_open_finding(repo, status):
+    """A closed or missing finding file is an issue, as for any expected divergence."""
+    _rejection(repo, [ED], iverilog="accepts", xsim="accepts")
+    if status:
+        _finding_file(repo, status)
+    rep = xc.check(repo, _case(repo))
+    assert [f.cls for f in rep.findings] == ["known-divergence"]
+    assert rep.verdict == "incomplete" and rep.exit_code == 4
+    assert any(ED["finding"] in i for i in rep.issues), rep.issues
+
+
+def test_every_side_rejecting_still_agrees(repo):
+    _rejection(repo, iverilog="rejects", xsim="rejects")
+    rep = xc.check(repo, _case(repo))
+    assert rep.findings == [] and rep.issues == []
+    assert rep.verdict == "agree" and rep.exit_code == 0
+
+
+def test_simulators_split_on_a_rejection_is_a_sim_divergence(repo):
+    _rejection(repo, iverilog="accepts", xsim="rejects")
+    rep = xc.check(repo, _case(repo))
+    (f,) = rep.findings
+    assert (f.cls, f.runners) == ("sim-divergence", ("iverilog", "xsim"))
+    assert f.points == (
+        "iverilog vs xsim: cfg r: rejection disagreement: iverilog accepts, xsim rejects",
+    )
+    assert rep.issues == [] and rep.exit_code == 3
+
+
+def test_a_split_among_three_simulators_is_one_sim_divergence_not_a_doc_gap():
+    vs = views(
+        RV("python", "rejects"),
+        RV("iverilog", "accepts"),
+        RV("xsim", "accepts"),
+        RV("verilator", "rejects"),
+    )
+    assert classes(classify(TID, vs)) == ["sim-divergence"]
+
+
+def test_a_rejection_disagreement_across_flows_is_a_flow_mismatch():
+    vs = views(RV("xsim", "rejects"), RV("xsim", "accepts", flow="synth"))
+    (f,) = classify(TID, vs)
+    assert (f.cls, f.flow, f.runners) == ("flow-mismatch", "synth", ("xsim",))
+    assert f.points == ("cfg r: rejection disagreement: xsim rejects, xsim accepts",)
+
+
+def test_a_value_configuration_is_never_a_rejection_disagreement():
+    """A configuration with samples anywhere is compared by value, not by outcome."""
+    vs = views(
+        V("python", EXP(Q0), configs=[{"cfg": "c", "status": "pass"}]),
+        V("iverilog", T(Q0), status="fail", configs=[{"cfg": "c", "status": "fail"}]),
+    )
+    assert xc._reject_cfgs(vs.values()) == set()
+    assert classify(TID, vs) == []
+
+
+def test_iverilog_vz_accepting_with_iverilog_is_explained_by_the_companion(repo):
+    """The vz companion rule holds for reject tests: iverilog-vz accepts as iverilog
+    does, whose acceptance is the listed doc-gap: exit 0, and the vz fail explained."""
+    _rejection(repo, [ED], iverilog="accepts", xsim="accepts", iverilog_vz="accepts")
+    _finding_file(repo)
+    rep = xc.check(repo, _case(repo))
+    assert [(f.cls, f.known_of) for f in rep.findings] == [("known-divergence", "doc-gap")]
+    assert rep.issues == [] and rep.exit_code == 0
+
+
+def test_iverilog_vz_accepting_what_iverilog_rejects_is_a_transform_bug(repo):
+    _rejection(repo, [ED], iverilog="rejects", xsim="rejects", iverilog_vz="accepts")
+    _finding_file(repo)
+    rep = xc.check(repo, _case(repo))
+    (f,) = rep.findings
+    assert (f.cls, f.runners) == ("transform-bug", ("iverilog", "iverilog-vz"))
+    assert f.points == ("cfg r: rejection disagreement: iverilog rejects, iverilog-vz accepts",)
+    assert rep.exit_code == 3
+    vs = rep.views["ms1"]
+    assert not xc._companion_explained(vs[("rtl", "iverilog-vz")], rep.findings, vs)
+    assert xc.companion_gap(vs[("rtl", "iverilog-vz")], vs[("rtl", "iverilog")]) == (
+        "transform-bug"
+    )
+
+
 @pytest.mark.parametrize(
     ("vz", "gap"),
     [

@@ -29,6 +29,15 @@ UNISIM traces are only ever compared like-for-like (spec §6.2).
   ``tree_hash``, or include one measured on a dirty tree (or outside git), is not
   compared at all: an issue ("mixed/stale provenance"), and ``--write-findings``
   writes nothing for the test (``Report.provenance_ok``).
+- **A rejection is compared too** (ruling S64). A reject configuration (the golden
+  model ran it and no result has a sample of it: ``expect=reject``, whose traces are
+  header-only) is decided by its config status: ``pass`` is a rejection, ``fail`` an
+  acceptance (``xut.runners.reject``). One side rejecting where the other accepts is a
+  *rejection disagreement*, classified like a value one: between simulators a
+  ``sim-divergence``, golden vs every simulator a ``doc-gap`` (UG953 lists the legal
+  values; it promises no simulation-time check), iverilog vs iverilog-vz a
+  ``transform-bug``, a flow vs RTL a ``flow-mismatch``. It is listed, matched and
+  reported like any other finding (never masked).
 - **Coverage gaps.** ``compare`` ignores ports only the actual trace has (the golden
   model may leave an output unmodelled); ``check`` lists them instead of dropping them.
 
@@ -223,7 +232,7 @@ def companion_gap(vz: View | None, iv: View | None) -> str | None:
     both = _has_trace(vz) and _has_trace(iv)
     if both:
         assert iv is not None
-        if list(diff(*_pair(iv, vz))):
+        if list(diff(*_pair(iv, vz))) or _rejection_diff(iv, vz, _reject_cfgs((iv, vz))):
             return "transform-bug"
         return None
     return None if vz.status == "pass" else "error"
@@ -313,6 +322,47 @@ def _reject_agreement(ta: Trace, tb: Trace, common: set[str] | None) -> bool:
     return bool(common - have)
 
 
+#: A reject configuration's outcome, by its config status (``xut.runners.reject``).
+_OUTCOME = {"pass": "rejects", "fail": "accepts"}
+
+
+def _outcomes(v: View) -> dict[str, str]:
+    """``{cfg: "rejects" | "accepts"}`` for every configuration ``v`` ran; meaningful for
+    reject configurations only (``_reject_cfgs``). Empty for a view without ``configs``."""
+    return {
+        c["cfg"]: _OUTCOME[c["status"]]
+        for c in v.result.get("configs") or ()
+        if c.get("status") in _OUTCOME
+    }
+
+
+def _reject_cfgs(vs: Iterable[View]) -> set[str]:
+    """The reject configurations among ``vs``: run by some view, and a sample of it in
+    no view's trace (``expect=reject`` traces are header-only on every side, an
+    accepting simulator's included). A configuration with a sample anywhere is compared
+    by value instead."""
+    ran: set[str] = set()
+    sampled: set[str] = set()
+    for v in vs:
+        if not _has_trace(v):
+            continue
+        assert v.trace is not None
+        ran |= v.ran or set()
+        sampled |= {_cfg(lbl) for lbl in v.trace.samples}
+    return ran - sampled
+
+
+def _rejection_diff(a: View, b: View, reject: set[str]) -> dict[str, str]:
+    """``{cfg: point}``: the reject configurations both ran where one rejects and the
+    other accepts (a rejection disagreement, ruling S64)."""
+    oa, ob = _outcomes(a), _outcomes(b)
+    return {
+        c: f"cfg {c}: rejection disagreement: {a.runner} {oa[c]}, {b.runner} {ob[c]}"
+        for c in sorted(reject & oa.keys() & ob.keys())
+        if oa[c] != ob[c]
+    }
+
+
 def _pair(
     a: View,
     b: View,
@@ -378,6 +428,8 @@ def _golden_vs_sims(
     sim_points: list[str],
     issues: list[str],
     pairs: list[Pair],
+    reject: set[str],
+    rej_split: set[str],
 ) -> list[Finding]:
     per_point: dict[tuple, dict[str, Mismatch]] = defaultdict(dict)
     for r, v in group.items():
@@ -415,6 +467,27 @@ def _golden_vs_sims(
             gap_rs |= observers
         else:
             issues.append(f"{ms} rtl: provenance {prov!r} is neither doc: nor inferred: ({m})")
+    # Rejection disagreements (ruling S64): the golden model rejects every reject
+    # configuration it ran. The simulators all accepting one is a doc-gap: UG953 lists
+    # the legal values but promises no simulation-time check. Some accepting and some
+    # rejecting is a sim-divergence (``rej_split``) or, as for values, a note.
+    golden_rejects = {c for c, o in _outcomes(exp).items() if o == "rejects"} & reject
+    for c in sorted(golden_rejects - rej_split):
+        observers = {r for r, v in group.items() if c in _outcomes(v)}
+        accepting = sorted(r for r in observers if _outcomes(group[r])[c] == "accepts")
+        if not accepting:
+            continue
+        if set(accepting) != observers:
+            sim_points += [
+                f"python vs {r} only: cfg {c}: rejection disagreement: python rejects, {r} accepts"
+                for r in accepting
+            ]
+            continue
+        gap.append(
+            f"cfg {c}: rejection disagreement: the golden model rejects (an illegal "
+            f"configuration); accepted by {', '.join(accepting)}"
+        )
+        gap_rs |= observers
     out = []
     if doc:
         out.append(_f("doc-vs-model", test_id, "rtl", ms, doc_rs, doc))
@@ -437,6 +510,7 @@ def classify(
     pairs = [] if pairs is None else pairs
     out: list[Finding] = []
     exp = views.get(("rtl", "python"))
+    reject = _reject_cfgs(views.values())
     sims: dict[str, dict[str, View]] = defaultdict(dict)
     for (flow, runner), v in views.items():
         if runner in SIMULATORS and _has_trace(v):
@@ -444,15 +518,21 @@ def classify(
     for flow, group in sorted(sims.items()):
         ms = next(iter(group.values())).model_source
         diverged: set[tuple] = set()
+        rej_split: set[str] = set()
         points: list[str] = []
         for a, b in combinations(sorted(group), 2):
             ta, tb = _pair(group[a], group[b], pairs, a_x=X_OBSERVABLE[a], b_x=X_OBSERVABLE[b])
             for m in diff(ta, tb, a_x=X_OBSERVABLE[a], b_x=X_OBSERVABLE[b]):
                 diverged.add((m.label, m.port, m.bit))
                 points.append(f"{a} vs {b}: {m}")
+            for c, pt in _rejection_diff(group[a], group[b], reject).items():
+                rej_split.add(c)
+                points.append(f"{a} vs {b}: {pt}")
         doc_findings = []
         if flow == "rtl" and exp is not None and _has_trace(exp):
-            doc_findings = _golden_vs_sims(test_id, ms, exp, group, diverged, points, issues, pairs)
+            doc_findings = _golden_vs_sims(
+                test_id, ms, exp, group, diverged, points, issues, pairs, reject, rej_split
+            )
         if points:
             out.append(_f("sim-divergence", test_id, flow, ms, group, points))
         out += doc_findings
@@ -476,6 +556,7 @@ def classify(
         ):
             assert iv is not None
             pts = [str(m) for m in diff(*_pair(iv, v, pairs))]
+            pts += _rejection_diff(iv, v, reject).values()
             if pts:
                 out.append(
                     _f(
@@ -493,6 +574,7 @@ def classify(
                 assert ref is not None
                 x = X_OBSERVABLE[runner]
                 pts = [str(m) for m in diff(*_pair(ref, v, pairs, a_x=x, b_x=x), a_x=x, b_x=x)]
+                pts += _rejection_diff(ref, v, reject).values()
                 if pts:
                     out.append(_f("flow-mismatch", test_id, flow, v.model_source, [runner], pts))
         if runner == "hw":
