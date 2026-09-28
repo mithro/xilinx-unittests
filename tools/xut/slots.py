@@ -10,7 +10,8 @@ limit holds across processes and across threads of one process alike, and the ke
 releases a slot when its holder dies.
 
 Every host Vivado invocation takes one: the xsim runner's and the equivalence oracle's
-``xsim.run_script``, and ``xsim.xsim_version``.
+``xsim.run_script``, ``xsim.xsim_version``, and the simulated hardware harness's
+``xut.hw.hwsim._xsim``.
 """
 
 from __future__ import annotations

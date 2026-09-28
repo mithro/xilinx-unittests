@@ -30,6 +30,9 @@ from xut.errors import XutError
 VIVADO_MEMORY_MAX = "16G"
 #: A process killed by the OOM killer: bash reports 137, a direct child -9.
 OOM_RCS = (137, -9)
+#: How long to wait for a killed process group to be reaped. The xsim runner's own copy
+#: was 10 s before it moved here (Task 5a); 30 s matches xut.container's kill timeout, and
+#: only a group that ignores SIGKILL for that long (a process in D state) ever uses it.
 _KILL_GRACE_S = 30
 
 
@@ -99,7 +102,13 @@ _VERSIONS_LOCK = threading.Lock()
 def cached_version(key: str, probe: Callable[[], str]) -> str:
     """``probe()`` once per process per ``key`` (a tool's version line). The one cache:
     ``xut.runners.xsim.xsim_version`` uses it, and so does the Vivado builder (Task 6).
-    A probe that raises caches nothing."""
+    A probe that raises caches nothing.
+
+    One lock covers every key and is held while ``probe`` runs, and a Vivado probe waits
+    for a ``vivado_slot()``. So never call this (or a caller such as ``xsim_version``)
+    while holding a Vivado slot: with every slot held that way, a thread in the probe
+    waits for a slot while the others wait for the lock, a deadlock. Task 6's builder
+    version probe must run outside ``vivado_slot()`` too."""
     with _VERSIONS_LOCK:
         if key not in _VERSIONS:
             _VERSIONS[key] = probe()
