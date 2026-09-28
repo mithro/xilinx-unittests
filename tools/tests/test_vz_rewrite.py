@@ -576,20 +576,42 @@ REFUSED = {
 }
 
 
-@pytest.mark.slow
-@pytest.mark.container
-@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
-@pytest.mark.parametrize("source,n_transformed", [("unisim-2025.2", 157), ("unisim-gh-2020.1", 94)])
-def test_sweep_every_transformed_model_lints(source, n_transformed):
-    from concurrent.futures import ThreadPoolExecutor
+#: The sweep's (source, number of transformed models). The lint part is split into
+#: ``SWEEP_CHUNKS`` tests per source (every ``SWEEP_CHUNKS``-th model), so pytest-xdist and
+#: the CI shards can spread it; together they lint every transformed model exactly once
+#: (``test_sweep_chunks_cover_every_transformed_model_once``).
+SWEEP_SOURCES = [("unisim-2025.2", 157), ("unisim-gh-2020.1", 94)]
+SWEEP_CHUNKS = 4
+#: Containers one chunk runs at once, as the single sweep test did. In CI each chunk runs
+#: on a runner of its own (``xut.ci_shards``); a local run takes them one after another.
+SWEEP_THREADS = 16
 
+
+def _sweep_manifest(source: str):
+    """``(model source, manifest)`` for ``source``, transformed (``verilatorize`` is
+    incremental: after the first call it only checks its inputs), or a skip."""
     from xut.modelsrc import model_sources
     from xut.verilatorize.driver import verilatorize
 
     ms = model_sources().get(source)
     if ms is None:
         pytest.skip(f"model source {source} not available")
-    man = verilatorize(ms, jobs=16, progress=lambda _line: None)
+    return ms, verilatorize(ms, jobs=16, progress=lambda _line: None)
+
+
+def _sweep_chunk(man, k: int) -> list[str]:
+    done = sorted(m for m, e in man.models.items() if e.status == "transformed")
+    return done[k::SWEEP_CHUNKS]
+
+
+@pytest.mark.slow
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+@pytest.mark.parametrize("source,n_transformed", SWEEP_SOURCES)
+def test_sweep_transforms_every_model_it_can(source, n_transformed):
+    """The sweep's manifest: how many models are transformed, which are refused and why,
+    and the FD* flops' triggers and rewrites (the counts once, not per chunk)."""
+    ms, man = _sweep_manifest(source)
     done = sorted(m for m, e in man.models.items() if e.status == "transformed")
     refused = {m: e.reason for m, e in man.models.items() if e.status == "unsupported"}
     assert len(done) == n_transformed, refused
@@ -601,8 +623,37 @@ def test_sweep_every_transformed_model_lints(source, n_transformed):
         e = man.models[m]
         assert "glbl.GSR" in e.triggers and len(e.generate_configs) > 1
         assert e.rewrites == ["shadow", "zcmp"]
+
+
+def test_sweep_chunks_cover_every_transformed_model_once():
+    """The chunks partition the transformed models: each model in exactly one chunk."""
+    from types import SimpleNamespace
+
+    models = {f"M{i:03d}": SimpleNamespace(status="transformed") for i in range(157)}
+    models["X"] = SimpleNamespace(status="unsupported")
+    man = SimpleNamespace(models=models)
+    chunks = [_sweep_chunk(man, k) for k in range(SWEEP_CHUNKS)]
+    seen = [m for c in chunks for m in c]
+    assert sorted(seen) == sorted(m for m in models if m != "X")
+    assert len(seen) == len(set(seen)) and all(chunks)
+
+
+@pytest.mark.slow
+@pytest.mark.container
+@pytest.mark.skipif(_no_image, reason="xut-sim image not built")
+@pytest.mark.parametrize("chunk", range(SWEEP_CHUNKS))
+@pytest.mark.parametrize("source", [s for s, _ in SWEEP_SOURCES])
+def test_sweep_every_transformed_model_lints(source, chunk):
+    """Every ``SWEEP_CHUNKS``-th transformed model (from ``chunk``) lints clean on Verilator
+    under the default and every generate configuration, and compiles on Icarus (or fails
+    there as its original does)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ms, man = _sweep_manifest(source)
+    done = _sweep_chunk(man, chunk)
+    assert done, f"chunk {chunk} of {source} holds no model"
     root = repo_root() / "build" / "vz-lint-sweep" / source
-    with ThreadPoolExecutor(16) as pool:
+    with ThreadPoolExecutor(SWEEP_THREADS) as pool:
         res = dict(
             zip(
                 done,
@@ -621,9 +672,9 @@ def test_sweep_every_transformed_model_lints(source, n_transformed):
     # secureip module (SIP_*) no open simulator has, or a model the transform refused
     unsup = {m for m, e in man.models.items() if e.status == "unsupported"}
     inherent = {m: _inherent(root / m, unsup) for m, r in res.items() if not r[0] or r[3] is False}
-    (root / "summary.txt").write_text(
-        f"{source}: transformed {len(done)}; verilator lint clean {len(vl_ok)} (every one of "
-        f"{n_cfg} configurations); icarus clean "
+    (root / f"summary-{chunk}.txt").write_text(
+        f"{source} chunk {chunk}/{SWEEP_CHUNKS}: transformed {len(done)}; verilator lint "
+        f"clean {len(vl_ok)} (every one of {n_cfg} configurations); icarus clean "
         f"{len(iv_ok)}; icarus fails as the original does: {iv_orig}; z-compare models "
         f"linted under the xut_dut wrapper: {len(wrap_ok)} clean of {len(wrapped)}, no "
         f"wrapper for {no_wrap}; Verilator failures not the transform's: {inherent}\n"

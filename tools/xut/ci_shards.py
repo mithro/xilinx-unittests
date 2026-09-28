@@ -7,9 +7,11 @@ bound by two items that ``--dist loadfile`` keeps on a single worker:
 - ``test_vz_rewrite.py::test_sweep_every_transformed_model_lints`` (358 s alone);
 - ``test_runner_verilator.py`` (10 tests, 323 s in sequence on one worker).
 
-Each gets a runner of its own; ``test_runner_verilator.py`` is spread over that runner's
-workers test by test (``--dist load``: its tests are ``tmp_path``-hermetic). Everything
-else stays in ``rest`` with ``--dist loadfile``, as before.
+Each gets runners of its own. The sweep is split into ``SWEEP_CHUNKS`` tests per model
+source (every 4th model), one chunk per runner (``sweep0`` .. ``sweep3``; the sweep's
+manifest test goes with ``sweep0``). ``test_runner_verilator.py`` is spread over its
+runner's workers test by test (``--dist load``: its tests are ``tmp_path``-hermetic).
+Everything else stays in ``rest`` with ``--dist loadfile``, as before.
 
 The shards partition the container tests exactly: ``test_ci_shards.py`` collects each
 shard and the whole ``-m container`` set and checks that every test is in exactly one
@@ -24,6 +26,11 @@ from __future__ import annotations
 import sys
 
 SWEEP = "tools/tests/test_vz_rewrite.py::test_sweep_every_transformed_model_lints"
+SWEEP_MANIFEST = "tools/tests/test_vz_rewrite.py::test_sweep_transforms_every_model_it_can"
+#: test_vz_rewrite's SWEEP_CHUNKS and sweep sources (the node ids' parameters);
+#: test_ci_shards checks them against the test module.
+SWEEP_CHUNKS = 4
+SWEEP_SOURCES = ("unisim-2025.2", "unisim-gh-2020.1")
 #: The shard that also runs the flops ``xut run`` and ``xut crosscheck`` steps; the
 #: workflow names it in those steps' ``if`` and ``test_ci_shards.py`` pins that exactly one
 #: shard, this one, runs them.
@@ -33,13 +40,28 @@ VERILATOR = "tools/tests/test_runner_verilator.py"
 #: shard -> (selection, scheduling). Selection decides which tests run; scheduling only
 #: how they are spread over the runner's workers.
 SHARDS: dict[str, tuple[list[str], list[str]]] = {
-    "sweep": (["-m", "container", SWEEP], []),
+    # the lint sweep, one chunk of its models per runner (test_vz_rewrite.SWEEP_CHUNKS),
+    # both model sources; its manifest test goes with chunk 0
+    **{
+        f"sweep{k}": (
+            [
+                "-m", "container",
+                *(f"{SWEEP}[{src}-{k}]" for src in SWEEP_SOURCES),
+                *([f"{SWEEP_MANIFEST}"] if k == 0 else []),
+            ],
+            [],
+        )
+        for k in range(SWEEP_CHUNKS)
+    },
     "verilator": (["-m", "container", VERILATOR], ["-n", "auto", "--dist", "load"]),
     "rest": (
-        ["-m", "container", "--deselect", SWEEP, "--ignore", VERILATOR],
+        [
+            "-m", "container", "--deselect", SWEEP, "--deselect", SWEEP_MANIFEST,
+            "--ignore", VERILATOR,
+        ],
         ["-n", "auto", "--dist", "loadfile"],
     ),
-}
+}  # fmt: skip
 
 
 def args(shard: str) -> list[str]:

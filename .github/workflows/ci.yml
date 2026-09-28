@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [sweep, verilator, rest]
+        shard: [sweep0, sweep1, sweep2, sweep3, verilator, rest]
     steps:
       - if: needs.changes.result != 'success'
         run: |
