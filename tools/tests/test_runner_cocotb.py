@@ -680,28 +680,26 @@ def test_cocotb_command_sets_xut_no_z_for_the_verilator_runners(tmp_path):
 TOYCOMB_ENTRY = dataclasses.replace(
     TOY_ENTRY,
     name="TOYCOMB",
-    description="toy combinational model: regs updated by always @(inputs)",
+    description="toy combinational model: a reg updated by always @(inputs)",
     model={"library": "unisims", "file": "TOYCOMB.v"},
     ports=[
         {"name": "O", "direction": "output", "width": 1, "cls": "data", "doc_function": "O"},
-        {"name": "P", "direction": "output", "width": 1, "cls": "data", "doc_function": "P"},
-        {"name": "C", "direction": "input", "width": 1, "cls": "clock", "doc_function": "C"},
         {"name": "A", "direction": "input", "width": 1, "cls": "data", "doc_function": "A"},
         {"name": "B", "direction": "input", "width": 1, "cls": "data", "doc_function": "B"},
     ],
     attributes=[],
 )
 
-#: Outputs held in regs that only an input event updates (as a behavioural LUT model's).
+#: An output held in a reg that only an input event updates (as a behavioural LUT's).
+#: No clock port: that half moved to TOYNEG (review M8), since clk keeps its declaration
+#: initialiser and so has no time-0 event of its own.
 TOYCOMB_MODEL = """\
 // SPDX-License-Identifier: Apache-2.0
 `timescale 1ps / 1ps
-module TOYCOMB (output wire O, output wire P, input wire C, input wire A, input wire B);
-  reg o, p;
+module TOYCOMB (output wire O, input wire A, input wire B);
+  reg o;
   always @(A or B) o = ~(A | B);
-  always @(C) p = ~C;
   assign O = o;
-  assign P = p;
 endmodule
 """
 
@@ -727,14 +725,72 @@ tests:
     gaps: []
 """
 
+TOYNEG_ENTRY = dataclasses.replace(
+    TOY_ENTRY,
+    name="TOYNEG",
+    description="toy negedge-sensitive model: pins that clk has no time-0 edge",
+    model={"library": "unisims", "file": "TOYNEG.v"},
+    ports=[
+        {"name": "F", "direction": "output", "width": 1, "cls": "data", "doc_function": "F"},
+        {"name": "C", "direction": "input", "width": 1, "cls": "clock", "doc_function": "C"},
+    ],
+    attributes=[],
+)
 
-def test_cocotb_top_drives_inputs_by_a_time0_nonblocking_update():
-    """No declaration initialiser on clk/in_vec (a time-0 value that no process sees as an
-    event): x until a time-0 non-blocking update, as xut_vector_tb.sv's barrier."""
+#: F latches 1 on any negedge of C; a time-0 edge would make S0 read F=1 (review M8).
+TOYNEG_MODEL = """\
+// SPDX-License-Identifier: Apache-2.0
+`timescale 1ps / 1ps
+module TOYNEG (output wire F, input wire C);
+  reg f = 1'b0;
+  always @(negedge C) f <= 1'b1;
+  assign F = f;
+endmodule
+"""
+
+TOYNEG_YAML = """\
+# SPDX-License-Identifier: Apache-2.0
+primitive: TOYNEG
+family: 7series
+work_unit: toy
+doc_refs: [{guide: UG953, version: "2026.1", section: TOYNEG, page: 1}]
+tests:
+  - id: 7series.TOYNEG.L2.cocotb_no_time0_edge
+    level: L2
+    style: cocotb
+    source: cocotb/cocotb_toyneg.py
+    exercises: []
+    attr_sampling: {}
+    configs: [{cfg: default, attrs: {}}]
+    runners:
+      {python: "no", xsim: "unsupported", iverilog: "yes",
+       verilator: "yes", hw: "unsupported"}
+    unsupported_reasons: {python: "cocotb", xsim: "fixture", hw: "fixture"}
+    flows: [rtl]
+    related: []
+    gaps: []
+"""
+
+
+def test_cocotb_top_drives_in_vec_by_a_time0_nonblocking_update():
+    """No declaration initialiser on in_vec (a time-0 value that no process sees as an
+    event): x until a time-0 non-blocking update, as xut_vector_tb.sv's barrier on
+    in_vec. clk is not part of this barrier; see the next test."""
     text = wrap.render_cocotb_top(build_map(WIDE))
     decls = [ln.split("//")[0].strip() for ln in text.splitlines() if ln.startswith("  reg ")]
-    assert decls == ["reg  [`XUT_NCLK-1:0] clk;", "reg  [`XUT_NIN-1:0]  in_vec;"]
-    assert "clk <= {`XUT_NCLK{1'b0}};" in text and "in_vec <= {`XUT_NIN{1'b0}};" in text
+    assert "reg  [`XUT_NIN-1:0]  in_vec;" in decls
+    assert "in_vec <= {`XUT_NIN{1'b0}};" in text
+    assert "clk <=" not in text
+
+
+def test_cocotb_top_gives_clk_no_time0_edge():
+    """review M8 must-fix: clk must keep its declaration initialiser, exactly as
+    xut_vector_tb.sv's clk_step/clk_free/free_en do, so it has no event at time 0.
+    Barriering clk (as in_vec is barriered) would add a time-0 negedge on Icarus while
+    data inputs are still x."""
+    text = wrap.render_cocotb_top(build_map(WIDE))
+    decls = [ln.split("//")[0].strip() for ln in text.splitlines() if ln.startswith("  reg ")]
+    assert "reg  [`XUT_NCLK-1:0] clk = {`XUT_NCLK{1'b0}};" in decls
 
 
 @pytest.mark.container
@@ -756,9 +812,31 @@ def test_cocotb_first_samples_of_a_combinational_model_are_defined(work, monkeyp
     res = RUNNERS[runner]().run(case, ctx)
     d = workdir(ctx, runner, case.id)
     assert res.status == "pass", (res.reason, (d / "run.log").read_text())
-    got = {k: (v["O"], v["P"]) for k, v in xtr.load(d / "trace.xtr").samples.items()}
-    assert got == {
-        "default/S0": ("1", "1"),
-        "default/S1": ("1", "1"),
-        "default/S2": ("0", "1"),
-    }
+    got = {k: v["O"] for k, v in xtr.load(d / "trace.xtr").samples.items()}
+    assert got == {"default/S0": "1", "default/S1": "1", "default/S2": "0"}
+
+
+@pytest.mark.container
+@pytest.mark.parametrize("runner", ["iverilog", "iverilog-vz"])
+def test_cocotb_top_has_no_time0_clock_edge_on_icarus(work, monkeypatch, runner):
+    """review M8 must-fix, behavioural: barriering clk (as this branch first did) turns
+    its x-to-0 declaration value into a real negedge on Icarus. TOYNEG's
+    ``always @(negedge C)`` would latch F=1 from that spurious edge; with clk's
+    declaration initialiser kept, F stays 0 at S0. Not run on verilator: it already has a
+    time-0 negedge on clk unrelated to this barrier (2-state --x-initial reset), which
+    this fix does not change and this test is not about."""
+    tdir = work / "tests/7series/register/TOYNEG"
+    (tdir / "cocotb").mkdir(parents=True)
+    (tdir / "test.yaml").write_text(TOYNEG_YAML)
+    shutil.copy(FIX / "cocotb/cocotb_toyneg.py", tdir / "cocotb/cocotb_toyneg.py")
+    src = work / "ms"
+    make_model_source(src)
+    (src / "unisims/TOYNEG.v").write_text(TOYNEG_MODEL)
+    ctx = RunContext(work, "rtl", ModelSource("toyneg-test", src))
+    monkeypatch.setattr("xut.catalog.model.load_entry", lambda f, n, r: TOYNEG_ENTRY)
+    (case,) = discover(work)
+    res = RUNNERS[runner]().run(case, ctx)
+    d = workdir(ctx, runner, case.id)
+    assert res.status == "pass", (res.reason, (d / "run.log").read_text())
+    got = {k: v["F"] for k, v in xtr.load(d / "trace.xtr").samples.items()}
+    assert got == {"default/S0": "0"}
