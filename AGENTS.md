@@ -251,13 +251,26 @@ smoke simulation whose memory grows without bound. Its container peaked at
 
   ```bash
   systemd-run --user --scope --slice=vivado.slice --unit=xut-<what>-<epoch> \
-    --expand-environment=no -p MemoryMax=<cap> -p MemorySwapMax=0 -- <command>
+    --expand-environment=no -p MemoryMax=<cap> -p MemorySwapMax=0 -- \
+    nice -n 19 ionice -c2 -n7 <command>
   ```
 
   The job then lives outside your own cgroup, and an OOM kill stays inside
   it. `vivado.slice` is the host's shared slice for all heavy FPGA-tool jobs,
   not only Vivado. It is capped at 300G in total and shared with other
   projects. This project's share is 100G.
+- **Low priority** (host rule). Heavy work yields to interactive sessions.
+  `vivado.slice` has `CPUWeight=20` and `IOWeight=20`. `xut heavy` adds the
+  `nice -n 19 ionice -c2 -n7` prefix itself, inside the scope. A scope adopts
+  the process it starts and never execs it, so `-p Nice=` and the
+  `IOScheduling*` properties would have no effect. Do not write the prefix
+  yourself, and never use the idle I/O class (`-c3`), which can starve a job.
+  Every container xut starts gets `--cpu-shares=128` (cgroup `cpu.weight` 5),
+  at most 2 CPUs (`--cpus`, from `XUT_CONTAINER_CPUS`), and runs its command
+  under `nice -n 19`. Two CPUs are the most any of our tools uses: Verilator
+  builds with `-j 2`, and Icarus and the simulations are single-threaded. At
+  the budget's 24 containers that leaves over 40 of the host's 88 CPUs to
+  everyone else, even if every container spins.
 - **Containers.** Docker containers run under the system slice, not your
   scope, so the scope alone does not cap them. From PR C
   (`infra/verilatorize`) on, every container xut starts is capped with

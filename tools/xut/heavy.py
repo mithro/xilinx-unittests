@@ -173,13 +173,15 @@ def _commands(argv: Sequence[str]) -> list[list[str]]:
     return [c for c in out if c]
 
 
-def _tool(cmd: list[str]) -> str | None:
-    """The tool whose parallelism options ``cmd`` takes (``_PAR``), if any: a word naming
-    it (``pytest``, ``python -m pytest``, ``uv run xut``, ``make``)."""
+def _tool(cmd: list[str]) -> tuple[str, int] | None:
+    """The tool whose parallelism options ``cmd`` takes (``_PAR``), and where its name is,
+    if any: the first word naming it (``pytest``, ``python -m pytest``, ``uv run xut``,
+    ``make``). Only the words after it are the tool's options: a wrapper's own flags before
+    it (``nice -n 19``, ``ionice -n7``, ``timeout -k 10``) never count."""
     names = [Path(w).name for w in cmd]
-    for tool in _PAR:
-        if tool in names:
-            return tool
+    for i, n in enumerate(names):
+        if n in _PAR:
+            return n, i
     return None
 
 
@@ -191,10 +193,13 @@ def declared_parallelism(argv: Sequence[str]) -> int | None:
     §10.1)."""
     found: list[int] = []
     for cmd in _commands(argv):
-        tool = _tool(cmd)
-        if tool is None:
+        at = _tool(cmd)
+        if at is None:
             continue
+        tool, start = at
         for i, a in enumerate(cmd):
+            if i <= start:
+                continue
             m = _PAR[tool].match(a)
             if not m:
                 continue
@@ -282,10 +287,19 @@ def _take_tokens(
         time.sleep(poll_s)
 
 
+#: The command runs at the lowest CPU and best-effort I/O priority (host rule: heavy work
+#: yields to interactive sessions). A prefix INSIDE the scope, because ``systemd-run
+#: --scope`` adopts the process it starts and never execs it, so ``-p Nice=`` and the
+#: ``IOScheduling*`` properties have no effect on a scope. Never the idle I/O class (it can
+#: starve the job entirely).
+LOW_PRIORITY = ("nice", "-n", "19", "ionice", "-c2", "-n7")
+
+
 def scope_argv(name: str, mem: str, command: Sequence[str]) -> list[str]:
     """The capped-scope command line (AGENTS.md §10.1). ``systemd-run --scope`` runs the
     command itself, so the command inherits this process's environment and fds; the command
-    line is never environment-expanded by systemd (``--expand-environment=no``)."""
+    line is never environment-expanded by systemd (``--expand-environment=no``), and runs
+    under ``LOW_PRIORITY``."""
     if not _NAME.fullmatch(name):
         raise XutError(f"--name {name!r}: use letters, digits, '_', '.' and '-' only")
     return [
@@ -293,7 +307,7 @@ def scope_argv(name: str, mem: str, command: Sequence[str]) -> list[str]:
         f"--unit=xut-{name}-{int(time.time())}",
         # the command is passed as written: never let systemd expand $VAR in it
         "--expand-environment=no",
-        "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0", "--", *command,
+        "-p", f"MemoryMax={mem}", "-p", "MemorySwapMax=0", "--", *LOW_PRIORITY, *command,
     ]  # fmt: skip
 
 
