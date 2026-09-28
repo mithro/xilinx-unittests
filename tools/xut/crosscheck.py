@@ -468,26 +468,18 @@ def _golden_vs_sims(
         else:
             issues.append(f"{ms} rtl: provenance {prov!r} is neither doc: nor inferred: ({m})")
     # Rejection disagreements (ruling S64): the golden model rejects every reject
-    # configuration it ran. The simulators all accepting one is a doc-gap: UG953 lists
-    # the legal values but promises no simulation-time check. Some accepting and some
-    # rejecting is a sim-divergence (``rej_split``) or, as for values, a note.
+    # configuration it ran. Every simulator that ran one accepting it is a doc-gap: UG953
+    # lists the legal values but promises no simulation-time check. Some accepting and
+    # some rejecting is already a sim-divergence (``rej_split``: every pair is compared).
     golden_rejects = {c for c, o in _outcomes(exp).items() if o == "rejects"} & reject
     for c in sorted(golden_rejects - rej_split):
-        observers = {r for r, v in group.items() if c in _outcomes(v)}
-        accepting = sorted(r for r in observers if _outcomes(group[r])[c] == "accepts")
-        if not accepting:
-            continue
-        if set(accepting) != observers:
-            sim_points += [
-                f"python vs {r} only: cfg {c}: rejection disagreement: python rejects, {r} accepts"
-                for r in accepting
-            ]
-            continue
-        gap.append(
-            f"cfg {c}: rejection disagreement: the golden model rejects (an illegal "
-            f"configuration); accepted by {', '.join(accepting)}"
-        )
-        gap_rs |= observers
+        accepting = sorted(r for r, v in group.items() if _outcomes(v).get(c) == "accepts")
+        if accepting:
+            gap.append(
+                f"cfg {c}: rejection disagreement: the golden model rejects (an illegal "
+                f"configuration); accepted by {', '.join(accepting)}"
+            )
+            gap_rs |= set(accepting)
     out = []
     if doc:
         out.append(_f("doc-vs-model", test_id, "rtl", ms, doc_rs, doc))
