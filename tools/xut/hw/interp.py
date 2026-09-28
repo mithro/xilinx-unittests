@@ -176,7 +176,9 @@ class Harness:
     ``feed`` calls, but a byte after a complete command, in the same call, would reach
     the RTL while it replies or runs, and the RTL discards it. ``feed`` raises
     ``EmuError`` instead, so host-side pipelining fails a unit test rather than timing
-    out on hardware."""
+    out on hardware. The pipelined bytes are dropped with the error, as the RTL drops
+    them, and the first command's reply is lost with it; the harness state that command
+    changed stays changed, and the next correctly paced command is answered."""
 
     def __init__(
         self,
@@ -204,8 +206,10 @@ class Harness:
             cmd = chr(self._buf[0])
             del self._buf[:n]
             if self._buf:
+                n_extra = len(self._buf)
+                self._buf.clear()  # the RTL discards them too: the harness stays usable
                 raise EmuError(
-                    f"{len(self._buf)} byte(s) pipelined behind {cmd!r}: the harness "
+                    f"{n_extra} byte(s) pipelined behind {cmd!r}: the harness "
                     "discards bytes while it replies or runs (one command in flight)"
                 )
         return bytes(out)

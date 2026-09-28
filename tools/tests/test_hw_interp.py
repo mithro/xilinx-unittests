@@ -180,3 +180,13 @@ def test_one_command_per_feed_is_the_legal_pacing():
     assert proto.parse_load(reply).status == 0
     assert proto.parse_run(h.feed(b"R")).status == 0
     assert h.feed(b"I").startswith(b"#")
+
+
+def test_the_harness_is_usable_after_a_pipelining_error():
+    """Like the RTL, which discards the bytes that arrived while it replied, the emulator
+    drops the pipelined bytes with the error: a later, correctly paced command is answered
+    (Task 4 re-review, Minor 1)."""
+    h = _harness()
+    with pytest.raises(EmuError, match="one command in flight"):
+        h.feed(b"II")
+    assert h.feed(b"I") == proto.render("id", build=0xABCD0001, slots=1, maxwords=64, margin=16)
