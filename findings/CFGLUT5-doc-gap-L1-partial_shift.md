@@ -16,8 +16,13 @@ direction: which INIT bit CDI enters, and which INIT bit drives CDO.
 The order UNISIM shows is recorded here by Task B6 of the unit playbook, for each model
 source (`unisim-2025.2`, `unisim-gh-2020.1`):
 
-- the INIT bit CDI enters: (to be recorded)
-- the INIT bit on CDO: (to be recorded)
+- the INIT bit CDI enters: UNISIM unisim-2025.2 on iverilog and xsim, and
+  unisim-gh-2020.1 on iverilog: INIT[0], each shift moving INIT[i] to INIT[i+1], as
+  inferred. `xut crosscheck unit:luts` (run at 59252e3, 2026-09-28) reports no
+  disagreement on L1.projections, L1.partial_shift, L1.cdo_cascade or L2.init_sweep
+  (every one `agree`, python, xsim and iverilog all `pass`).
+- the INIT bit on CDO: the same runs: INIT[31], as inferred (L1.cdo_cascade agrees on
+  every one of its 64 per-shift CDO samples).
 
 ## Analysis
 

@@ -17,8 +17,12 @@ and inputs O5 uses.
 The order UNISIM shows is recorded here by Task B6 of the unit playbook, for each model
 source (`unisim-2025.2`, `unisim-gh-2020.1`):
 
-- O6 index order: (to be recorded)
-- O5 bits and inputs: (to be recorded)
+- O6 index order: UNISIM unisim-2025.2 on iverilog and xsim, and unisim-gh-2020.1 on
+  iverilog: O6 = INIT[{I4..I0}], as inferred. `xut crosscheck unit:luts` (run at 59252e3,
+  2026-09-28) reports no disagreement on L1.projections, L1.partial_shift, L1.cdo_cascade
+  or L2.init_sweep (every one `agree`, python, xsim and iverilog all `pass`).
+- O5 bits and inputs: the same runs: O5 = INIT[{I3..I0}], the lower 16 bits, as inferred;
+  the same four tests agree on every O5 sample.
 
 ## Analysis
 
