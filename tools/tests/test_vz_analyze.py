@@ -3,6 +3,7 @@ import functools
 import re
 from pathlib import Path
 
+import pyslang
 import pytest
 
 from xut.verilatorize.analyze import (
@@ -610,3 +611,47 @@ def test_an_early_exit_away_from_procedural_assigns_is_accepted(tmp_path):
     f = tmp_path / "vz_jump.v"
     f.write_text(JUMP.replace("BODY", body))
     assert set(analyze(f, "VZJUMP", GLBL).triggers) == {"R"}
+
+
+def _full_walk(path: Path) -> bool:
+    """The reference: every syntax node visited in Python."""
+    from xut.verilatorize.analyze import _SYNTAX_FORCE, _walk_syntax
+
+    tree = pyslang.syntax.SyntaxTree.fromFile(str(path))
+    return any(n.kind in _SYNTAX_FORCE for n in _walk_syntax(tree.root))
+
+
+def test_has_procedural_assign_finds_it_anywhere_a_statement_can_be(tmp_path):
+    """The skipped subtrees (expressions, declarations, continuous assigns) never hide a
+    procedural assign: one nested in a task, a function, a generate block, a case, a fork
+    and a named block is found; a file with only continuous assigns is not."""
+    nests = {
+        "task": "task t; begin assign q = 1'b0; end endtask",
+        "function": "function f; input i; begin deassign q; f = i; end endfunction",
+        "generate": "generate if (1) begin : g always @(c) assign q = 1'b1; end endgenerate",
+        "case": "always @(c) case (c) 1'b1: assign q = 1'b0; default: deassign q; endcase",
+        "fork": "initial fork #1 assign q = 1'b0; join",
+        "named": "always @(c) begin : b integer k; if (k) deassign q; end",
+    }
+    for name, body in nests.items():
+        f = tmp_path / f"{name}.v"
+        f.write_text(f"module M{name}(input c); reg q; wire w; assign w = c;\n{body}\nendmodule\n")
+        assert has_procedural_assign(f) and _full_walk(f), name
+    f = tmp_path / "cont.v"
+    f.write_text("module C(input a, output b); wire w = a; assign b = w ? a : ~a; endmodule\n")
+    assert not has_procedural_assign(f) and not _full_walk(f)
+
+
+def test_has_procedural_assign_matches_a_full_walk():
+    """The same answer as visiting every node, for every fixture."""
+    files = sorted({*FIX.parent.rglob("*.v"), *FIX.parent.rglob("*.sv")})
+    assert len(files) > 20
+    for f in files:
+        assert has_procedural_assign(f) == _full_walk(f), f
+
+
+@pytest.mark.slow
+def test_has_procedural_assign_matches_a_full_walk_on_the_submodule():
+    ms = _source("unisim-gh-2020.1")
+    for f in (f for d in ms.search for f in sorted(d.glob("*.v"))):
+        assert has_procedural_assign(f) == _full_walk(f), f
