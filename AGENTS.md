@@ -334,10 +334,19 @@ smoke simulation whose memory grows without bound. Its container peaked at
   - The budget is 24 tokens of 4G (`flock`s under
     `$XDG_RUNTIME_DIR/xut-heavy.d/`, per user, shared by every session).
     `$XDG_RUNTIME_DIR` must be set; there is no fallback.
-  - A command waits until it holds all the tokens it needs. Once it holds
-    the admission gate, later commands never overtake it. Commands waiting
-    for the gate itself are not woken in strict FIFO order. The tokens are
-    held until the command exits.
+  - A command waits until it holds all the tokens it needs. The first one
+    waiting (it holds the admission gate) is the head. Commands waiting for
+    the gate itself are not woken in strict FIFO order. The tokens are held
+    until the command exits.
+  - **Backfill.** While the head has waited less than 5 minutes, a later
+    command that fits in the free budget right now is admitted ahead of it.
+    Small jobs, such as a reviewer's targeted pytest or a lint, then wait
+    seconds instead of the whole run of a large job queued ahead of them.
+    Until then the head takes its tokens all at once or not at all. After 5
+    minutes no command overtakes it, and it keeps every token released until
+    it has enough, so it is never starved: it waits at most 5 minutes longer
+    than without backfill. The budget holds either way, because every token
+    is an exclusive lock.
   - Docker containers do not inherit the tokens. If a command is killed, its
     containers (4g each) can outlive it until they end or `xut container`
     sweeps them. The single mutex had the same gap.

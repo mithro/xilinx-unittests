@@ -58,6 +58,7 @@ code is returned.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import re
 import shlex
@@ -83,6 +84,11 @@ _G = 1 << 30
 #: The single host mutex this replaces; admitted commands hold it shared.
 LEGACY_LOCK = "xut-heavy.lock"
 GATE = "gate.lock"
+#: Backfill (below): at most one command backfills at a time; the head's wait is published
+#: in HEAD_FILE; after BACKFILL_AGE_S of waiting no command overtakes it any more.
+BACKFILL = "backfill.lock"
+HEAD_FILE = "head.json"
+BACKFILL_AGE_S = 300.0
 POLL_S = 1.0
 _NAME = re.compile(r"[A-Za-z0-9_.-]+")
 #: The parallelism options of each tool, as ``tool -> regex``; a match's value is group 1
@@ -229,10 +235,18 @@ def admit(
     *,
     poll_s: float = POLL_S,
     log: Callable[[str], None] | None = None,
+    backfill_age_s: float = BACKFILL_AGE_S,
 ) -> Iterator[list[int]]:
     """Hold ``need`` of the ``TOKENS`` tokens in ``d`` (``token_dir()``) and ``legacy``
     (``runtime_dir() / LEGACY_LOCK``) shared for the body; yields the file descriptors that
-    hold them (for ``pass_fds``). ``log`` is told once when the command has to wait."""
+    hold them (for ``pass_fds``). ``log`` is told once when the command has to wait.
+
+    **Backfill.** The command holding the gate (the head) waits for its tokens; while it
+    has waited less than ``backfill_age_s``, a later command waiting for the gate that
+    needs no more than the free tokens is admitted ahead of it (``_backfill``). Every token
+    is still an exclusive ``flock``, so the budget holds whatever the order. After
+    ``backfill_age_s`` no command overtakes the head: it gets the next tokens released, so
+    it waits at most that much longer than it would have (no starvation)."""
     if not 1 <= need <= TOKENS:
         raise XutError(f"xut heavy: {need} tokens (1..{TOKENS})")
     d = token_dir() if d is None else Path(d)
@@ -247,40 +261,140 @@ def admit(
             say(f"xut heavy: waiting for a command holding {legacy} alone (the old mutex)")
             fcntl.flock(old, fcntl.LOCK_SH)
         with (d / GATE).open("a") as gate:
+            held = None
             if not _try(gate):
                 say("xut heavy: waiting for earlier commands to be admitted")
-                fcntl.flock(gate, fcntl.LOCK_EX)
-            held = _take_tokens(d, need, stack, poll_s, say)
-            # said while the gate is still held, so admissions are reported in the order
-            # they happen (the next command cannot be admitted before this line)
-            say(f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of {BUDGET_G}G)")
+                while True:  # wait for the gate, backfilling when the budget allows
+                    held = _backfill(d, need, stack, backfill_age_s)
+                    if held is not None:
+                        say(
+                            f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of "
+                            f"{BUDGET_G}G), backfilled ahead of a larger waiting command"
+                        )
+                        break
+                    if _try(gate):
+                        break
+                    time.sleep(poll_s)
+            if held is None:
+                held = _take_tokens(d, need, stack, poll_s, say, backfill_age_s)
+                # said while the gate is still held, so admissions are reported in the
+                # order they happen (the next command cannot be admitted before this line)
+                say(f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of {BUDGET_G}G)")
             # the gate is released here, once every token is held
         yield [old.fileno(), *(h.fileno() for h in held)]
 
 
-def _take_tokens(
-    d: Path, need: int, stack: ExitStack, poll_s: float, say: Callable[[str], None]
-) -> list[IO[str]]:
-    """Take ``need`` free tokens in ``d``, waiting for more as they are released; called
-    only while holding the gate, so no other command takes tokens meanwhile. Each held
-    token's file is closed (released) by ``stack``."""
-    held: dict[int, IO[str]] = {}
-    waited = False
-    while True:
+def _publish_head(d: Path, need: int) -> None:
+    """The gate holder waits: say since when and for how many tokens (``_backfill``)."""
+    tmp = d / f".{HEAD_FILE}.{os.getpid()}"
+    tmp.write_text(json.dumps({"need": need, "since": time.time(), "pid": os.getpid()}))
+    tmp.replace(d / HEAD_FILE)
+
+
+def _clear_head(d: Path) -> None:
+    (d / HEAD_FILE).unlink(missing_ok=True)
+
+
+def _head_age(d: Path) -> float | None:
+    """How long the head has waited for its tokens, or None when none waits (no file, or
+    its process has died: a killed head frees the gate, and its file must not stop every
+    later backfill)."""
+    try:
+        head = json.loads((d / HEAD_FILE).read_text())
+        pid, since = int(head["pid"]), float(head["since"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass  # alive, another user's (never: the directory is per user)
+    return time.time() - since
+
+
+def _take_all_or_none(
+    d: Path, need: int, stack: ExitStack, held: dict[int, IO[str]] | None = None
+) -> list[IO[str]] | None:
+    """Take ``need`` tokens now, all or none (a partial take is given back), under the
+    backfill lock (``BACKFILL``: one such attempt at a time). ``held`` (the head's tokens
+    already held, kept) counts towards ``need``."""
+    held = dict(held or {})
+    with (d / BACKFILL).open("a") as bf:
+        fcntl.flock(bf, fcntl.LOCK_EX)
+        got: dict[int, IO[str]] = {}
         for i in range(TOKENS):
-            if len(held) == need:
-                return list(held.values())
+            if len(held) + len(got) == need:
+                break
             if i in held:
                 continue
             f = (d / f"token{i:02d}.lock").open("a")
             if _try(f):
-                held[i] = f
-                stack.callback(f.close)
+                got[i] = f
             else:
                 f.close()
-        if len(held) == need:
-            return list(held.values())
+        if len(held) + len(got) < need:
+            for f in got.values():
+                f.close()  # releases the flock
+            return None
+        for f in got.values():
+            stack.callback(f.close)
+        return [*held.values(), *got.values()]
+
+
+def _backfill(d: Path, need: int, stack: ExitStack, max_age_s: float) -> list[IO[str]] | None:
+    """Take ``need`` tokens without the gate, if that is allowed and they are free now:
+    only while the head has waited less than ``max_age_s`` (a head that has not started
+    waiting yet does not block a backfill either); all or nothing."""
+    age = _head_age(d)
+    if age is not None and age >= max_age_s:
+        return None
+    return _take_all_or_none(d, need, stack)
+
+
+def _take_tokens(
+    d: Path,
+    need: int,
+    stack: ExitStack,
+    poll_s: float,
+    say: Callable[[str], None],
+    max_age_s: float = BACKFILL_AGE_S,
+) -> list[IO[str]]:
+    """Take ``need`` tokens in ``d``, waiting for them as they are released; called only
+    while holding the gate (the head). The wait is published (``_publish_head``) and
+    cleared once admitted. While it is younger than ``max_age_s`` the head takes its tokens
+    all at once or not at all, so free tokens stay free for a backfill (``_backfill``);
+    after that it keeps every token it gets until it has ``need``, and no backfill overtakes
+    it any more (no starvation). Each held token's file is closed (released) by ``stack``."""
+    held: dict[int, IO[str]] = {}
+    since = time.monotonic()
+    waited = False
+    while True:
+        if time.monotonic() - since < max_age_s:
+            got = _take_all_or_none(d, need, stack)
+            if got is not None:
+                if waited:
+                    _clear_head(d)
+                return got
+        else:  # past the age cap: hoard (under the backfill lock: no backfill in between)
+            with (d / BACKFILL).open("a") as bf:
+                fcntl.flock(bf, fcntl.LOCK_EX)
+                for i in range(TOKENS):
+                    if len(held) == need:
+                        break
+                    if i in held:
+                        continue
+                    f = (d / f"token{i:02d}.lock").open("a")
+                    if _try(f):
+                        held[i] = f
+                        stack.callback(f.close)
+                    else:
+                        f.close()
+            if len(held) == need:
+                _clear_head(d)
+                return list(held.values())
         if not waited:
+            _publish_head(d, need)
             say(
                 f"xut heavy: waiting for {need} of {TOKENS} tokens "
                 f"({need * TOKEN_G}G of {BUDGET_G}G); holding {len(held)}"

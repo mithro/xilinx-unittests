@@ -5,6 +5,7 @@ lock directories."""
 import fcntl
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -174,8 +175,8 @@ def test_commands_within_the_budget_run_together(tmp_path):
 class _Admission:
     """An ``admit`` in a thread, observed through its ``log`` messages (no sleeps)."""
 
-    def __init__(self, need, d, legacy, order):
-        self.need, self.order = need, order
+    def __init__(self, need, d, legacy, order, backfill_age_s=heavy.BACKFILL_AGE_S):
+        self.need, self.order, self.age, self.lines = need, order, backfill_age_s, []
         self.waiting_gate, self.waiting_tokens = threading.Event(), threading.Event()
         self.waiting_old, self.admitted = threading.Event(), threading.Event()
         self.release, self.out = threading.Event(), threading.Event()
@@ -183,6 +184,7 @@ class _Admission:
         self.thread.start()
 
     def _log(self, line: str) -> None:
+        self.lines.append(line)
         if "earlier commands" in line:
             self.waiting_gate.set()
         elif "waiting for" in line and "tokens" in line:
@@ -194,7 +196,7 @@ class _Admission:
             self.admitted.set()
 
     def _body(self, d, legacy):
-        with heavy.admit(self.need, d, legacy, poll_s=0.01, log=self._log):
+        with heavy.admit(self.need, d, legacy, poll_s=0.01, log=self._log, backfill_age_s=self.age):
             self.release.wait(10)
         self.out.set()
 
@@ -216,20 +218,68 @@ def test_a_command_over_the_free_budget_waits(tmp_path):
     assert order == [8]
 
 
-def test_the_head_of_the_queue_is_never_overtaken(tmp_path):
-    """A small command that would fit waits behind a larger one that holds the gate."""
+def test_without_backfill_the_head_of_the_queue_is_never_overtaken(tmp_path):
+    """With backfill off (age cap 0), a small command that would fit waits behind a larger
+    one that holds the gate."""
     d, legacy = _dirs(tmp_path)
     order: list[int] = []
     with heavy.admit(20, d, legacy):
-        b = _Admission(8, d, legacy, order)
+        b = _Admission(8, d, legacy, order, backfill_age_s=0)
         assert b.waiting_tokens.wait(10)  # b holds the gate
-        c = _Admission(2, d, legacy, order)  # 2 of the 4 free would fit
+        c = _Admission(2, d, legacy, order, backfill_age_s=0)  # 2 of the 4 free would fit
         assert c.waiting_gate.wait(10)  # but c waits for the gate
+        time.sleep(0.2)
         assert not b.admitted.is_set() and not c.admitted.is_set()
     assert b.admitted.wait(10) and c.admitted.wait(10)
     assert order == [8, 2]  # b first, then c beside it (8 + 2 of 24)
     b.finish()
     c.finish()
+
+
+def test_a_small_command_backfills_ahead_of_a_young_head(tmp_path):
+    """While the head has waited less than the age cap, a later command that fits the free
+    budget is admitted ahead of it; the budget still holds (tokens are exclusive)."""
+    d, legacy = _dirs(tmp_path)
+    order: list[int] = []
+    with heavy.admit(20, d, legacy):
+        b = _Admission(8, d, legacy, order, backfill_age_s=60)
+        assert b.waiting_tokens.wait(10)
+        c = _Admission(2, d, legacy, order, backfill_age_s=60)
+        assert c.admitted.wait(10)  # 20 + 2 <= 24: backfilled
+        assert "backfilled" in c.lines[-1]
+        assert not b.admitted.is_set()
+        c.finish()
+    assert b.admitted.wait(10)
+    assert order == [2, 8]
+    b.finish()
+
+
+def test_no_backfill_ahead_of_a_head_past_the_age_cap(tmp_path):
+    """Starvation: once the head has waited the age cap, a command that would fit waits
+    behind it; the head gets the next released tokens."""
+    d, legacy = _dirs(tmp_path)
+    order: list[int] = []
+    big = heavy.admit(20, d, legacy)
+    big.__enter__()
+    b = _Admission(8, d, legacy, order, backfill_age_s=0.3)
+    assert b.waiting_tokens.wait(10)
+    time.sleep(0.5)  # b is now older than the cap
+    c = _Admission(2, d, legacy, order, backfill_age_s=0.3)
+    assert c.waiting_gate.wait(10)
+    time.sleep(0.3)
+    assert not c.admitted.is_set()  # 2 tokens are free, but c must not overtake b
+    big.__exit__(None, None, None)
+    assert b.admitted.wait(10) and c.admitted.wait(10)
+    assert order == [8, 2]
+    b.finish()
+    c.finish()
+
+
+def test_a_dead_heads_wait_never_blocks_backfill(tmp_path):
+    d, _legacy = _dirs(tmp_path)
+    d.mkdir(parents=True)
+    (d / heavy.HEAD_FILE).write_text('{"need": 8, "since": 0, "pid": 2147483646}')
+    assert heavy._head_age(d) is None
 
 
 def test_the_old_mutex_and_admitted_commands_exclude_each_other(tmp_path):
