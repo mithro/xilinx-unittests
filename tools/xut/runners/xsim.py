@@ -66,19 +66,16 @@ with "cannot find crt1.o". When ``/usr/lib64/crt1.o`` is missing and
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
-import signal
 import subprocess
-import threading
 import uuid
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import ClassVar
 
 from xut import slots
-from xut.container import RunTimeout
 from xut.errors import XutError
 from xut.paths import VIVADO_SETTINGS, VIVADO_SRC
 from xut.runners.base import (
@@ -101,6 +98,7 @@ from xut.runners.sim import (
     tool_versions,
     vector_check,
 )
+from xut.scope import cached_version, run_in_group
 from xut.testspec import TestCase
 
 #: The only model source xsim can honestly report (precompiled unisims_ver).
@@ -117,7 +115,6 @@ LIBRARY_PATH_GUARD = (
     f"if [ ! -e /usr/lib64/crt1.o ] && [ -e {_MULTIARCH_LIB}/crt1.o ]; then "
     f"export LIBRARY_PATH={_MULTIARCH_LIB}${{LIBRARY_PATH:+:$LIBRARY_PATH}}; fi"
 )
-_KILL_GRACE_S = 10
 #: The standalone run (module docstring): the snapshot's own executable, with the xsim
 #: kernel library on the loader path (for inside the Vivado subshell only).
 STANDALONE_RUN = (
@@ -244,54 +241,46 @@ def _diagnostics(ctext: str) -> str:
     return "".join(keep)
 
 
+def vivado_slot() -> AbstractContextManager[int]:
+    """PR #10's host-wide Vivado slot (``xut.slots.vivado_slot()``), looked up at call time
+    so a test can replace either this name or ``xut.slots.vivado_slot``."""
+    return slots.vivado_slot()
+
+
 def run_script(cd: Path, timeout_s: int) -> int:
-    """``bash xsim.sh > run.log 2>&1`` in ``cd``; its exit code. The script runs in its
-    own process group, so a timeout kills xvlog/xelab/xsim too, not only bash. It holds a
-    host-wide Vivado slot (``xut.slots.vivado_slot``) while it runs; the timeout starts once
-    the slot is taken."""
-    with slots.vivado_slot(), (cd / "run.log").open("w") as log:
-        p = subprocess.Popen(
-            ["bash", "xsim.sh"],
-            cwd=cd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
+    """``bash xsim.sh > run.log 2>&1`` in ``cd``, in its own process group (so a timeout
+    kills xvlog/xelab/xsim too, not only bash), inside a host-wide ``vivado_slot()``
+    (PR #10: the xsim runner and the verilatorize equivalence oracle stay bounded); its
+    exit code. The timeout starts once the slot is taken."""
+    with vivado_slot():
+        return run_in_group(
+            ["bash", "xsim.sh"], cwd=cd, log=cd / "run.log", timeout_s=timeout_s, mode="w"
         )
-        try:
-            return p.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired as e:
-            os.killpg(p.pid, signal.SIGKILL)
-            p.wait(timeout=_KILL_GRACE_S)
-            raise RunTimeout(f"timeout after {timeout_s}s: xsim.sh") from e
 
 
 class XsimError(XutError, RuntimeError):
     """Vivado's xsim could not report its version."""
 
 
-_VERSION: dict[str, str] = {}
-_VERSION_LOCK = threading.Lock()
-
-
 def xsim_version(scratch: Path) -> str:
     """First line of ``xsim -version`` (sourced in a subshell), once per process."""
-    with _VERSION_LOCK:
-        if "xsim" in _VERSION:
-            return _VERSION["xsim"]
-        scratch.mkdir(parents=True, exist_ok=True)
-        log = scratch / f".xsim-version-{uuid.uuid4().hex}.log"
-        cmd = f"source {shlex.quote(str(VIVADO_SETTINGS))} && xsim -version"
-        with slots.vivado_slot(), log.open("w") as f:
-            rc = subprocess.run(
-                ["bash", "-c", cmd], cwd=scratch, stdout=f, stderr=subprocess.STDOUT, timeout=120
-            ).returncode
-        text = log.read_text()
-        log.unlink()
-        first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
-        if rc != 0 or not first.startswith("Vivado Simulator"):
-            raise XsimError(f"xsim -version failed (rc {rc}): {text.strip()[:300]}")
-        _VERSION["xsim"] = first
-        return first
+    return cached_version("xsim", lambda: _probe_xsim_version(scratch))
+
+
+def _probe_xsim_version(scratch: Path) -> str:
+    scratch.mkdir(parents=True, exist_ok=True)
+    log = scratch / f".xsim-version-{uuid.uuid4().hex}.log"
+    cmd = f"source {shlex.quote(str(VIVADO_SETTINGS))} && xsim -version"
+    with vivado_slot(), log.open("w") as f:
+        rc = subprocess.run(
+            ["bash", "-c", cmd], cwd=scratch, stdout=f, stderr=subprocess.STDOUT, timeout=120
+        ).returncode
+    text = log.read_text()
+    log.unlink()
+    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if rc != 0 or not first.startswith("Vivado Simulator"):
+        raise XsimError(f"xsim -version failed (rc {rc}): {text.strip()[:300]}")
+    return first
 
 
 class XsimRunner(Runner):
