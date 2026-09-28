@@ -251,8 +251,10 @@ def admit(
                 say("xut heavy: waiting for earlier commands to be admitted")
                 fcntl.flock(gate, fcntl.LOCK_EX)
             held = _take_tokens(d, need, stack, poll_s, say)
+            # said while the gate is still held, so admissions are reported in the order
+            # they happen (the next command cannot be admitted before this line)
+            say(f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of {BUDGET_G}G)")
             # the gate is released here, once every token is held
-        say(f"xut heavy: admitted with {need} tokens ({need * TOKEN_G}G of {BUDGET_G}G)")
         yield [old.fileno(), *(h.fileno() for h in held)]
 
 

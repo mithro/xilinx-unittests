@@ -33,3 +33,13 @@
 - the scope argv test with the prefix.
 
 The heavy tests, with the new parallelism cases, pass as well.
+
+## Also: a flaky `test_heavy` ordering (it made #25's CI red)
+
+- **The failure.** `test_the_head_of_the_queue_is_never_overtaken` failed in
+  CI with order `[2, 8]` (run 36365965327).
+- **The cause.** `admit` logged "admitted" after it released the gate, so the
+  next command could be admitted and log first. The test observes that
+  order, so it saw them swapped even though admission was in order.
+- **The fix.** The line is now logged while the gate is still held.
+- **Check.** 40 runs out of 40 pass, in a capped scope.
