@@ -30,8 +30,12 @@ def test_shards_partition_the_container_tests():
     shards = {name: _collect(sel) for name, (sel, _) in ci_shards.SHARDS.items()}
     seen = [t for ids in shards.values() for t in ids]
     assert sorted(seen) == sorted(everything)  # every test once: none dropped, none twice
-    assert shards["sweep"] and all("test_sweep_every_transformed_model_lints" in t
-                                   for t in shards["sweep"])  # fmt: skip
+    for k in range(ci_shards.SWEEP_CHUNKS):  # each chunk shard: its chunk of both sources
+        lints = [t for t in shards[f"sweep{k}"] if "_lints[" in t]
+        assert sorted(lints) == sorted(
+            f"{ci_shards.SWEEP}[{src}-{k}]" for src in ci_shards.SWEEP_SOURCES
+        )
+    assert ci_shards.SWEEP_MANIFEST.split("::")[1] in " ".join(shards["sweep0"])
     assert shards["verilator"] and all(
         t.startswith("tools/tests/test_runner_verilator.py::") for t in shards["verilator"]
     )
