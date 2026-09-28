@@ -321,21 +321,41 @@ class Runner(ABC):
                 pass
         return seed_for(case, ctx)
 
+    #: Whether ``xut run`` may run this runner's configurations concurrently, each as its
+    #: own unit of work (ruling S61): true for a runner whose ``run_config`` keeps no state
+    #: on ``self``. ``PythonRunner`` keeps per-test state, so it runs them in order.
+    parallel_configs: ClassVar[bool] = True
+
     def run(self, case: TestCase, ctx: RunContext) -> RunResult:
-        """Template method. Every exit path writes result.json (spec §14, review #9):
-        any exception, including failing to reset the run directory, becomes an
-        ``error`` result with the traceback."""
+        """Template method: ``begin``, ``run_cfg`` for every configuration in order, then
+        ``end``. Every exit path writes result.json (spec §14, review #9): any exception,
+        including failing to reset the run directory, becomes an ``error`` result with the
+        traceback. ``xut run`` calls the three steps itself to run configurations
+        concurrently (``parallel_configs``); the result is the same."""
+        plan = self.begin(case, ctx)
+        if isinstance(plan, RunResult):
+            return plan
+        outcomes: list[CfgOutcome] = []
+        for cfg in plan.cfgs:
+            outcomes.append(self.run_cfg(plan, cfg))
+            if outcomes[-1].exc is not None:  # as the loop always did: stop at the first
+                break  # exception outside run_config (end makes the pair an error)
+        return self.end(plan, outcomes)
+
+    def begin(self, case: TestCase, ctx: RunContext) -> Plan | RunResult:
+        """Reset the run directory and decide what runs: a finished ``RunResult`` (a skip,
+        or an error), or the ``Plan`` of the configurations to run."""
         d = workdir(ctx, self.name, case.id)
         t0 = time.monotonic()
         try:
             if d.exists():
                 shutil.rmtree(d)  # loudly: a stale directory must never leak into a run
             d.mkdir(parents=True, exist_ok=True)
-            return self._run(case, ctx, d)
+            return self._begin(case, ctx, d, t0)
         except Exception as e:
             return error_result(case, self.name, ctx, e, d, time.monotonic() - t0)
 
-    def _run(self, case: TestCase, ctx: RunContext, d: Path) -> RunResult:
+    def _begin(self, case: TestCase, ctx: RunContext, d: Path, t_pair: float) -> Plan | RunResult:
         ok, why = declared(case, self.name)
         if not ok:
             return self._skip(case, ctx, d, f"declared unsupported: {why}")
@@ -348,7 +368,6 @@ class Runner(ABC):
         res = self._new_result(case, ctx, "skip", None)
         # Tool versions first: a broken toolchain fails fast, before any configuration.
         res.tools, res.container = self.tools(ctx), self.container(ctx)
-        parts: list[tuple[str, xtr.Trace]] = []
         logs: list[str] = []
         cfgs = self.configs(case, ctx)
         res.seeds["stimulus"] = self.stimulus_seed(case, ctx)
@@ -358,31 +377,62 @@ class Runner(ABC):
         for g in excluded:
             if not any(fnmatch.fnmatchcase(c, g) for c in cfgs):
                 logs.append(f"warning: config_exclusions glob {g!r} matched no configuration\n")
-        for cfg in cfgs:
-            cd = d / f"cfg-{cfg}"
-            cd.mkdir()
-            pat = next((g for g in excluded if fnmatch.fnmatchcase(cfg, g)), None)
-            if pat is not None:  # declared per-configuration exclusion: skip, with reason
-                cr = ConfigResult(cfg, "skip", f"excluded: {excluded[pat]}")
-                res.configs.append(cr)
-                logs.append(f"===== cfg {cfg}: skip {cr.reason}\n")
-                continue
+        return Plan(case, ctx, d, t_pair, t0, res, cfgs, excluded, logs)
+
+    def run_cfg(self, plan: Plan, cfg: str) -> CfgOutcome:
+        """One configuration of ``plan`` in ``cfg-<cfg>/``. Never raises: an exception
+        outside ``run_config`` (which is itself recorded as the configuration's error) is
+        returned in ``CfgOutcome.exc`` and makes the whole result an error in ``end``."""
+        try:
+            return self._run_cfg(plan, cfg)
+        except Exception as e:
+            return CfgOutcome(ConfigResult(cfg, "error", error_reason(e)), None, "", e)
+
+    def _run_cfg(self, plan: Plan, cfg: str) -> CfgOutcome:
+        case, ctx = plan.case, plan.ctx
+        cd = plan.d / f"cfg-{cfg}"
+        cd.mkdir()
+        pat = next((g for g in plan.excluded if fnmatch.fnmatchcase(cfg, g)), None)
+        if pat is not None:  # declared per-configuration exclusion: skip, with reason
+            cr = ConfigResult(cfg, "skip", f"excluded: {plan.excluded[pat]}")
+            return CfgOutcome(cr, None, f"===== cfg {cfg}: skip {cr.reason}\n")
+        try:
+            cr = self.run_config(case, cfg, cd, ctx)
+        except Exception as e:  # recorded as error with the traceback in the log
+            with (cd / "run.log").open("a") as f:
+                f.write(traceback.format_exc())
+            cr = ConfigResult(cfg, "error", error_reason(e))
+        part = None
+        if (cd / "trace.xtr").is_file():
             try:
-                cr = self.run_config(case, cfg, cd, ctx)
-            except Exception as e:  # recorded as error with the traceback in the log
-                with (cd / "run.log").open("a") as f:
-                    f.write(traceback.format_exc())
-                cr = ConfigResult(cfg, "error", error_reason(e))
-            if (cd / "trace.xtr").is_file():
-                try:
-                    parts.append((cfg, xtr.load(cd / "trace.xtr")))
-                except xtr.XtrError as e:
-                    cr = ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
-            elif cr.status == "pass":  # a pass must leave its evidence
-                cr = ConfigResult(cfg, "error", "reported pass but wrote no trace.xtr")
-            res.configs.append(cr)
-            log = (cd / "run.log").read_text() if (cd / "run.log").is_file() else ""
-            logs.append(f"===== cfg {cfg}: {cr.status} {cr.reason or ''}\n" + log)
+                part = xtr.load(cd / "trace.xtr")
+            except xtr.XtrError as e:
+                cr = ConfigResult(cfg, "error", f"malformed trace.xtr: {e}")
+        elif cr.status == "pass":  # a pass must leave its evidence
+            cr = ConfigResult(cfg, "error", "reported pass but wrote no trace.xtr")
+        log = (cd / "run.log").read_text() if (cd / "run.log").is_file() else ""
+        return CfgOutcome(cr, part, f"===== cfg {cfg}: {cr.status} {cr.reason or ''}\n" + log)
+
+    def end(self, plan: Plan, outcomes: list[CfgOutcome]) -> RunResult:
+        """Aggregate the configurations' outcomes, in configuration order (``outcomes``
+        is in ``plan.cfgs`` order, however they ran), and write result.json, trace.xtr and
+        run.log."""
+        case, ctx, d = plan.case, plan.ctx, plan.d
+        try:
+            return self._end(plan, outcomes)
+        except Exception as e:
+            return error_result(case, self.name, ctx, e, d, time.monotonic() - plan.t_pair)
+
+    def _end(self, plan: Plan, outcomes: list[CfgOutcome]) -> RunResult:
+        case, ctx, d, res = plan.case, plan.ctx, plan.d, plan.res
+        for o in outcomes:
+            if o.exc is not None:  # as the sequential loop did: the whole run is an error
+                raise o.exc
+        if [o.result.cfg for o in outcomes] != plan.cfgs:
+            raise XutError("internal: configuration outcomes out of order")
+        parts = [(o.result.cfg, o.part) for o in outcomes if o.part is not None]
+        res.configs = [o.result for o in outcomes]
+        logs = [*plan.logs, *(o.log for o in outcomes)]
         if res.configs:
             res.status = worst([c.status for c in res.configs])
             res.reason = summarize(res.configs, res.status)
@@ -394,9 +444,36 @@ class Runner(ABC):
         xtr.dump(xtr.concat(parts, header), d / "trace.xtr")
         (d / "run.log").write_text("".join(logs))
         self.finish(case, ctx, d, res)
-        res.duration_s = round(time.monotonic() - t0, 3)
+        res.duration_s = round(time.monotonic() - plan.t0, 3)
         res.write(d)
         return res
+
+
+@dataclass
+class Plan:
+    """What ``Runner.begin`` decided for one (test, runner) pair: the configurations to
+    run, and the result they will be aggregated into."""
+
+    case: TestCase
+    ctx: RunContext
+    d: Path
+    t_pair: float  # monotonic start of the pair (an error's duration)
+    t0: float  # monotonic start of the configurations (``duration_s``)
+    res: RunResult
+    cfgs: list[str]
+    excluded: dict[str, str]
+    logs: list[str]  # the run.log lines before the configurations'
+
+
+@dataclass
+class CfgOutcome:
+    """One configuration's outcome: its result, its parsed trace (if any), its run.log
+    section, and an exception raised outside ``run_config`` (re-raised by ``end``)."""
+
+    result: ConfigResult
+    part: xtr.Trace | None
+    log: str
+    exc: Exception | None = None
 
 
 def _listing(configs: list[ConfigResult]) -> str:
