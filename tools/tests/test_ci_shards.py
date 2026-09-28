@@ -92,14 +92,3 @@ def test_flops_steps_run_in_exactly_one_shard():
         assert "!=" not in s["if"].split("&&")[1]  # one shard, never "all but one"
     others = [s for s in steps if s not in flops]
     assert not any("matrix.shard" in s.get("if", "") for s in others)  # every leg runs them
-
-
-def test_sweep_shards_match_the_sweep_test():
-    """The per-chunk sweep shards name the chunks and sources the sweep test has."""
-    import test_vz_rewrite as vr
-
-    assert ci_shards.SWEEP_CHUNKS == vr.SWEEP_CHUNKS
-    assert list(ci_shards.SWEEP_SOURCES) == [s for s, _ in vr.SWEEP_SOURCES]
-    assert [k for k in ci_shards.SHARDS if k.startswith("sweep")] == [
-        f"sweep{k}" for k in range(vr.SWEEP_CHUNKS)
-    ]

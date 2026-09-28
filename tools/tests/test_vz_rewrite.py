@@ -1,14 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
+import contextlib
+import fcntl
 import re
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 
 import pyslang
 import pytest
 
+from xut import ci_shards
 from xut.container import SIM_IMAGE, DockerExecutor, image_digest
+from xut.modelsrc import ModelSource
 from xut.paths import repo_root
 from xut.verilatorize.analyze import TransformError, analyze, generate_configs
+from xut.verilatorize.driver import Manifest
 from xut.verilatorize.rewrite import check_clean, rewrite, write_text
 
 FIX = Path(__file__).parent / "fixtures" / "verilatorize"
@@ -577,19 +583,39 @@ REFUSED = {
 
 
 #: The sweep's (source, number of transformed models). The lint part is split into
-#: ``SWEEP_CHUNKS`` tests per source (every ``SWEEP_CHUNKS``-th model), so pytest-xdist and
-#: the CI shards can spread it; together they lint every transformed model exactly once
-#: (``test_sweep_chunks_cover_every_transformed_model_once``).
+#: ``SWEEP_CHUNKS`` tests per source (every ``SWEEP_CHUNKS``-th model) so that the CI shards
+#: (``xut.ci_shards``, which defines the chunk count and sources) run one chunk per runner;
+#: together they lint every transformed model exactly once.
 SWEEP_SOURCES = [("unisim-2025.2", 157), ("unisim-gh-2020.1", 94)]
-SWEEP_CHUNKS = 4
-#: Containers one chunk runs at once, as the single sweep test did. In CI each chunk runs
-#: on a runner of its own (``xut.ci_shards``); a local run takes them one after another.
+SWEEP_CHUNKS = ci_shards.SWEEP_CHUNKS
+#: Containers one chunk runs at once, as the single sweep test did.
 SWEEP_THREADS = 16
+#: What keeps a LOCAL run within AGENTS.md §10.1: every sweep test (manifest and chunks,
+#: both sources) holds this host-wide ``flock`` for its whole body, so however pytest-xdist
+#: spreads them (``-n 8`` with ``--dist load`` puts them on 8 workers), at most one runs at
+#: a time: at most ``SWEEP_THREADS`` containers, and only one process ever transforms the
+#: shared ``build/verilatorized/`` tree (the driver's own locks are per process). They are
+#: also in one ``xdist_group``, so ``--dist loadgroup`` keeps them on one worker instead of
+#: leaving workers waiting on the lock. In CI each chunk runs on its own runner.
+SWEEP_LOCK = "vz-sweep.lock"
 
 
-def _sweep_manifest(source: str):
+@contextlib.contextmanager
+def _sweep_lock() -> Iterator[None]:
+    d = repo_root() / "build"
+    d.mkdir(exist_ok=True)
+    with (d / SWEEP_LOCK).open("a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
+def _sweep_manifest(source: str) -> tuple[ModelSource, Manifest]:
     """``(model source, manifest)`` for ``source``, transformed (``verilatorize`` is
-    incremental: after the first call it only checks its inputs), or a skip."""
+    incremental: after the first call it only checks its inputs), or a skip. Call it under
+    ``_sweep_lock``."""
     from xut.modelsrc import model_sources
     from xut.verilatorize.driver import verilatorize
 
@@ -599,19 +625,21 @@ def _sweep_manifest(source: str):
     return ms, verilatorize(ms, jobs=16, progress=lambda _line: None)
 
 
-def _sweep_chunk(man, k: int) -> list[str]:
+def _sweep_chunk(man: Manifest, k: int) -> list[str]:
     done = sorted(m for m, e in man.models.items() if e.status == "transformed")
     return done[k::SWEEP_CHUNKS]
 
 
 @pytest.mark.slow
 @pytest.mark.container
+@pytest.mark.xdist_group("vz-sweep")
 @pytest.mark.skipif(_no_image, reason="xut-sim image not built")
 @pytest.mark.parametrize("source,n_transformed", SWEEP_SOURCES)
 def test_sweep_transforms_every_model_it_can(source, n_transformed):
     """The sweep's manifest: how many models are transformed, which are refused and why,
     and the FD* flops' triggers and rewrites (the counts once, not per chunk)."""
-    ms, man = _sweep_manifest(source)
+    with _sweep_lock():
+        ms, man = _sweep_manifest(source)
     done = sorted(m for m, e in man.models.items() if e.status == "transformed")
     refused = {m: e.reason for m, e in man.models.items() if e.status == "unsupported"}
     assert len(done) == n_transformed, refused
@@ -625,11 +653,13 @@ def test_sweep_transforms_every_model_it_can(source, n_transformed):
         assert e.rewrites == ["shadow", "zcmp"]
 
 
-def test_sweep_chunks_cover_every_transformed_model_once():
-    """The chunks partition the transformed models: each model in exactly one chunk."""
+@pytest.mark.parametrize("n", [n for _, n in SWEEP_SOURCES])
+def test_sweep_chunks_cover_every_transformed_model_once(n):
+    """The chunks partition the transformed models (each source's count): each model in
+    exactly one chunk, and no chunk empty."""
     from types import SimpleNamespace
 
-    models = {f"M{i:03d}": SimpleNamespace(status="transformed") for i in range(157)}
+    models = {f"M{i:03d}": SimpleNamespace(status="transformed") for i in range(n)}
     models["X"] = SimpleNamespace(status="unsupported")
     man = SimpleNamespace(models=models)
     chunks = [_sweep_chunk(man, k) for k in range(SWEEP_CHUNKS)]
@@ -638,8 +668,33 @@ def test_sweep_chunks_cover_every_transformed_model_once():
     assert len(seen) == len(set(seen)) and all(chunks)
 
 
+def test_sweep_sources_are_the_ci_shards_sources():
+    assert [s for s, _ in SWEEP_SOURCES] == list(ci_shards.SWEEP_SOURCES)
+
+
+def test_the_sweep_lock_is_exclusive_across_processes(tmp_path, monkeypatch):
+    """Two processes never hold the sweep lock at once (what bounds a local run)."""
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "repo_root", lambda: tmp_path)
+    with _sweep_lock():
+        probe = (
+            "import fcntl, sys\n"
+            "f = open(sys.argv[1], 'a')\n"
+            "try:\n    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)\n    print('free')\n"
+            "except BlockingIOError:\n    print('held')\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe, str(tmp_path / "build" / SWEEP_LOCK)],
+            capture_output=True, text=True, check=True,
+        )  # fmt: skip
+    assert out.stdout.strip() == "held"
+
+
 @pytest.mark.slow
 @pytest.mark.container
+@pytest.mark.xdist_group("vz-sweep")
 @pytest.mark.skipif(_no_image, reason="xut-sim image not built")
 @pytest.mark.parametrize("chunk", range(SWEEP_CHUNKS))
 @pytest.mark.parametrize("source", [s for s, _ in SWEEP_SOURCES])
@@ -647,6 +702,11 @@ def test_sweep_every_transformed_model_lints(source, chunk):
     """Every ``SWEEP_CHUNKS``-th transformed model (from ``chunk``) lints clean on Verilator
     under the default and every generate configuration, and compiles on Icarus (or fails
     there as its original does)."""
+    with _sweep_lock():
+        _sweep_chunk_lints(source, chunk)
+
+
+def _sweep_chunk_lints(source: str, chunk: int) -> None:
     from concurrent.futures import ThreadPoolExecutor
 
     ms, man = _sweep_manifest(source)

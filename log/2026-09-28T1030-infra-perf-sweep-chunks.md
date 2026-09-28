@@ -26,3 +26,23 @@
   - The chunks took 46, 43, 27 and 23 s.
 - `test_ci_shards`, `test_ci_select` and the partition unit test: 32 passed.
 - CI timing: pending, in the PR.
+
+## Fix round 1 (code-quality review of #27)
+
+- **[must-fix] Local parallelism.** Every sweep test (the manifest and the
+  chunks, both sources) now holds a host-wide `flock`,
+  `build/vz-sweep.lock`, for its whole body. However pytest-xdist spreads
+  them, at most one runs at a time, so a local run has at most 16 containers
+  and only one process ever transforms the shared `build/verilatorized/`
+  tree. The driver's own locks are per process. The tests are also in one
+  `xdist_group` ("vz-sweep"), so `--dist loadgroup` keeps them on one worker
+  instead of leaving workers waiting. The comment now says what protects a
+  local run. A new test checks that another process sees the lock as held.
+- **Nits.**
+  - `_sweep_manifest` and `_sweep_chunk` are typed.
+  - `SWEEP_CHUNKS` is defined once, in `xut.ci_shards`, and imported by the
+    test, so `test_ci_shards` no longer imports the test module.
+  - The sources are cross-checked by one small test.
+  - The redundant f-string is gone.
+  - The chunk-partition test runs with both source counts, 157 and 94.
+- **Tests.** The shard, select and sweep unit tests: 34 passed.

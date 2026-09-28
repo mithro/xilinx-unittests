@@ -47,7 +47,7 @@ SHARDS: dict[str, tuple[list[str], list[str]]] = {
             [
                 "-m", "container",
                 *(f"{SWEEP}[{src}-{k}]" for src in SWEEP_SOURCES),
-                *([f"{SWEEP_MANIFEST}"] if k == 0 else []),
+                *([SWEEP_MANIFEST] if k == 0 else []),
             ],
             [],
         )
