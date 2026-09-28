@@ -712,15 +712,17 @@ def clock_edge_with_ce(ce: int) -> Callable[[type], type]:
     return factory
 
 
-def init_ignored(base: type) -> type:
-    """The start-up contents are all zeros whatever INIT says (C6)."""
+def init_complemented(base: type) -> type:
+    """The start-up contents are the complement of INIT (C6). Unlike all-zero contents,
+    this is wrong for every INIT, the default zero included, so every C6-crediting
+    configuration can catch it."""
 
-    class InitIgnored(base):
+    class InitComplemented(base):
         def power_on(self) -> None:
             super().power_on()
-            self.contents = 0
+            self.contents = ~self.init & ((1 << self.WIDTH) - 1)
 
-    return InitIgnored
+    return InitComplemented
 
 
 def inversion_ignored(base: type) -> type:
@@ -747,7 +749,8 @@ def both_edges(base: type) -> type:
 def mutants(prim: str) -> dict[str, unitkit.Mutant]:
     """{claim id: its Mutant} for ``prim``: every claim a vector test credits. CFGLUT5's
     C3, C4, C5 and C7 are event claims (a shift, a hold, a cascade, an edge): every
-    configuration that credits one must catch its mutant (ruling S55a)."""
+    configuration that credits one must catch its mutant (ruling S55a). C6 is a read claim,
+    held to the same bar: its complement-INIT mutant fails every crediting configuration."""
     M = unitkit.Mutant
     if prim == "CFGLUT5":
         return {
@@ -759,7 +762,7 @@ def mutants(prim: str) -> dict[str, unitkit.Mutant]:
             "CFGLUT5.C5": M(
                 output_replaced("CDO", lambda m: (m.init >> (m.WIDTH - 1)) & 1), event=True
             ),
-            "CFGLUT5.C6": M(init_ignored),
+            "CFGLUT5.C6": M(init_complemented, event=True),  # fails every crediting config
             "CFGLUT5.C7": M(inversion_ignored, event=True),
         }
     if prim == "LUT6_2":
