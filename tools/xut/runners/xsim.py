@@ -247,9 +247,9 @@ def _diagnostics(ctext: str) -> str:
 def run_script(cd: Path, timeout_s: int) -> int:
     """``bash xsim.sh > run.log 2>&1`` in ``cd``; its exit code. The script runs in its
     own process group, so a timeout kills xvlog/xelab/xsim too, not only bash. It holds a
-    host-wide Vivado slot (``xut.slots.vivado_slot``) while it runs; the timeout starts once
-    the slot is taken."""
-    with slots.vivado_slot(), (cd / "run.log").open("w") as log:
+    host-wide xsim slot (``xut.slots.vivado_slot(kind="xsim")``) while it runs; the timeout
+    starts once the slot is taken."""
+    with slots.vivado_slot(kind="xsim"), (cd / "run.log").open("w") as log:
         p = subprocess.Popen(
             ["bash", "xsim.sh"],
             cwd=cd,
@@ -281,7 +281,7 @@ def xsim_version(scratch: Path) -> str:
         scratch.mkdir(parents=True, exist_ok=True)
         log = scratch / f".xsim-version-{uuid.uuid4().hex}.log"
         cmd = f"source {shlex.quote(str(VIVADO_SETTINGS))} && xsim -version"
-        with slots.vivado_slot(), log.open("w") as f:
+        with slots.vivado_slot(kind="xsim"), log.open("w") as f:
             rc = subprocess.run(
                 ["bash", "-c", cmd], cwd=scratch, stdout=f, stderr=subprocess.STDOUT, timeout=120
             ).returncode

@@ -72,14 +72,53 @@ def test_slot_count_and_dir_come_from_the_environment(tmp_path, monkeypatch):
     assert slots.slot_dir().name == "xut-vivado"
 
 
-def test_every_host_xsim_run_holds_a_slot(tmp_path, monkeypatch):
-    """xsim.run_script (the xsim runner and the equivalence oracle) runs inside a slot."""
+def test_xsim_slot_count_default_override_and_validation(monkeypatch):
+    """Ruling S60: xsim has its own count, XUT_XSIM_SLOTS (default 12), beside the 4
+    Vivado slots, validated the same way."""
+    monkeypatch.delenv(slots.XSIM_SLOTS_ENV, raising=False)
+    monkeypatch.setenv(slots.SLOTS_ENV, "2")
+    assert (slots.slot_count("xsim"), slots.slot_count()) == (12, 2)
+    monkeypatch.setenv(slots.XSIM_SLOTS_ENV, "5")
+    assert slots.slot_count("xsim") == 5
+    monkeypatch.setenv(slots.XSIM_SLOTS_ENV, "0")
+    with pytest.raises(XutError, match=r"\$XUT_XSIM_SLOTS='0' is not a positive integer"):
+        slots.slot_count("xsim")
+
+
+def test_xsim_slots_have_their_own_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    assert slots.slot_dir("xsim") == tmp_path / "xut-xsim"
+    assert slots.slot_dir() == tmp_path / "xut-vivado"
+
+
+def test_an_unknown_slot_kind_is_refused(tmp_path):
+    with pytest.raises(XutError, match="unknown slot kind"):
+        slots.slot_count("hw")
+    with pytest.raises(XutError, match="unknown slot kind"):  # even with n and lock_dir
+        slots.vivado_slot(1, tmp_path, kind="typo").__enter__()
+
+
+def test_the_two_pools_do_not_share_slots(tmp_path, monkeypatch):
+    """One slot of each kind at once, each count 1: the pools are independent."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv(slots.XSIM_SLOTS_ENV, "1")
+    monkeypatch.setenv(slots.SLOTS_ENV, "1")
+    with slots.vivado_slot(kind="xsim") as a, slots.vivado_slot() as b:
+        assert (a, b) == (0, 0)
+    assert (tmp_path / "xut-xsim" / "slot0.lock").is_file()
+    assert (tmp_path / "xut-vivado" / "slot0.lock").is_file()
+
+
+def test_every_host_xsim_run_holds_an_xsim_slot(tmp_path, monkeypatch):
+    """xsim.run_script (the xsim runner and the equivalence oracle) runs inside a slot of
+    the xsim pool."""
     from xut.runners import xsim
 
     held: list[bool] = []
     real = slots.vivado_slot
 
     def spy(*a, **kw):
+        assert kw.get("kind") == "xsim"
         held.append(True)
         return real(1, tmp_path / "locks")
 
