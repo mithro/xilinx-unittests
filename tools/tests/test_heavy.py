@@ -87,6 +87,17 @@ def test_over_the_budget_is_refused(mem, containers, monkeypatch):
         (["python", "-m", "pytest", "-n", "3"], 3),
         (["ninja", "-j8"], 8),
         (["tail", "-n", "50", "log"], None),
+        # a wrapper's own flags are not the tool's (nice -n 19 is a niceness, not jobs)
+        (["nice", "-n", "19", "uv", "run", "pytest", "-n", "8"], 8),
+        (["ionice", "-c2", "-n7", "uv", "run", "pytest", "-n", "8"], 8),
+        # a wrapper's argument naming a tool never hides the real command's options
+        (["uv", "run", "--with", "pytest", "xut", "run", "X", "--jobs", "12"], 12),
+        (["uv", "run", "--with", "xut", "pytest", "-n", "8"], 8),
+        (["ionice", "-c2", "-n", "7", "uv", "run", "xut", "lint"], None),
+        (["bash", "-c", "ionice -c2 -n7 uv run pytest -n 3 x.py"], 3),
+        (["nice", "--adjustment=19", "ionice", "-c2", "-n7", "uv", "run", "pytest", "-n2"], 2),
+        (["nice", "-n", "19", "ionice", "-c2", "-n7", "uv", "run", "xut", "lint"], None),
+        (["bash", "-c", "nice -n 19 uv run xut run X --jobs 12 > log 2>&1"], 12),
     ],
 )
 def test_declared_parallelism(argv, n):
@@ -134,7 +145,7 @@ def test_scope_argv():
     assert argv[4].startswith("--unit=xut-flops-run-")
     assert argv[5:] == [
         "--expand-environment=no", "-p", "MemoryMax=8g", "-p", "MemorySwapMax=0",
-        "--", "uv", "run", "xut", "run",
+        "--", "nice", "-n", "19", "ionice", "-c2", "-n7", "uv", "run", "xut", "run",
     ]  # fmt: skip
     with pytest.raises(XutError, match="--name"):
         heavy.scope_argv("a b", "8G", ["true"])

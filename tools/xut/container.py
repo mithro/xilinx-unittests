@@ -68,6 +68,20 @@ _LIVE_LOCK = threading.Lock()
 #: The per-container memory cap (Ruling S48), overridable by `XUT_CONTAINER_MEMORY`, and
 #: its accepted range (S48a: docker reads 0 as "no limit"; below 6m it refuses to start).
 DEFAULT_MEMORY = "4g"
+#: Every container's CPU share and bound (host rule: heavy work yields to interactive
+#: sessions). ``--cpu-shares=128`` is 1/8 of docker's default weight; ``--cpus`` bounds one
+#: container at 2 CPUs (``XUT_CONTAINER_CPUS``): the most any of our tools uses (Verilator
+#: builds with ``-j 2``; Icarus, vvp and the simulations are single-threaded), so it never
+#: slows a run, and at the budget's 24 containers it leaves over 40 of the host's 88
+#: CPUs to everyone else even if every container spins. Note: inside a container ``nproc``
+#: still reports all 88 CPUs (a CFS quota does not change the CPU mask), so a tool that
+#: sizes itself from it (``make -j$(nproc)``, ``verilator -j 0``) would start 88 workers
+#: against a 2-CPU quota: always give such tools an explicit count.
+CPU_SHARES = 128
+DEFAULT_CPUS = "2"
+CPUS_ENV = "XUT_CONTAINER_CPUS"
+#: The command inside every container runs at the lowest CPU priority.
+NICE = ("nice", "-n", "19")
 MEMORY_ENV = "XUT_CONTAINER_MEMORY"
 MEMORY_MIN, MEMORY_MAX = "64m", "32g"
 #: The memory all of one command's containers may hold at once (S48a), overridable by
@@ -110,6 +124,19 @@ def container_memory(memory: str | None = None) -> str:
         what = "container memory cap"
     size_bytes(memory, what, MEMORY_MAX)
     return memory
+
+
+def container_cpus() -> str:
+    """``$XUT_CONTAINER_CPUS`` (default 2): the CPUs one container may use (``--cpus``);
+    ``XutError`` unless it is a positive number."""
+    raw = os.environ.get(CPUS_ENV, DEFAULT_CPUS)
+    try:
+        ok = float(raw) > 0
+    except ValueError:
+        ok = False
+    if not ok:
+        raise XutError(f"${CPUS_ENV}={raw!r} is not a positive number of CPUs")
+    return raw
 
 
 def max_jobs() -> tuple[int, str, str]:
@@ -260,6 +287,8 @@ class DockerExecutor:
             "--pull=never",
             f"--memory={self.memory}",
             f"--memory-swap={self.memory}",
+            f"--cpu-shares={CPU_SHARES}",
+            f"--cpus={container_cpus()}",
             "-u",
             f"{os.getuid()}:{os.getgid()}",
             "-e",
@@ -274,7 +303,7 @@ class DockerExecutor:
         guard = []
         if timeout_s is not None:
             guard = ["timeout", "-k", "10", str(timeout_s + _GUEST_GRACE_S)]
-        out += ["-w", self.guest(cwd), self.image, *guard, *argv]
+        out += ["-w", self.guest(cwd), self.image, *NICE, *guard, *argv]
         return out
 
     def run(

@@ -46,7 +46,9 @@ def test_docker_argv_maps_paths(tmp_path, monkeypatch):
     assert "/opt/m:/models/m:ro" in argv
     assert argv[argv.index("-w") + 1] == "/work/build/x"
     # the in-container timeout (S48a M-2): an orphaned container still ends
-    assert argv[argv.index(SIM_IMAGE) + 1 :] == ["timeout", "-k", "10", "35", "iverilog", "-V"]
+    assert argv[argv.index(SIM_IMAGE) + 1 :] == [
+        "nice", "-n", "19", "timeout", "-k", "10", "35", "iverilog", "-V",
+    ]  # fmt: skip
     assert f"{os.getuid()}:{os.getgid()}" in argv
     assert "iverilog -V" in (tmp_path / "l.log").read_text()
 
@@ -675,7 +677,7 @@ def test_docker_argv_labels_every_container(tmp_path):
     assert f"xut.session={container.SESSION}" in argv
     assert argv[argv.index(f"xut.owner={os.getpid()}") - 1] == "--label"
     assert argv.index("--label") < argv.index(SIM_IMAGE)
-    assert argv[-2:] == [SIM_IMAGE, "true"]  # no timeout_s: no in-container timeout
+    assert argv[-5:] == [SIM_IMAGE, "nice", "-n", "19", "true"]  # no in-container timeout
 
 
 def test_docker_argv_in_container_timeout_outlasts_the_host_timeout(tmp_path):
@@ -912,3 +914,21 @@ def test_a_clean_exit_is_never_an_oom_kill(tmp_path, monkeypatch):
     log = tmp_path / "l.log"
     assert DockerExecutor(root=tmp_path).run(["x"], cwd=tmp_path, log=log, timeout_s=5) == 1
     assert container.OOM_MARK not in log.read_text()
+
+
+def test_docker_argv_low_priority(tmp_path, monkeypatch):
+    """Host rule: every container gets 1/8 of docker's CPU weight, at most 2 CPUs
+    (XUT_CONTAINER_CPUS) and runs its command under nice 19."""
+    from xut import errors as xut_errors
+
+    monkeypatch.delenv("XUT_CONTAINER_CPUS", raising=False)
+    argv = DockerExecutor(root=tmp_path).argv(["x"], tmp_path, "n", None)
+    img = argv.index(SIM_IMAGE)
+    assert "--cpu-shares=128" in argv[:img] and "--cpus=2" in argv[:img]
+    assert argv[img + 1 : img + 4] == ["nice", "-n", "19"]
+    monkeypatch.setenv("XUT_CONTAINER_CPUS", "1.5")
+    assert "--cpus=1.5" in DockerExecutor(root=tmp_path).argv(["x"], tmp_path, "n", None)
+    for bad in ("0", "-1", "many"):
+        monkeypatch.setenv("XUT_CONTAINER_CPUS", bad)
+        with pytest.raises(xut_errors.XutError, match="XUT_CONTAINER_CPUS"):
+            DockerExecutor(root=tmp_path).argv(["x"], tmp_path, "n", None)
