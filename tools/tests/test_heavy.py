@@ -90,6 +90,9 @@ def test_over_the_budget_is_refused(mem, containers, monkeypatch):
         # a wrapper's own flags are not the tool's (nice -n 19 is a niceness, not jobs)
         (["nice", "-n", "19", "uv", "run", "pytest", "-n", "8"], 8),
         (["ionice", "-c2", "-n7", "uv", "run", "pytest", "-n", "8"], 8),
+        # a wrapper's argument naming a tool never hides the real command's options
+        (["uv", "run", "--with", "pytest", "xut", "run", "X", "--jobs", "12"], 12),
+        (["uv", "run", "--with", "xut", "pytest", "-n", "8"], 8),
         (["ionice", "-c2", "-n", "7", "uv", "run", "xut", "lint"], None),
         (["bash", "-c", "ionice -c2 -n7 uv run pytest -n 3 x.py"], 3),
         (["nice", "--adjustment=19", "ionice", "-c2", "-n7", "uv", "run", "pytest", "-n2"], 2),

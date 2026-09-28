@@ -173,43 +173,42 @@ def _commands(argv: Sequence[str]) -> list[list[str]]:
     return [c for c in out if c]
 
 
-def _tool(cmd: list[str]) -> tuple[str, int] | None:
-    """The tool whose parallelism options ``cmd`` takes (``_PAR``), and where its name is,
-    if any: the first word naming it (``pytest``, ``python -m pytest``, ``uv run xut``,
-    ``make``). Only the words after it are the tool's options: a wrapper's own flags before
-    it (``nice -n 19``, ``ionice -n7``, ``timeout -k 10``) never count."""
-    names = [Path(w).name for w in cmd]
-    for i, n in enumerate(names):
-        if n in _PAR:
-            return n, i
-    return None
+def _segments(cmd: list[str]) -> list[tuple[str, list[str]]]:
+    """``cmd`` split at every word naming a tool of ``_PAR`` (``pytest``, ``xut``, ``make``,
+    ``ninja``): ``(tool, the words after it up to the next tool word)``. Words before the
+    first tool (``nice -n 19``, ``ionice -n7``, ``timeout -k 10``, ``uv run --with``) are
+    no tool's options and never count."""
+    out: list[tuple[str, list[str]]] = []
+    for w in cmd:
+        name = Path(w).name
+        if name in _PAR:
+            out.append((name, []))
+        elif out:
+            out[-1][1].append(w)
+    return out
 
 
 def declared_parallelism(argv: Sequence[str]) -> int | None:
     """The largest parallelism a command declares (None without one): pytest's ``-n``, xut's
-    ``--jobs``, make/ninja's ``-j``, each counted only in a command of that tool, in
-    ``argv`` or in a ``bash -c`` script it runs. Best effort: a script file is not read.
-    ``XutError`` for pytest's ``-n auto``/``logical``: 88 workers on this host (AGENTS.md
-    §10.1)."""
+    ``--jobs``, make/ninja's ``-j``, each counted only among the words that follow that
+    tool's own word (up to the next tool word), in ``argv`` or in a ``bash -c`` script it
+    runs; so ``uv run --with pytest xut run --jobs 12`` counts 12. Best effort: a script
+    file is not read. ``XutError`` for pytest's ``-n auto``/``logical``: 88 workers on this
+    host (AGENTS.md §10.1)."""
     found: list[int] = []
     for cmd in _commands(argv):
-        at = _tool(cmd)
-        if at is None:
-            continue
-        tool, start = at
-        for i, a in enumerate(cmd):
-            if i <= start:
-                continue
-            m = _PAR[tool].match(a)
-            if not m:
-                continue
-            value = next((g for g in m.groups() if g), None)
-            if value is None:
-                value = cmd[i + 1] if i + 1 < len(cmd) else ""
-            if value in ("auto", "logical"):
-                raise XutError(f"{a} {value}: give an explicit number (AGENTS.md §10.1)")
-            if value.isdigit():
-                found.append(int(value))
+        for tool, words in _segments(cmd):
+            for i, a in enumerate(words):
+                m = _PAR[tool].match(a)
+                if not m:
+                    continue
+                value = next((g for g in m.groups() if g), None)
+                if value is None:
+                    value = words[i + 1] if i + 1 < len(words) else ""
+                if value in ("auto", "logical"):
+                    raise XutError(f"{a} {value}: give an explicit number (AGENTS.md §10.1)")
+                if value.isdigit():
+                    found.append(int(value))
     return max(found) if found else None
 
 

@@ -263,8 +263,10 @@ smoke simulation whose memory grows without bound. Its container peaked at
   `vivado.slice` has `CPUWeight=20` and `IOWeight=20`. `xut heavy` adds the
   `nice -n 19 ionice -c2 -n7` prefix itself, inside the scope. A scope adopts
   the process it starts and never execs it, so `-p Nice=` and the
-  `IOScheduling*` properties would have no effect. Do not write the prefix
-  yourself, and never use the idle I/O class (`-c3`), which can starve a job.
+  `IOScheduling*` properties would have no effect. You need not write the
+  prefix yourself. It is harmless if you do: nice 19 on nice 19 stays 19, and
+  the parallelism check skips wrapper flags. Never use the idle I/O class
+  (`-c3`), which can starve a job.
   Every container xut starts gets `--cpu-shares=128` (cgroup `cpu.weight` 5),
   at most 2 CPUs (`--cpus`, from `XUT_CONTAINER_CPUS`), and runs its command
   under `nice -n 19`. Two CPUs are the most any of our tools uses: Verilator

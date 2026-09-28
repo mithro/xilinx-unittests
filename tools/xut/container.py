@@ -73,7 +73,10 @@ DEFAULT_MEMORY = "4g"
 #: container at 2 CPUs (``XUT_CONTAINER_CPUS``): the most any of our tools uses (Verilator
 #: builds with ``-j 2``; Icarus, vvp and the simulations are single-threaded), so it never
 #: slows a run, and at the budget's 24 containers it leaves over 40 of the host's 88
-#: CPUs to everyone else even if every container spins.
+#: CPUs to everyone else even if every container spins. Note: inside a container ``nproc``
+#: still reports all 88 CPUs (a CFS quota does not change the CPU mask), so a tool that
+#: sizes itself from it (``make -j$(nproc)``, ``verilator -j 0``) would start 88 workers
+#: against a 2-CPU quota: always give such tools an explicit count.
 CPU_SHARES = 128
 DEFAULT_CPUS = "2"
 CPUS_ENV = "XUT_CONTAINER_CPUS"
