@@ -36,6 +36,7 @@ from xut.runners.xsim import (
     LIBRARY_PATH_GUARD,
     MODEL_SOURCE,
     RUN_MARKER,
+    SNAPSHOT,
     STANDALONE_RUN,
     XsimRunner,
     generic_value,
@@ -251,13 +252,14 @@ P_TOP = (
 
 
 def _xelab(work: Path, generic: str) -> tuple[int, str]:
-    """Elaborate and run ``P_TOP`` with ``-generic_top <generic>`` (with the runner's
-    own LIBRARY_PATH guard); the exit code and the log."""
+    """Elaborate and run ``P_TOP`` with ``-generic_top <generic>`` the way the runner does
+    (its LIBRARY_PATH guard, ``xelab --standalone`` and ``STANDALONE_RUN``: no Tcl shell to
+    start, about 5 s less per probe); the exit code and the log."""
     (work / "top.v").write_text(P_TOP)
     inner = (
         f"source {VIVADO_SETTINGS} && {LIBRARY_PATH_GUARD} && "
-        "xvlog -sv top.v && xelab --debug off -generic_top "
-        f"{shlex.quote(generic)} -s snap work.top && xsim snap -R"
+        "xvlog -sv top.v && xelab --debug off --standalone -generic_top "
+        f"{shlex.quote(generic)} -s {SNAPSHOT} work.top && {STANDALONE_RUN}"
     )
     log = work / "run.log"
     with log.open("w") as f:
