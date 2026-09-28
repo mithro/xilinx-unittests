@@ -335,7 +335,12 @@ class Runner(ABC):
         plan = self.begin(case, ctx)
         if isinstance(plan, RunResult):
             return plan
-        return self.end(plan, [self.run_cfg(plan, cfg) for cfg in plan.cfgs])
+        outcomes: list[CfgOutcome] = []
+        for cfg in plan.cfgs:
+            outcomes.append(self.run_cfg(plan, cfg))
+            if outcomes[-1].exc is not None:  # as the loop always did: stop at the first
+                break  # exception outside run_config (end makes the pair an error)
+        return self.end(plan, outcomes)
 
     def begin(self, case: TestCase, ctx: RunContext) -> Plan | RunResult:
         """Reset the run directory and decide what runs: a finished ``RunResult`` (a skip,
@@ -420,11 +425,11 @@ class Runner(ABC):
 
     def _end(self, plan: Plan, outcomes: list[CfgOutcome]) -> RunResult:
         case, ctx, d, res = plan.case, plan.ctx, plan.d, plan.res
-        if [o.result.cfg for o in outcomes] != plan.cfgs:
-            raise XutError("internal: configuration outcomes out of order")
         for o in outcomes:
             if o.exc is not None:  # as the sequential loop did: the whole run is an error
                 raise o.exc
+        if [o.result.cfg for o in outcomes] != plan.cfgs:
+            raise XutError("internal: configuration outcomes out of order")
         parts = [(o.result.cfg, o.part) for o in outcomes if o.part is not None]
         res.configs = [o.result for o in outcomes]
         logs = [*plan.logs, *(o.log for o in outcomes)]

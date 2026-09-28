@@ -8,11 +8,15 @@ were selected.
 **The remaining pairs run configuration by configuration** (ruling S61). A pair's
 configurations are independent (each writes only its own ``cfg-<cfg>/``), so each is its
 own unit of work. A pair is three kinds of task (``Runner.begin``, ``Runner.run_cfg`` per
-configuration, ``Runner.end``); no task ever waits for another, so there is no deadlock:
+configuration, ``Runner.end``); no task ever waits for another, so there is no deadlock.
+``duration_s`` is the pair's wall time from ``begin`` to ``end``, which includes the time
+its configurations waited in the queue behind other pairs':
 
-- ``begin`` (the tool versions, the configuration list) and ``end`` (the aggregation, in
-  configuration order whatever order the configurations finished in) run in the main pool
-  of ``ctx.jobs`` workers;
+- ``begin`` (the tool versions, the configuration list) runs in the main pool of
+  ``ctx.jobs`` workers; ``end`` (the aggregation, in configuration order whatever order
+  the configurations finished in; no container) runs in the thread that finished the
+  pair's last configuration, so each pair is written, reported (``progress:``) and kept
+  on an interrupt as soon as its own configurations are done;
 - each configuration runs in the main pool, or, for xsim (``HOST_RUNNERS``), in the host
   pool of ``min(ctx.jobs, xsim slots)`` workers: xsim runs on the host, holding one xsim
   slot and no container, so it never takes a worker a container runner could use.
@@ -205,11 +209,12 @@ def run_tests(cases: list[TestCase], runner_names: list[str], ctx: RunContext) -
             with guard:
                 left[0] -= 1
                 last = left[0] == 0
-            if last:
-                pool.submit(task(fut, finish))
+            if last:  # inline: queued behind every other configuration, the pair would
+                finish()  # finish only when the whole run did (correctness review of #25)
 
         if not plan.cfgs:
-            pool.submit(task(fut, finish))
+            finish()
+            return
         target = host if n in HOST_RUNNERS else pool
         for j, cfg in enumerate(plan.cfgs):
             target.submit(task(fut, lambda j=j, cfg=cfg: one(j, cfg)))

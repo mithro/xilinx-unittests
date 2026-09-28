@@ -191,3 +191,44 @@ def test_keyboard_interrupt_cancels_and_kills(fakes, monkeypatch):
         run_mod.run_tests([_case(), _case("L0", "b")], ["fake"], fakes)
     summary = json.loads(run_mod.summary_path(fakes).read_text())
     assert summary["interrupted"] is True and killed == [True]
+
+
+def test_a_pair_is_written_as_soon_as_its_own_configurations_are_done(fakes, monkeypatch):
+    """Correctness review of #25: a pair's result (result.json, progress, an interrupt's
+    record) never waits for other pairs' configurations: B's last configuration waits
+    until A's result.json exists (or 5 s) and records whether it did."""
+    a, b = _case("L1", "a", ["x"]), _case("L1", "b", ["y0", "y1", "y2", "y3"])
+    seen: dict[str, bool] = {}
+    a_result = workdir(fakes, "fake", a.id) / "result.json"
+
+    def cfg(self, case, cfg, cd, ctx):
+        if case.id == b.id and cfg == "y3":
+            deadline = time.monotonic() + 5
+            while not a_result.is_file() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            seen["a written"] = a_result.is_file()
+        return ConfigResult(cfg, "fail", f"reason {cfg}")
+
+    monkeypatch.setattr(Fake, "run_config", cfg)
+    # one worker: A's end must not queue behind B's configurations
+    res = run_mod.run_tests([a, b], ["fake"], dataclasses.replace(fakes, jobs=1))
+    assert seen == {"a written": True}
+    assert [r.test_id for r in res] == [a.id, b.id]
+
+
+def test_sequential_run_stops_at_the_first_exception_outside_run_config(fakes, monkeypatch):
+    """Runner.run keeps the old loop's behaviour: no configuration runs after one raised
+    outside run_config (review nit), and the pair is an error."""
+    real = Runner._run_cfg
+    ran: list[str] = []
+
+    def boom(self, plan, cfg):
+        ran.append(cfg)
+        if cfg == "c2":
+            raise OSError("disk on fire")
+        return real(self, plan, cfg)
+
+    monkeypatch.setattr(Runner, "_run_cfg", boom)
+    res = Fake().run(_case(), fakes)
+    assert ran == ["c0", "c1", "c2"]
+    assert res.status == "error" and "disk on fire" in res.reason
