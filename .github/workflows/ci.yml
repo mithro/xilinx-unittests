@@ -39,13 +39,18 @@ jobs:
         with: {fetch-depth: 0}
       - id: select
         run: python3 tools/xut/ci_select.py --event "${{ github.event_name }}" --base "origin/${{ github.base_ref }}"
-  sim:
-    # Always reports (unless the run is cancelled), so its check exists on every PR.
-    # The steps skip only on an explicit sim=false; if `changes` failed, the job
-    # fails (fail-safe: never a green sim check without its steps).
+  sim-shard:
+    # The container tests, split over parallel runners (tools/xut/ci_shards.py: the
+    # shards partition `-m container` exactly, checked by test_ci_shards.py). Each leg
+    # always runs (unless cancelled); its steps skip only on an explicit sim=false, and
+    # it fails if `changes` failed (fail-safe: never green without its steps).
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [sweep, verilator, rest]
     steps:
       - if: needs.changes.result != 'success'
         run: |
@@ -74,9 +79,16 @@ jobs:
           cache-to: type=gha,mode=max
       - if: needs.changes.outputs.sim != 'false'
         run: uv run xut container versions
+      # This shard's pytest arguments (tools/xut/ci_shards.py), written to a file first so
+      # a failing ci_shards.py fails the step (bash -e) instead of leaving no arguments.
       - if: needs.changes.outputs.sim != 'false'
-        run: uv run pytest -v -n auto --dist loadfile -m container
-      # The flops L0/L1 vector tests on iverilog against the open-source UNISIM submodule
+        env: {SHARD: "${{ matrix.shard }}"}
+        run: |
+          python3 tools/xut/ci_shards.py "$SHARD" > "$RUNNER_TEMP/pytest-args"
+          mapfile -t args < "$RUNNER_TEMP/pytest-args"
+          uv run pytest "${args[@]}"
+      # The flops L0/L1 vector tests on iverilog against the open-source UNISIM submodule,
+      # in the `rest` shard only (ci_shards.FLOPS_SHARD; test_ci_shards pins it)
       # (review (b) #5). `xut run` exits 1 on any fail, including a disagreement that a
       # test lists in `expected_divergence` (an open finding, spec §8), so it only runs
       # here and prints its matrix; `xut crosscheck` is the gate. It exits 0 only when
@@ -84,7 +96,7 @@ jobs:
       # 4 on any error, unexplained fail or missing comparison, so nothing is masked.
       # `xut run` exit 1 means some result is fail or error: crosscheck classifies those.
       # Anything above 1 (interrupt 130, a crash) fails the job here.
-      - if: needs.changes.outputs.sim != 'false'
+      - if: needs.changes.outputs.sim != 'false' && matrix.shard == 'rest'
         run: |
           rc=0
           uv run xut run 'unit:flops' --level L0 --level L1 --style vector --runner python --runner iverilog --model-source unisim-gh-2020.1 --jobs 4 || rc=$?
@@ -92,5 +104,15 @@ jobs:
           [ "$rc" -le 1 ]
       # --strict with the same selection: any selected test the run did not complete
       # (not-run or uncompared) is exit 4, so a partial run never looks clean.
-      - if: needs.changes.outputs.sim != 'false'
+      - if: needs.changes.outputs.sim != 'false' && matrix.shard == 'rest'
         run: uv run xut crosscheck 'unit:flops' --level L0 --level L1 --style vector --model-source unisim-gh-2020.1 --strict
+  # The check every PR reports as `sim`: green only when every shard leg passed.
+  sim:
+    needs: sim-shard
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - env: {RESULT: "${{ needs.sim-shard.result }}"}
+        run: |
+          echo "sim-shard: $RESULT"
+          test "$RESULT" = success

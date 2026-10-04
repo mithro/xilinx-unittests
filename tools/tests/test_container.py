@@ -375,9 +375,9 @@ def test_ci_builds_the_current_sim_image():
     SIM_IMAGE, or the `container` tests would silently skip in CI."""
     import yaml
 
-    steps = yaml.safe_load((repo_root() / ".github/workflows/ci.yml").read_text())["jobs"]["sim"][
-        "steps"
-    ]
+    # the container tests run in the sim-shard matrix jobs (xut.ci_shards)
+    jobs = yaml.safe_load((repo_root() / ".github/workflows/ci.yml").read_text())["jobs"]
+    steps = jobs["sim-shard"]["steps"]
     builds = [s for s in steps if s.get("uses", "").startswith("docker/build-push-action@")]
     assert len(builds) == 1
     w = builds[0]["with"]

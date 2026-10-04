@@ -99,20 +99,25 @@ def test_the_script_is_stdlib_only():
 def test_workflow_gates_every_sim_step_and_always_runs_the_job():
     wf = yaml.safe_load((repo_root() / ".github/workflows/ci.yml").read_text())
     jobs = wf["jobs"]
-    sim = jobs["sim"]
-    # the check is reported on every PR (unless cancelled), after the selection
-    assert sim["needs"] == "changes" and sim["if"] == "${{ !cancelled() }}"
+    # the container tests run in the sim-shard legs (xut.ci_shards); `sim` is their gate
+    shard = jobs["sim-shard"]
+    # every leg reports (unless cancelled), after the selection
+    assert shard["needs"] == "changes" and shard["if"] == "${{ !cancelled() }}"
+    assert jobs["sim"]["needs"] == "sim-shard" and jobs["sim"]["if"] == "${{ !cancelled() }}"
     assert jobs["changes"]["outputs"]["sim"] == "${{ steps.select.outputs.sim }}"
     select = next(s for s in jobs["changes"]["steps"] if s.get("id") == "select")
     assert "tools/xut/ci_select.py" in select["run"]
     checkout = jobs["changes"]["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0  # base...HEAD needs the history
-    steps = sim["steps"]
-    # fail-safe: a failed or skipped selection fails the sim check, never a green skip
+    steps = shard["steps"]
+    # fail-safe: a failed or skipped selection fails every leg, never a green skip
     assert steps[0]["if"] == "needs.changes.result != 'success'"
     assert "exit 1" in steps[0]["run"]
     assert steps[1]["if"] == "needs.changes.outputs.sim == 'false'"  # the only skip
-    assert all(s.get("if") == GATE for s in steps[2:]), [s.get("if") for s in steps]
+    # every other step is gated on the selection (the flops steps also on their shard)
+    assert all(s.get("if", "").split(" && ")[0] == GATE for s in steps[2:]), [
+        s.get("if") for s in steps
+    ]
     runs = " ".join(s.get("run", "") for s in steps[2:])
     assert "pytest" in runs and "xut run 'unit:flops'" in runs and "crosscheck" in runs
     assert "if" not in jobs["tooling"]  # the tooling job always runs in full
