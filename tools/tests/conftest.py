@@ -5,8 +5,11 @@ for every test module (review A5), instead of a per-module ``needs_image``. Ever
 ``vivado`` test is also marked ``slow``, so ``-m "not slow"`` is a quick loop.
 
 The suite is ``tmp_path``-hermetic and runs in parallel:
-``uv run pytest -n auto --dist loadfile`` (pytest-xdist; ``loadfile`` keeps each module's
-process-level caches on one worker).
+``uv run pytest -n 8 --dist loadgroup`` (pytest-xdist). Every test is put in an
+``xdist_group`` named after its file, so ``loadgroup`` keeps each module on one worker, as
+``loadfile`` does (its process-level caches stay warm), except the modules in
+``PER_TEST``: their slow, hermetic tests are spread over the workers one by one. With
+``--dist loadfile`` the groups are ignored and every module stays whole, as before.
 
 Git runs as it does in CI: without the user's global or system config, so a global
 ``core.excludesFile`` (commonly ``*.pyc``) cannot hide an untracked file from
@@ -62,6 +65,14 @@ def work(tmp_path):
     return tmp_path
 
 
+#: Modules whose tests ``--dist loadgroup`` spreads one by one (no ``xdist_group``): each
+#: test builds and runs its own simulations under ``tmp_path`` and shares no state with
+#: the others, and one test takes seconds to tens of seconds, so keeping the module on one
+#: worker made it the suite's tail (xsim: 127 tests, about 115 s on one worker).
+PER_TEST = frozenset({"test_runner_xsim.py", "test_runner_verilator.py"})
+
+
+@pytest.hookimpl(tryfirst=True)  # before xdist's loadgroup hook reads the marks
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     from xut.container import SIM_IMAGE, image_digest
     from xut.paths import VIVADO_SRC
@@ -74,6 +85,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     no_image = pytest.mark.skip(reason=f"{SIM_IMAGE} not built (run: uv run xut container build)")
     no_vivado = pytest.mark.skip(reason=f"Vivado 2025.2 not installed ({VIVADO_SRC})")
     for item in items:
+        if item.path.name not in PER_TEST and not item.get_closest_marker("xdist_group"):
+            item.add_marker(pytest.mark.xdist_group(item.path.name))
         if item.get_closest_marker("vivado"):
             item.add_marker(pytest.mark.slow)  # every Vivado test is slow: -m "not slow"
         if item.get_closest_marker("container") and not have_image:
